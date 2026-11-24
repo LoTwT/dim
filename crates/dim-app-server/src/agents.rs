@@ -395,14 +395,14 @@ impl AgentDirectory {
     fn own(&self, id: &str, cwd: &str) {
         self.inner.lock().expect("agent index").own(id, cwd);
     }
-    /// Ends a Session's ownership; answers the cwd it owned, or none when it
-    /// owned none.
+    /// Ends a Session's ownership and answers the cwd to release: the one it
+    /// owned, when no Session owns that cwd any more. Removing the owner and
+    /// reading the owners that remain happen under one index lock, so two
+    /// settlements cannot both answer the same project.
     fn settle(&self, id: &str) -> Option<String> {
-        self.inner.lock().expect("agent index").settle(id)
-    }
-    /// Whether a Session still owns `cwd`.
-    fn owns(&self, cwd: &str) -> bool {
-        self.inner.lock().expect("agent index").owns(cwd)
+        let mut inner = self.inner.lock().expect("agent index");
+        let cwd = inner.settle(id)?;
+        (!inner.owns(&cwd)).then_some(cwd)
     }
 }
 /// Provides the [`AgentDirectory`] and the `sessions` service. Neither
@@ -741,9 +741,10 @@ impl AgentIndex {
     /// Gives up a project's root descriptor once the last Session loaded from
     /// its cwd settles. Each load records its Session as an owner of the cwd
     /// before the Session appears in its Agent's list, so a close is answered by
-    /// the owners that remain rather than by a snapshot of the visible hosts.
-    /// The authorization and its index stay, and the next operation opens the
-    /// directory again, so releasing never withdraws access. A detach ends no
+    /// the owners that remain rather than by a snapshot of the visible hosts,
+    /// and one settlement removes its owner and reads the rest under one index
+    /// lock. The authorization and its index stay, and the next operation opens
+    /// the directory again, so releasing never withdraws access. A detach ends no
     /// ownership, because the Session stays loaded and may still use the
     /// project. An authorization no Session used, from the hook catalog, MCP
     /// management or a create or restore that failed before loading its
@@ -755,9 +756,6 @@ impl AgentIndex {
         let Some(cwd) = self.directory.settle(session_id) else {
             return;
         };
-        if self.directory.owns(&cwd) {
-            return;
-        }
         if let Some(settings) = &self.settings {
             settings.release_project(Path::new(&cwd));
         }

@@ -416,7 +416,10 @@ and that the authorization keeps its index. The unit test
 `a_closing_session_does_not_release_the_root_a_restore_owns`
 ([slots.rs](../../../../crates/dim-app-server/src/agents/tests/slots.rs)) holds a
 restore inside its Session part and closes another Session on the same cwd, which
-the loaded Sessions alone would read as the last use.
+the loaded Sessions alone would read as the last use, and
+`a_settlement_answers_only_the_last_owner_of_a_cwd`
+([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) checks that a
+settlement answers its project only when it removed the last owner.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

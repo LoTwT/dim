@@ -5,7 +5,7 @@
 //! Agent would. The hold exists only in this crate's unit tests, like the
 //! title-write hold of the storage flow tests.
 use super::{
-    AgentIndex,
+    AgentDirectory, AgentIndex, Inner,
     sessions::{InputWrite, LaunchRequest, RawBlock},
 };
 use crate::ServerConfig;
@@ -461,4 +461,25 @@ async fn a_dependency_reload_records_a_creation_timeout_and_continues() {
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Two Sessions of one project settle one after the other: only the last answers
+/// the cwd, so the caller releases the project's root once. The settlement
+/// removes its owner and reads the owners that remain as one step.
+#[test]
+fn a_settlement_answers_only_the_last_owner_of_a_cwd() {
+    let directory = AgentDirectory {
+        inner: Mutex::new(Inner::default()),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        default_agent_id: std::sync::OnceLock::new(),
+        server_instance_id: "test".to_owned(),
+    };
+    directory.own("first", "/project");
+    directory.own("second", "/project");
+    assert_eq!(
+        directory.settle("first"),
+        None,
+        "another Session still owns the project"
+    );
+    assert_eq!(directory.settle("second"), Some("/project".to_owned()));
 }
