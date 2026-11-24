@@ -414,7 +414,7 @@ impl FileStorage {
     fn register_observed(&self, root: &Path, cancel: &CancellationToken) -> Result<usize> {
         loop {
             self.check(cancel)?;
-            let observed = self.observe(root)?;
+            let observed = self.observe(root);
             let opened = native::open_root(root);
             self.check(cancel)?;
             if let Some(index) = self.publish(root, observed, opened)? {
@@ -424,13 +424,13 @@ impl FileStorage {
     }
 
     /// The index and slot epoch `root` is registered at, when it is.
-    fn observe(&self, root: &Path) -> Result<Option<(usize, u64)>> {
+    fn observe(&self, root: &Path) -> Option<(usize, u64)> {
         let state = self.state.lock().unwrap();
         let paths = self.roots.lock().unwrap();
-        Ok(paths
+        paths
             .iter()
             .position(|path| path == root)
-            .map(|index| (index, state.roots[index].epoch)))
+            .map(|index| (index, state.roots[index].epoch))
     }
 
     /// Publishes the descriptor `opened` for `root` at the state `observed`
