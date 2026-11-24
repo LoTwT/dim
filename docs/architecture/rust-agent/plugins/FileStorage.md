@@ -39,12 +39,12 @@ that comparison failing is not a registration failure, and the newly opened
 descriptor, whose component-wise walk already rejected links, serves the path.
 
 A registration publishes only while the root is where it was when the
-registration opened the path: one a refresh or release overtook meanwhile reads
-the path again, so an observation made earlier never replaces a newer one. A
-normal operation uses the descriptor the root last held; it does not check the
-path's current identity. A directory another process replaces at the path is
-therefore reached when that path is registered again or after a release, not by
-every operation on the root.
+registration opened the path, so an observation made earlier never replaces a
+newer one; one a refresh or release overtook publishes nothing and answers the
+index when it reached the directory the root serves. A normal operation uses the
+descriptor the root last held; it does not check the path's current identity. A
+directory another process replaces at the path is therefore reached when that
+path is registered again or after a release, not by every operation on the root.
 
 `release_root(index)` drops the descriptor and keeps the index, its path and
 every `FilePath` naming it. The next operation opens the directory the path
