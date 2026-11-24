@@ -295,10 +295,12 @@ impl Inner {
             .get(id)
             .map_or(0, |slot| slot.uses.load(Ordering::Acquire))
     }
-    /// The cwds whose root this process holds for Session `id`.
+    /// Ends Session `id`'s ownership and answers the cwd it owned.
     fn settle(&mut self, id: &str) -> Option<String> {
         self.owners.remove(id)
     }
+    /// Records a loaded Session as an owner of the cwd whose project root this
+    /// process holds for it.
     fn own(&mut self, id: &str, cwd: &str) {
         self.owners.insert(id.to_owned(), cwd.to_owned());
     }
