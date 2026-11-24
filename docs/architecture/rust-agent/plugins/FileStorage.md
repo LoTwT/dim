@@ -33,7 +33,7 @@ the same path, and a `FilePath` names its root for its generation's lifetime. A
 descriptor is not part of that identity. Registering an already registered path
 opens the directory the path names now and keeps the index: the held descriptor
 stays when it names the same directory, is replaced when the path names another
-one, and is dropped when the path names no directory. Reading either
+one, and holds none when the path cannot be opened. Reading either
 descriptor's identity can fail, on a volume that does not report file IDs or
 while a deletion is pending; that comparison failing is not a registration
 failure, and the newly opened descriptor, whose component-wise walk already
@@ -353,9 +353,7 @@ and starts again from its target if a directory it returns to was deleted.
 replaced at a registered path keeps the index and the new directory serves the
 same `FilePath`), `a_released_root_opens_the_directory_its_path_names` (the
 released descriptor is closed, and the next operation opens the directory the
-path names then), `a_root_identity_that_cannot_be_compared_keeps_registration_succeeding`
-(a comparison that cannot read an identity keeps the index and serves the newly
-opened directory), `file_storage_flow` (path, lock, permission and platform checks),
+path names then), `file_storage_flow` (path, lock, permission and platform checks),
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
 marker, an existing file or link, cancellation),
@@ -371,9 +369,11 @@ directories, a marker whose release failed) and
 `removal_scales_with_directory_size` (a directory that used 300 names and a
 1,000-level tree, removed under a 64-descriptor limit on a 256 KiB worker
 stack, where recursion overflowed at a few hundred levels). The unit
-test `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the
-owner module drives the lock, removal and temporary-file interleavings that the
-public API cannot produce reliably. The App Server flows
+tests `a_root_identity_that_cannot_be_read_is_not_the_held_directory` (a
+comparison that cannot read an identity does not count as the held directory)
+and `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
+module cover the comparison fallback and the lock, removal and temporary-file
+interleavings that the public API cannot produce reliably. The App Server flows
 `an_unloaded_session_releases_its_project_root`,
 `a_closed_session_releases_its_project_root`,
 `a_deleted_session_releases_its_project_root`,
