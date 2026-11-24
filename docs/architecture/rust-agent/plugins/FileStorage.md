@@ -62,25 +62,31 @@ root serves, and when it reads one after none was recorded: the root cannot show
 that the directory is one it already served. A release, which names the same
 directory, leaves the lease valid; an identity that cannot be read leaves the
 generation where it was, because the storage cannot tell whether the path names
-another directory. An open that a release or another registration overtook binds
-the generation of the directory it reaches when the root serves it, so two opens
-of one directory do not invalidate each other. A lease's read keeps the file it
-pinned, and dropping the lease releases its physical lock either way.
+another directory. An observation that cannot open the path leaves it where it
+was too, and additionally refuses the mutations of the leases published at or
+before it until an observation reads the path's identity again: the path showed
+no directory, so those leases hold a directory it does not name. Their reads
+keep the files they pinned, and dropping them releases their locks. An open that
+a release or another registration overtook binds the generation of the directory
+it reaches when the root serves it, so two opens of one directory do not
+invalidate each other. A lease's read keeps the file it pinned, and dropping the
+lease releases its physical lock either way.
 
 The App Server releases a project's root once the last Session loaded from its
 cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
 an idle unload and `agent.close` each end one Session's ownership; a load
 records it before the Session appears in an Agent's Session list, so a Session
-still restoring owns the root. A `session.detach` ends no ownership: the Session
-stays loaded and may still use the project, and its later close or unload
-releases the root. An authorization no Session used, from `hooks.catalog`, MCP
-management or a create or restore that failed before loading its Session, owns
-nothing and keeps its descriptor until the next settlement on the same cwd or
-the process closes. A Session the runtime's fault supervisor closes reports no
-settlement of its own; its ownership stays until the process closes. FileStorage
-close still releases every descriptor. A reopened descriptor is not revalidated
-against an earlier one, because the path is the authorization and the
-authorization did not change.
+still restoring owns the root. A restore that loaded no Session ends the
+ownership it registered itself, before its caller can be told either way, so a
+caller that stopped waiting leaves none behind. A `session.detach` ends no
+ownership: the Session stays loaded and may still use the project, and its later
+close or unload releases the root. An authorization no Session used, from
+`hooks.catalog` or MCP management, owns nothing and keeps its descriptor until
+the next settlement on the same cwd or the process closes. A Session the
+runtime's fault supervisor closes reports no settlement of its own; its
+ownership stays until the process closes. FileStorage close still releases every
+descriptor. A reopened descriptor is not revalidated against an earlier one,
+because the path is the authorization and the authorization did not change.
 
 ## Bounded reads
 
