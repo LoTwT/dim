@@ -162,12 +162,15 @@ struct State {
 struct Root {
     handle: Option<File>,
     /// The directory the root last served, kept while no descriptor is held so
-    /// a later open can tell whether the path still names it.
+    /// a later open can tell whether the path still names it. None after an
+    /// observation whose identity could not be read, so the next one is not
+    /// taken for a directory the root served before it.
     served: Option<native::RootIdentity>,
-    /// Counts the directories this root has served. It advances only when a
-    /// readable identity names another directory, so a release, which names the
-    /// same one, leaves the leases locked before it valid, and an identity that
-    /// cannot be read leaves the generation where it was.
+    /// Counts the directories this root has served. It advances when a readable
+    /// identity names another directory, and when one is read after the root
+    /// recorded none, so a release, which names the same one, leaves the leases
+    /// locked before it valid, and an identity that cannot be read leaves the
+    /// generation where it was.
     revision: u64,
     /// Counts the slot's transitions. An open publishes only at the value it
     /// observed, so an older observation never replaces a newer one.
@@ -185,10 +188,7 @@ impl Root {
     }
     /// Serves the directory an observation opened: the held descriptor stays
     /// when the path still names it, is replaced when the path names another,
-    /// and is dropped when the path did not open. A comparison that cannot read
-    /// an identity replaces the descriptor but starts no generation: the storage
-    /// cannot tell that the path names another directory. Only a transition
-    /// changes what later opens must observe.
+    /// and is dropped when the path did not open.
     fn serve(&mut self, opened: Result<File>) {
         let Ok(handle) = opened else {
             self.handle = None;
@@ -196,17 +196,24 @@ impl Root {
             return;
         };
         let observed = native::root_identity(&handle);
+        self.serve_observed(handle, observed);
+    }
+    /// Serves `handle`, a directory opened at the root's path, with the identity
+    /// the platform read as `observed`. A comparison that cannot read an
+    /// identity replaces the descriptor, records no directory and starts no
+    /// generation: the storage cannot tell that the path names another
+    /// directory, and the next readable identity starts one because the root
+    /// recorded none. Only a transition changes what later opens must observe.
+    fn serve_observed(&mut self, handle: File, observed: io::Result<native::RootIdentity>) {
         let same = same_directory(self.served, &observed);
         if same && self.handle.is_some() {
             return;
         }
         let another = reaches_another_directory(self.served, &observed);
-        if let Ok(observed) = observed {
-            if another {
-                self.revision += 1;
-            }
-            self.served = Some(observed);
+        if another {
+            self.revision += 1;
         }
+        self.served = observed.ok();
         self.handle = Some(handle);
         self.epoch += 1;
     }
@@ -215,7 +222,8 @@ impl Root {
     /// serve the observation: the caller's observation is not the newest one
     /// and is not published. It still answers the revision the root serves when
     /// `opened` reaches that same directory, so an open a transition overtook
-    /// binds what it reaches, and none when the root serves another directory.
+    /// binds what it reaches, and none when the root serves another directory or
+    /// recorded none.
     fn served_at(&mut self, epoch: u64, opened: Result<File>) -> Option<u64> {
         if self.epoch == epoch {
             self.serve(opened);
@@ -987,15 +995,18 @@ impl FileStorage {
     }
 }
 
-/// Whether a directory observation names another directory than the root
-/// serves. An identity that cannot be read on either side leaves the question
-/// open: the volume reports none, or a deletion is pending, so the storage
-/// cannot tell, and a lease that reached this directory keeps its generation.
+/// Whether a directory observation starts a generation: it names another
+/// directory than the root serves, or the root recorded none and cannot show
+/// that it already serves this one. An identity that cannot be read leaves the
+/// question open: the volume reports none, or a deletion is pending, so the
+/// storage cannot tell, and a lease that reached this directory keeps its
+/// generation.
 fn reaches_another_directory(
     served: Option<native::RootIdentity>,
     observed: &io::Result<native::RootIdentity>,
 ) -> bool {
     match (served, observed) {
+        (None, Ok(_)) => true,
         (Some(served), Ok(observed)) => served != *observed,
         _ => false,
     }
@@ -1029,11 +1040,20 @@ fn a_root_identity_that_cannot_be_read_is_not_the_held_directory() {
 #[cfg(test)]
 #[test]
 fn a_root_identity_that_cannot_be_read_keeps_the_generation() {
-    assert!(!reaches_another_directory(
-        Some(Default::default()),
-        &Err(io::Error::from(io::ErrorKind::Unsupported))
-    ));
-    assert!(!reaches_another_directory(None, &Ok(Default::default())));
+    assert!(
+        !reaches_another_directory(
+            Some(Default::default()),
+            &Err(io::Error::from(io::ErrorKind::Unsupported))
+        ),
+        "the storage cannot tell whether the path names another directory"
+    );
+}
+/// A root that recorded no directory starts a generation with the identity it
+/// reads next: it cannot show that the directory is one it already served.
+#[cfg(test)]
+#[test]
+fn a_root_that_recorded_no_directory_starts_a_generation() {
+    assert!(reaches_another_directory(None, &Ok(Default::default())));
 }
 
 #[cfg(all(test, any(unix, windows)))]
@@ -1170,6 +1190,47 @@ mod root_publication {
             slot.revision,
             revision + 1,
             "another directory starts a generation"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// An observation whose identity cannot be read replaces the descriptor but
+    /// records no directory, so a later observation of the path names a
+    /// directory the root did not record and is served rather than skipped.
+    #[test]
+    fn an_identity_that_cannot_be_read_leaves_the_next_readable_one_a_generation() {
+        let (directory, storage) = storage();
+        let path = directory.join("project");
+        let other = directory.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
+        let held = native::open_root(&path).unwrap();
+        let served = native::root_identity(&held).unwrap();
+        let another = native::open_root(&other).unwrap();
+        let mut state = storage.state.lock().unwrap();
+        let slot = &mut state.roots[index];
+        let revision = slot.revision;
+        slot.serve_observed(another, Err(io::Error::from(io::ErrorKind::Unsupported)));
+        assert!(
+            slot.served.is_none(),
+            "an identity that cannot be read is not recorded"
+        );
+        assert_eq!(
+            slot.revision, revision,
+            "an identity that cannot be read starts no generation"
+        );
+        let reopened = native::open_root(&path).unwrap();
+        slot.serve_observed(reopened, Ok(served));
+        assert_eq!(
+            slot.revision,
+            revision + 1,
+            "the first identity read after none starts a generation"
+        );
+        assert_eq!(
+            native::root_identity(slot.handle.as_ref().expect("a served descriptor")).unwrap(),
+            served,
+            "the root serves the directory its path names"
         );
         std::fs::remove_dir_all(&directory).unwrap();
     }

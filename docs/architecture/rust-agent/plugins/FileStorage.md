@@ -37,6 +37,8 @@ is dropped when the path cannot be opened. Reading the directory's identity can
 fail, on a volume that does not report file IDs or while a deletion is pending;
 that comparison failing is not a registration failure, and the newly opened
 descriptor, whose component-wise walk already rejected links, serves the path.
+The root records no directory for that observation, so a later registration
+cannot mistake the path for one the root served before the failed read.
 
 A registration publishes only while the root is where it was when the
 registration opened the path, so an observation made earlier never replaces a
@@ -55,14 +57,15 @@ release does not put its descriptor back.
 A lease is bound to the directory generation it locked: `replace` and `backup`
 through it fail with `invalid` once the path names another directory, rather than
 writing into the directory the path no longer names. That generation advances
-only when a registration reads an identity for the path and it differs from the
-one the root serves; a release, which names the same directory, leaves the lease
-valid, and an identity that cannot be read leaves the generation where it was,
-because the storage cannot tell whether the path names another directory. An
-open that a release or another registration overtook binds the generation of the
-directory it reaches when the root still serves it, so two opens of one
-directory do not invalidate each other. A lease's read keeps the file it pinned,
-and dropping the lease releases its physical lock either way.
+when a registration reads an identity for the path that differs from the one the
+root serves, and when it reads one after none was recorded: the root cannot show
+that the directory is one it already served. A release, which names the same
+directory, leaves the lease valid; an identity that cannot be read leaves the
+generation where it was, because the storage cannot tell whether the path names
+another directory. An open that a release or another registration overtook binds
+the generation of the directory it reaches when the root serves it, so two opens
+of one directory do not invalidate each other. A lease's read keeps the file it
+pinned, and dropping the lease releases its physical lock either way.
 
 The App Server releases a project's root once the last Session loaded from its
 cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
