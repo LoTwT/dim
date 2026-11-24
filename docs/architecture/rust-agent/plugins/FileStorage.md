@@ -32,33 +32,47 @@ A root is its index and its path. Both are append-only: an index always names
 the same path, and a `FilePath` names its root for its generation's lifetime. A
 descriptor is not part of that identity. Registering an already registered path
 opens the directory the path names now and keeps the index: the held descriptor
-stays when it names the same directory, is replaced when the path names another
-one, and holds none when the path cannot be opened. Reading either
-descriptor's identity can fail, on a volume that does not report file IDs or
-while a deletion is pending; that comparison failing is not a registration
-failure, and the newly opened descriptor, whose component-wise walk already
-rejected links, serves the path. The path is therefore the authorization: an
-operation reaches the directory that path names when it runs, never a
-descriptor of a directory the path no longer names.
+stays when the path still names it, is replaced when the path names another, and
+is dropped when the path cannot be opened. Reading the directory's identity can
+fail, on a volume that does not report file IDs or while a deletion is pending;
+that comparison failing is not a registration failure, and the newly opened
+descriptor, whose component-wise walk already rejected links, serves the path.
+
+A registration publishes only while the root is where it was when the
+registration opened the path: one a refresh or release overtook meanwhile reads
+the path again, so an observation made earlier never replaces a newer one. A
+normal operation uses the descriptor the root last held; it does not check the
+path's current identity. A directory another process replaces at the path is
+therefore reached when that path is registered again or after a release, not by
+every operation on the root.
 
 `release_root(index)` drops the descriptor and keeps the index, its path and
 every `FilePath` naming it. The next operation opens the directory the path
 names then, so a release withdraws no authorization and changes no index. A
-released root simply costs no descriptor.
+released root costs no descriptor until then, and an open that began before a
+release does not put its descriptor back.
 
-The App Server releases a project's root once no loaded Session uses its cwd.
-`session.close`, `session.delete` and a Collaboration member's close all check
-the Sessions that remain, as do an idle unload and `agent.close` for each
-Session it ends. A `session.detach` releases nothing: the Session stays loaded
-and may still use the project, and its later close or unload releases the root.
-An authorization no Session used, from `hooks.catalog`, MCP management or a
-create or restore that failed before loading its Session, reports no Session
-end and keeps its descriptor until another end on the same cwd or the process
-closes. A Session the runtime's fault supervisor closes reports no end here
-either: its descriptor stays until another end on the same cwd or the process.
-FileStorage close still releases every descriptor. A reopened descriptor is not
-revalidated against an earlier one, because the path is the authorization and
-the authorization did not change.
+A lease is bound to the directory generation it locked: `replace` and `backup`
+through it fail with `invalid` once the path names another directory, rather than
+writing into the directory the path no longer names. That generation advances
+only when the path names another directory, so a release, which names the same
+one, leaves the lease valid. A lease's read keeps the file it pinned, and
+dropping the lease releases its physical lock either way.
+
+The App Server releases a project's root once the last Session loaded from its
+cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
+an idle unload and `agent.close` each end one Session's ownership; a load
+records it before the Session appears in an Agent's Session list, so a Session
+still restoring owns the root. A `session.detach` ends no ownership: the Session
+stays loaded and may still use the project, and its later close or unload
+releases the root. An authorization no Session used, from `hooks.catalog`, MCP
+management or a create or restore that failed before loading its Session, owns
+nothing and keeps its descriptor until the next settlement on the same cwd or
+the process closes. A Session the runtime's fault supervisor closes reports no
+settlement of its own; its ownership stays until the process closes. FileStorage
+close still releases every descriptor. A reopened descriptor is not revalidated
+against an earlier one, because the path is the authorization and the
+authorization did not change.
 
 ## Bounded reads
 
@@ -353,7 +367,10 @@ and starts again from its target if a directory it returns to was deleted.
 replaced at a registered path keeps the index and the new directory serves the
 same `FilePath`), `a_released_root_opens_the_directory_its_path_names` (the
 released descriptor is closed, and the next operation opens the directory the
-path names then), `file_storage_flow` (path, lock, permission and platform checks),
+path names then), `a_lease_on_a_replaced_root_refuses_its_next_replacement` (a
+lease locked in the old directory fails its next replacement and leaves the new
+directory untouched), `a_lease_survives_a_root_release`,
+`file_storage_flow` (path, lock, permission and platform checks),
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
 marker, an existing file or link, cancellation),
@@ -370,18 +387,27 @@ directories, a marker whose release failed) and
 1,000-level tree, removed under a 64-descriptor limit on a 256 KiB worker
 stack, where recursion overflowed at a few hundred levels). The unit
 tests `a_root_identity_that_cannot_be_read_is_not_the_held_directory` (a
-comparison that cannot read an identity does not count as the held directory)
-and `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
-module cover the comparison fallback and the lock, removal and temporary-file
-interleavings that the public API cannot produce reliably. The App Server flows
+comparison that cannot read an identity does not count as the held directory),
+`a_registration_that_opened_before_a_refresh_does_not_publish_after_it` and
+`an_open_that_overlaps_a_release_does_not_hold_the_root_again` (the publication
+of a root slot), and `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
+module cover the comparison fallback, the publication order and the lock,
+removal and temporary-file interleavings that the public API cannot produce
+reliably. The App Server flows
 `an_unloaded_session_releases_its_project_root`,
 `a_closed_session_releases_its_project_root`,
 `a_deleted_session_releases_its_project_root`,
-`an_agent_close_releases_its_sessions_project_roots` and
-`one_of_two_sessions_in_a_project_keeps_its_root_in_use`
+`an_agent_close_releases_its_sessions_project_roots`,
+`one_of_two_sessions_in_a_project_keeps_its_root_in_use` and
+`a_replaced_project_directory_is_served_after_a_session_is_created`
 ([idle_unload.rs](../../../../crates/dim-app-server/tests/transport_flow/idle_unload.rs))
 check that a Session ending its use of a project releases the descriptor once no
-Session uses it, and that the authorization keeps its index.
+Session uses it, that a replacement is served once the path is registered again,
+and that the authorization keeps its index. The unit test
+`a_closing_session_does_not_release_the_root_a_restore_owns`
+([slots.rs](../../../../crates/dim-app-server/src/agents/tests/slots.rs)) holds a
+restore inside its Session part and closes another Session on the same cwd, which
+the loaded Sessions alone would read as the last use.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
