@@ -1171,6 +1171,32 @@ mod root_publication {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
+    /// An open that a release overtook records nothing: the newest observation
+    /// decides what the root holds, so a stale one never reports the path as
+    /// unavailable.
+    #[test]
+    fn an_overtaken_open_does_not_record_an_unavailable_path() {
+        let (directory, storage) = storage();
+        let path = directory.join("project");
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
+        let (_, epoch) = storage.observe(&path).expect("a registered root");
+        storage.release_root(index);
+        let mut state = storage.state.lock().unwrap();
+        let slot = &mut state.roots[index];
+        let released = slot.epoch;
+        slot.unopened(epoch);
+        assert_eq!(
+            slot.epoch, released,
+            "the release is the newest observation"
+        );
+        assert!(
+            slot.unavailable.is_none(),
+            "an overtaken open does not report the path"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     /// An open that began before a release publishes nothing, so a released root
     /// holds no descriptor until an operation opens its path again.
     #[test]
