@@ -176,17 +176,24 @@ struct Root {
     /// observed, so an older observation never replaces a newer one.
     epoch: u64,
     /// The epoch of an observation that could not open the path, until an
-    /// observation reads the path's identity again. The path showed no
-    /// directory then, so a lease published at or before it holds a directory
-    /// the path does not name, and its mutations are refused until the root
-    /// reads the path again.
+    /// observation reads the path's identity again. A lease published at or
+    /// before it holds a directory the path did not open, so its mutations are
+    /// refused until then. A release reads no path, so it neither records nor
+    /// discards this.
     unavailable: Option<u64>,
+    /// The epoch of the newest observation that read the path's identity. A
+    /// failed open observed before it is older evidence than that reading and
+    /// reports nothing; a release advances the epoch without reading the path
+    /// and leaves this where it was.
+    verified: Option<u64>,
 }
 impl Root {
     /// A root that holds `handle` as its first directory.
     fn held(handle: File) -> Self {
+        let served = native::root_identity(&handle).ok();
         Self {
-            served: native::root_identity(&handle).ok(),
+            verified: served.is_some().then_some(0),
+            served,
             handle: Some(handle),
             revision: 0,
             epoch: 0,
@@ -204,15 +211,20 @@ impl Root {
         let observed = native::root_identity(&handle);
         self.serve_observed(handle, observed);
     }
-    /// Records an observation at `epoch` that could not open the path, unless a
-    /// newer one published already: the slot then holds no descriptor, and a
-    /// lease locked before this does not write through the directory it kept
-    /// until an observation reads the path again.
+    /// Records an observation at `epoch` that could not open the path: a lease
+    /// published at or before it holds a directory the path did not open, and
+    /// its mutations are refused until an observation reads the path's identity
+    /// again. A release or another failed open that moved the slot since does
+    /// not discard that evidence; an identity read after `epoch` does. The slot
+    /// drops the descriptor it holds only while it is still where this
+    /// observation found it.
     fn unopened(&mut self, epoch: u64) {
+        if self.verified.is_none_or(|verified| verified <= epoch) {
+            self.unavailable = self.unavailable.max(Some(epoch));
+        }
         if self.epoch == epoch {
             self.handle = None;
             self.epoch += 1;
-            self.unavailable = Some(self.epoch);
         }
     }
     /// Serves `handle`, a directory opened at the root's path, with the identity
@@ -226,6 +238,7 @@ impl Root {
     /// again.
     fn serve_observed(&mut self, handle: File, observed: io::Result<native::RootIdentity>) {
         if observed.is_ok() {
+            self.verified = Some(self.epoch);
             self.unavailable = None;
         }
         let same = same_directory(self.served, &observed);
@@ -304,8 +317,8 @@ struct Lease {
     path: FilePath,
     /// What the lease locked. A mutation reaches only the directory served then:
     /// no revision when the root serves another directory than the one its open
-    /// reached, and no admission once the root's path showed no directory after
-    /// the lease was published.
+    /// reached, and no admission once an observation could not open the root's
+    /// path after the lease was published.
     locked: Locked,
     resources: Mutex<Option<LeaseResources>>,
 }
@@ -713,9 +726,10 @@ impl FileStorage {
     /// it; it is bound to no revision, and its mutations are refused, only when
     /// the root serves another directory. A path an observation could not open
     /// refuses the mutations of every lease published at or before it, until an
-    /// observation reads the path's identity again: the path showed no
-    /// directory, so those leases hold a directory it does not name. A read
-    /// keeps the file it pinned and passes [`admit`](Self::admit).
+    /// observation reads the path's identity again: the root cannot tell that
+    /// those leases still hold a directory the path names. A release reads no
+    /// path and leaves that state as it was. A read keeps the file it pinned and
+    /// passes [`admit`](Self::admit).
     fn admit_locked(
         self: &Arc<Self>,
         lease: &Lease,
@@ -732,7 +746,7 @@ impl FileStorage {
             .is_some_and(|epoch| lease.locked.epoch <= epoch)
         {
             return Err(FileStorageError::InvalidPath(
-                "the root's path showed no directory since the lease was locked",
+                "the root's path did not open after the lease was locked",
             ));
         }
         if Some(slot.revision) != lease.locked.revision {
@@ -1171,28 +1185,97 @@ mod root_publication {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// An open that a release overtook records nothing: the newest observation
-    /// decides what the root holds, so a stale one never reports the path as
-    /// unavailable.
-    #[test]
-    fn an_overtaken_open_does_not_record_an_unavailable_path() {
+    /// An open that could not read the path reports it even when a release
+    /// moved the slot meanwhile: the release read no path, so it is no evidence
+    /// that the path reaches the directory the lease holds. Reading the path's
+    /// identity again is, and admits the lease locked before the failed open.
+    #[tokio::test]
+    async fn an_unavailable_path_outlives_a_release() {
         let (directory, storage) = storage();
         let path = directory.join("project");
         let cancel = CancellationToken::new();
         let index = storage.register_observed(&path, &cancel).unwrap();
-        let (_, epoch) = storage.observe(&path).expect("a registered root");
+        let file = storage.path(index, "state.json").unwrap();
+        let mut lease = storage.lock(&file, &cancel).await.unwrap();
+        let (_, failed) = storage.observe(&path).expect("a registered root");
         storage.release_root(index);
-        let mut state = storage.state.lock().unwrap();
-        let slot = &mut state.roots[index];
-        let released = slot.epoch;
-        slot.unopened(epoch);
-        assert_eq!(
-            slot.epoch, released,
-            "the release is the newest observation"
+        let (_, observed) = storage.observe(&path).expect("a registered root");
+        storage.release_root(index);
+        let moved = directory.join("moved");
+        std::fs::rename(&path, &moved).unwrap();
+        let released = {
+            let mut state = storage.state.lock().unwrap();
+            let slot = &mut state.roots[index];
+            let released = slot.epoch;
+            slot.unopened(observed);
+            released
+        };
+        assert!(
+            matches!(
+                lease.replace(b"second".to_vec(), None, &cancel).await,
+                Err(FileStorageError::InvalidPath(_))
+            ),
+            "a lease locked before the path could not be opened does not write into the directory the path no longer names"
         );
         assert!(
+            matches!(
+                lease.backup("bak", None, &cancel).await,
+                Err(FileStorageError::InvalidPath(_))
+            ),
+            "a backup through it is refused too"
+        );
+        {
+            let state = storage.state.lock().unwrap();
+            let slot = &state.roots[index];
+            assert_eq!(slot.epoch, released, "the failed open published nothing");
+            assert_eq!(
+                slot.unavailable,
+                Some(observed),
+                "the failed open still reports the path"
+            );
+        }
+        {
+            let mut state = storage.state.lock().unwrap();
+            let slot = &mut state.roots[index];
+            slot.unopened(failed);
+            assert_eq!(
+                slot.unavailable,
+                Some(observed),
+                "an older failed open does not weaken the evidence"
+            );
+        }
+        assert_eq!(std::fs::read(moved.join("state.json")).unwrap(), b"first");
+        std::fs::rename(&moved, &path).unwrap();
+        assert_eq!(storage.register_observed(&path, &cancel).unwrap(), index);
+        lease
+            .replace(b"second".to_vec(), None, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(path.join("state.json")).unwrap(), b"second");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// An observation that read the path's identity keeps a failed open it
+    /// overtook from reporting the path: the root verified the path after that
+    /// observation, so the lease locked before it is not refused.
+    #[test]
+    fn an_identity_read_after_a_failed_open_supersedes_it() {
+        let (directory, storage) = storage();
+        let path = directory.join("project");
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
+        let (_, failed) = storage.observe(&path).expect("a registered root");
+        storage.release_root(index);
+        let (_, read) = storage.observe(&path).expect("a registered root");
+        assert!(read > failed, "the release moved the slot");
+        let opened = native::open_root(&path).unwrap();
+        let mut state = storage.state.lock().unwrap();
+        let slot = &mut state.roots[index];
+        slot.serve(Ok(opened));
+        slot.unopened(failed);
+        assert!(
             slot.unavailable.is_none(),
-            "an overtaken open does not report the path"
+            "an identity read after the failed open verified the path"
         );
         std::fs::remove_dir_all(&directory).unwrap();
     }

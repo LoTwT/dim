@@ -64,13 +64,14 @@ directory, leaves the lease valid; an identity that cannot be read leaves the
 generation where it was, because the storage cannot tell whether the path names
 another directory. An observation that cannot open the path leaves it where it
 was too, and additionally refuses the mutations of the leases published at or
-before it until an observation reads the path's identity again: the path showed
-no directory, so those leases hold a directory it does not name. Their reads
-keep the files they pinned, and dropping them releases their locks. An open that
-a release or another registration overtook binds the generation of the directory
-it reaches when the root serves it, so two opens of one directory do not
-invalidate each other. A lease's read keeps the file it pinned, and dropping the
-lease releases its physical lock either way.
+before it until an observation reads the path's identity again: the root cannot
+tell that those leases still hold a directory the path names. A release does not
+clear that state, because it reads no path. Their reads keep the files they
+pinned, and dropping them releases their locks. An open that a release or
+another registration overtook binds the generation of the directory it reaches
+when the root serves it, so two opens of one directory do not invalidate each
+other. A lease's read keeps the file it pinned, and dropping the lease releases
+its physical lock either way.
 
 The App Server releases a project's root once the last Session loaded from its
 cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
