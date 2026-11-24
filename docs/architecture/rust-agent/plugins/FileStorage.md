@@ -26,6 +26,25 @@ opens leave `OBJECT_ATTRIBUTES.Attributes` at 0 so the actual directory's
 case-sensitivity setting governs lookup; forcing `OBJ_CASE_INSENSITIVE` or
 folding names would break case-sensitive directories and their aliases.
 
+## Authorized roots
+
+A root is its index and its path. Both are append-only: an index never comes to
+mean another directory, and a `FilePath` names its root for its generation's
+lifetime. Registering an already registered path opens the directory the path
+names now and keeps the index. The descriptor held for an earlier directory at
+that path is dropped when the two differ, and when the path no longer names a
+directory at all; a path that cannot be opened for another reason keeps its
+index and holds no descriptor.
+
+`release_root(index)` drops the descriptor and keeps the index, its path and
+every `FilePath` naming it. The next operation opens the directory the path
+names then, so a release withdraws no authorization, and an index never comes to
+mean a different directory: an idle root simply costs no descriptor. The App
+Server releases a project's root when a Session there closes or is unloaded; a
+detach leaves its Session loaded and releases nothing. Close still releases every
+descriptor. A reopened descriptor is not revalidated against an earlier one,
+because the path is the authorization and the authorization did not change.
+
 ## Bounded reads
 
 `read_limited(path, limit, cancel)` preserves the same authorized-handle traversal and cancellation as `read`. It checks the opened file's length before allocating contents, then checks each chunk before extending the buffer to cover concurrent growth. Exceeding the byte limit returns `Io(InvalidData)` without partial bytes or a write. The lease's own `read_limited(limit, cancel)` applies the same rule under the held lock; `read` is its unbounded case. The business caller chooses its byte limit.
@@ -315,7 +334,11 @@ and starts again from its target if a directory it returns to was deleted.
 
 [file_storage_flow.rs](../../../../crates/dim-agent-capabilities/tests/file_storage_flow.rs):
 `late_roots_preserve_indices_and_generation_boundaries_on_reload`,
-`file_storage_flow` (path, lock, permission and platform checks),
+`a_recreated_directory_at_a_registered_path_is_read_through_it` (a directory
+replaced at a registered path keeps the index and the new directory serves the
+same `FilePath`), `a_released_root_opens_the_directory_its_path_names` (the
+released descriptor is closed, and the next operation opens the directory the
+path names then), `file_storage_flow` (path, lock, permission and platform checks),
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
 marker, an existing file or link, cancellation),

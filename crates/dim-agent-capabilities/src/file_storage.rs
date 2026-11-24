@@ -47,6 +47,16 @@ pub mod testing {
         let reader = storage.state.lock().unwrap().readers[&id].reader.clone();
         move || reader.strong_count() == 0
     }
+
+    pub fn root_held(storage: &FileStorage, root: usize) -> bool {
+        storage
+            .state
+            .lock()
+            .unwrap()
+            .roots
+            .get(root)
+            .is_some_and(Option::is_some)
+    }
 }
 
 const RESOURCE_PREFIX: &str = ".dim-file-storage-";
@@ -139,7 +149,9 @@ fn reserved_name(name: &OsStr) -> bool {
 }
 
 struct State {
-    roots: Vec<File>,
+    /// One slot per authorized root, in registration order. A released slot
+    /// holds no descriptor until an operation opens its path again.
+    roots: Vec<Option<File>>,
     active: usize,
     leases: HashMap<Uuid, LeaseEntry>,
     readers: HashMap<Uuid, ReaderEntry>,
@@ -278,7 +290,7 @@ impl FileStorage {
             .lock()
             .unwrap()
             .iter()
-            .map(|root| native::open_root(root))
+            .map(|root| native::open_root(root).map(Some))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             generation: Uuid::new_v4(),
@@ -297,6 +309,10 @@ impl FileStorage {
 
     /// The trusted host supplies a canonical absolute directory. Root indices
     /// are append-only and the Plugin retains their configuration across reloads.
+    /// A registered path keeps its index and names the directory it names now:
+    /// registering it again opens that directory, replacing the descriptor held
+    /// for an earlier one at the path, and a path that no longer names a
+    /// directory holds none. What an index means therefore never changes.
     pub async fn register_root(
         self: &Arc<Self>,
         root: PathBuf,
@@ -305,15 +321,6 @@ impl FileStorage {
         let operation = {
             let mut state = self.state.lock().unwrap();
             self.check(cancel)?;
-            if let Some(index) = self
-                .roots
-                .lock()
-                .unwrap()
-                .iter()
-                .position(|path| path == &root)
-            {
-                return Ok(index);
-            }
             state.active += 1;
             Operation(self.clone())
         };
@@ -322,19 +329,77 @@ impl FileStorage {
         tokio::task::spawn_blocking(move || {
             let _operation = operation;
             owner.check(&cancel)?;
-            let handle = native::open_root(&root)?;
+            let opened = native::open_root(&root);
             let mut state = owner.state.lock().unwrap();
             owner.check(&cancel)?;
             let mut roots = owner.roots.lock().unwrap();
             if let Some(index) = roots.iter().position(|path| path == &root) {
+                let Some(slot) = state.roots.get_mut(index) else {
+                    return Err(FileStorageError::InvalidPath("unknown authorized root"));
+                };
+                match opened {
+                    Ok(handle) => {
+                        let held = match &*slot {
+                            Some(held) => native::same_identity(held, &handle)?,
+                            None => false,
+                        };
+                        if !held {
+                            *slot = Some(handle);
+                        }
+                    }
+                    // The path does not confirm the held directory. Holding none
+                    // and opening it again on the next operation keeps an index
+                    // from serving a directory its path no longer names.
+                    Err(_) => *slot = None,
+                }
                 return Ok(index);
             }
+            let handle = opened?;
             let index = roots.len();
-            state.roots.push(handle);
+            state.roots.push(Some(handle));
             roots.push(root);
             Ok(index)
         })
         .await?
+    }
+
+    /// Releases the descriptor held for `root`. The index, its path and every
+    /// `FilePath` naming it stay valid: the next operation opens the directory
+    /// the path names then. An index this generation does not hold is unchanged.
+    pub fn release_root(&self, root: usize) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(slot) = state.roots.get_mut(root) {
+            *slot = None;
+        }
+    }
+
+    /// The descriptor for `root`: the held one, or the directory its path names
+    /// now when it was released. A released root keeps its index and path, so a
+    /// reopened descriptor is the same authorization as the one released.
+    fn root_handle(&self, root: usize) -> Result<File> {
+        let path = {
+            let state = self.state.lock().unwrap();
+            match state.roots.get(root) {
+                Some(Some(handle)) => return Ok(handle.try_clone()?),
+                Some(None) => {}
+                None => return Err(FileStorageError::InvalidPath("unknown authorized root")),
+            }
+            self.roots
+                .lock()
+                .unwrap()
+                .get(root)
+                .cloned()
+                .ok_or(FileStorageError::InvalidPath("unknown authorized root"))?
+        };
+        let handle = native::open_root(&path)?;
+        let mut state = self.state.lock().unwrap();
+        let Some(slot) = state.roots.get_mut(root) else {
+            return Err(FileStorageError::InvalidPath("unknown authorized root"));
+        };
+        if slot.is_none() {
+            *slot = Some(handle.try_clone()?);
+        }
+        Ok(handle)
     }
 
     pub fn root_path(&self, root: usize) -> Result<PathBuf> {
@@ -450,32 +515,36 @@ impl FileStorage {
         }
     }
 
+    /// The checks an accepted operation passes before it runs, with its
+    /// operation guard: the storage is open, the caller is not cancelled and
+    /// `path` belongs to this generation.
+    fn admit(self: &Arc<Self>, path: &FilePath, cancel: &CancellationToken) -> Result<Operation> {
+        let mut state = self.state.lock().unwrap();
+        self.check(cancel)?;
+        if path.generation != self.generation {
+            return Err(FileStorageError::InvalidPath(
+                "path belongs to another generation",
+            ));
+        }
+        state.active += 1;
+        Ok(Operation(self.clone()))
+    }
+
     async fn run<T: Send + 'static>(
         self: &Arc<Self>,
         path: &FilePath,
         cancel: &CancellationToken,
         action: impl FnOnce(File, Arc<Self>, CancellationToken) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let (root, operation) = {
-            let mut state = self.state.lock().unwrap();
-            self.check(cancel)?;
-            if path.generation != self.generation {
-                return Err(FileStorageError::InvalidPath(
-                    "path belongs to another generation",
-                ));
-            }
-            let root = state.roots[path.root].try_clone()?;
-            state.active += 1;
-            (root, Operation(self.clone()))
-        };
+        let operation = self.admit(path, cancel)?;
+        let root = path.root;
         let owner = self.clone();
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
             let _operation = operation;
-            (move || {
-                owner.check(&cancel)?;
-                action(root, owner, cancel)
-            })()
+            owner.check(&cancel)?;
+            let root = owner.root_handle(root)?;
+            action(root, owner, cancel)
         })
         .await?
     }
@@ -762,18 +831,20 @@ impl FileLease {
     ) -> Result<T> {
         let lease = self.0.as_ref().expect("live file lease").clone();
         let owner = lease.owner.upgrade().ok_or(FileStorageError::Closed)?;
-        owner
-            .run(&lease.path.clone(), cancel, move |_, owner, cancel| {
-                let resources = lease.resources.lock().unwrap();
-                let resource = resources.as_ref().ok_or(FileStorageError::Closed)?;
-                let parent = resource.parent.try_clone()?;
-                let name = resource.name.clone();
-                owner.check(&cancel)?;
-                let result = action(parent, name, owner, cancel);
-                drop(resources);
-                result
-            })
-            .await
+        let operation = owner.admit(&lease.path, cancel)?;
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            let resources = lease.resources.lock().unwrap();
+            let resource = resources.as_ref().ok_or(FileStorageError::Closed)?;
+            let parent = resource.parent.try_clone()?;
+            let name = resource.name.clone();
+            owner.check(&cancel)?;
+            let result = action(parent, name, owner, cancel);
+            drop(resources);
+            result
+        })
+        .await?
     }
 
     pub async fn read(&mut self, cancel: &CancellationToken) -> Result<Vec<u8>> {
