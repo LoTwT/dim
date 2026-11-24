@@ -508,11 +508,6 @@ impl FileStorage {
         let Some(slot) = state.roots.get_mut(root) else {
             return Err(FileStorageError::InvalidPath("unknown authorized root"));
         };
-        if slot.epoch != epoch {
-            // A registration or release changed the root while this opened its
-            // path: the operation reaches what it opened and publishes nothing.
-            return Ok((handle, None));
-        }
         let revision = slot.served_at(epoch, Ok(handle.try_clone()?));
         Ok((handle, revision))
     }
