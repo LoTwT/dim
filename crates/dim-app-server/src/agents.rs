@@ -688,13 +688,20 @@ impl AgentIndex {
             }
             drop(slot.gate.clone().lock_owned().await);
         }
+        let mut cwd = None;
         let result = match self.session(id) {
-            Some((_, session)) => session.close().await,
+            Some((_, session)) => {
+                cwd = Some(session.config().cwd.clone());
+                session.close().await
+            }
             None => match self
                 .host_by_session(id)
                 .and_then(|host| host.agent.get_session(id))
             {
-                Some(session) => session.closed().await,
+                Some(session) => {
+                    cwd = Some(session.config().cwd.clone());
+                    session.closed().await
+                }
                 None => Ok(()),
             },
         };
@@ -703,7 +710,20 @@ impl AgentIndex {
             hold.wait().await;
         }
         self.remove_version(id);
+        if let Some(cwd) = cwd {
+            self.release_project(&cwd);
+        }
         result
+    }
+    /// Gives up a project's root descriptor after a Session there stops using
+    /// it. A close or an idle unload ends the Session's use of the directory;
+    /// a detach does not, because it leaves the Session loaded. The
+    /// authorization and its index stay, and the next operation opens the
+    /// directory again, so releasing never withdraws access.
+    fn release_project(&self, cwd: &str) {
+        if let Some(settings) = &self.settings {
+            settings.release_project(Path::new(cwd));
+        }
     }
     /// Sessions can also close through the runtime fault supervisor.
     /// Versions of a closing Agent stay until its settlement forgets them.
@@ -1086,6 +1106,7 @@ impl AgentIndex {
                     match session.unload_if_idle().await {
                         Ok(true) => {
                             tracing::debug!(session_id = id, "Idle Session unloaded");
+                            self.release_project(&session.config().cwd);
                             continue;
                         }
                         Ok(false) => {}

@@ -356,7 +356,12 @@ directories, a marker whose release failed) and
 stack, where recursion overflowed at a few hundred levels). The unit
 test `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the
 owner module drives the lock, removal and temporary-file interleavings that the
-public API cannot produce reliably.
+public API cannot produce reliably. The App Server flows
+`an_unloaded_session_releases_its_project_root` and
+`a_closed_session_releases_its_project_root`
+([idle_unload.rs](../../../../crates/dim-app-server/tests/transport_flow/idle_unload.rs))
+check that a Session ending its use of a project releases the descriptor while
+the authorization keeps its index.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

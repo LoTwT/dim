@@ -167,6 +167,9 @@ impl rutis::host::DynPlugin for HeldRulesPart {
 struct Setup {
     database: Option<std::path::PathBuf>,
     home: Option<std::path::PathBuf>,
+    /// The native execution home: Settings and its store, without a product
+    /// home.
+    target_home: Option<std::path::PathBuf>,
     typescript: Option<dim_app_server::session_typescript::SessionTypeScriptConfig>,
     store: Option<Arc<dyn dim_agent_runtime::TimelineStore>>,
     controls: Option<tokio::sync::mpsc::UnboundedSender<super::session_typescript::Control>>,
@@ -299,6 +302,7 @@ async fn serve_with(setup: Setup) -> Served {
         database_path: setup.database,
         model_catalog: setup.models,
         product_home: setup.home,
+        target_home: setup.target_home,
         session_typescript: setup.typescript,
         unix_path: Some(
             std::path::PathBuf::from("/tmp")

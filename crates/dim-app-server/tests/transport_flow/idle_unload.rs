@@ -4,8 +4,10 @@
 //! the loaded count in `agent.list`, or a call's reply.
 use super::super::deletion::eventually;
 use super::*;
+use dim_agent_capabilities::file_storage::{FileStorage, testing};
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
+use dim_app_server::settings::SettingsService;
 use rutis::host::CtxHost;
 use std::sync::Weak;
 use tokio::sync::Notify;
@@ -1149,6 +1151,121 @@ async fn the_catalog_sequence_stays_the_roots_across_an_idle_unload() {
         (1, false),
         "the catalog read restored nothing"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A server with Settings and its store in `store`'s directory, which
+/// authorizes a Session's project, and a configured model so a client can
+/// create Sessions.
+async fn serve_with_project(store: &Store, grace: Duration) -> Served {
+    use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
+    let models = Arc::new(
+        AimuxModels::from_config(
+            serde_json::from_value::<ModelConfigFile>(json!({
+                "defaultModel":{"providerId":"local","modelId":"alpha"},
+                "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                    "models":[{"id":"alpha","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":64}}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    serve_with(Setup {
+        target_home: Some(store.0.clone()),
+        models: Some(models),
+        grace: Some(grace),
+        ..Default::default()
+    })
+    .await
+}
+
+/// A Session that stops using a project gives up its root descriptor; the
+/// authorization keeps the index, and the next operation opens the directory
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unloaded_session_releases_its_project_root() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, GRACE).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    let root = settings
+        .project_root(&project)
+        .expect("the creation authorized the project");
+    assert!(
+        testing::root_held(&files, root),
+        "the Session holds the project's directory"
+    );
+    eventually("the Session unloaded", || !testing::root_held(&files, root)).await;
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the unload kept the authorization"
+    );
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        settings.authorize_project(project, &cancel).await.unwrap(),
+        root
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the next registration opened the directory again"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A close ends the Session's use of its project the same way an unload does,
+/// and keeps the authorization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_session_releases_its_project_root() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let root = settings
+        .project_root(&project)
+        .expect("the creation authorized the project");
+    assert!(testing::root_held(&files, root));
+    assert_ok(&client.rpc("session.close", json!({"sessionId": id})).await);
+    assert!(
+        !testing::root_held(&files, root),
+        "the close released the project's descriptor"
+    );
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the close kept the authorization"
+    );
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        settings.authorize_project(project, &cancel).await.unwrap(),
+        root
+    );
+    assert!(testing::root_held(&files, root));
     server.shutdown();
     server.join().await.unwrap();
 }
