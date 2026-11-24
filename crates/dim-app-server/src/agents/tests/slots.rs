@@ -552,3 +552,84 @@ impl DynPlugin for HeldRestorePart {
         })
     }
 }
+
+/// A Session that is being restored owns its project's root from the load that
+/// authorizes that project, so a close of another Session on the same cwd does
+/// not release the root before the restore finishes: the release follows the
+/// last owner's settlement, not a snapshot of the loaded Sessions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closing_session_does_not_release_the_root_a_restore_owns() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let store = Store::new();
+    let held = HeldRestore::default();
+    let mut builder = builder();
+    held.install(&mut builder);
+    let models = Arc::new(
+        dim_agent_aimux::AimuxModels::from_config(
+            serde_json::from_value::<dim_agent_aimux::config::ModelConfigFile>(json!({
+                "defaultModel":{"providerId":"local","modelId":"alpha"},
+                "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                    "models":[{"id":"alpha","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":64}}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let server = crate::serve(
+        builder,
+        ServerConfig {
+            target_home: Some(store.0.clone()),
+            model_catalog: Some(models),
+            idle_unload_after: Duration::from_secs(3600),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap();
+    let first = super::launch(&index, None, &project).await;
+    let second = super::launch(&index, None, &project).await;
+    let root = settings
+        .project_root(&project)
+        .expect("the launches authorized the project");
+    assert!(testing::root_held(&files, root));
+
+    // The first Session stays in use, so the idle pass unloads only the second.
+    let using = index.acquire(&first).await.unwrap();
+    let mut marks = Marks::new();
+    settle(&index, &mut marks, 1).await;
+    assert!(server.agent().unwrap().get_session(&second).is_none());
+    assert!(testing::root_held(&files, root));
+
+    // The second Session restores while the first closes: the restore owns the
+    // cwd before it loads, so the root stays.
+    held.hold(&second);
+    let restoring = tokio::spawn({
+        let index = index.clone();
+        let second = second.clone();
+        async move { index.acquire(&second).await }
+    });
+    held.entered().await;
+    drop(using);
+    index.close_session(&first).await.unwrap();
+    assert!(
+        testing::root_held(&files, root),
+        "the Session the restore owns keeps the project's root"
+    );
+    held.release();
+    let restored = restoring.await.unwrap().unwrap();
+    assert!(testing::root_held(&files, root));
+    drop(restored);
+    index.close_session(&second).await.unwrap();
+    assert!(
+        !testing::root_held(&files, root),
+        "the last Session's close released the project's descriptor"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

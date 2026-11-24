@@ -1427,3 +1427,91 @@ async fn one_of_two_sessions_in_a_project_keeps_its_root_in_use() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// The project's directory is replaced while a Session is loaded: the next
+/// creation registers the path again and serves the new directory, so the
+/// settings read and write reach it instead of the directory the path no
+/// longer names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replaced_project_directory_is_served_after_a_session_is_created() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    let root = settings
+        .project_root(&project)
+        .expect("the creation authorized the project");
+    assert!(testing::root_held(&files, root));
+    let cancel = CancellationToken::new();
+    let scope = SettingsScope::Project(root);
+    let missing = settings.read::<McpSettings>(scope, &cancel).await.unwrap();
+    settings
+        .update(
+            scope,
+            &missing.revision,
+            McpSettings::from_value(json!({"mcpServers": {}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        settings
+            .read::<McpSettings>(scope, &cancel)
+            .await
+            .unwrap()
+            .revision,
+        "missing",
+        "the first directory holds the written document"
+    );
+
+    std::fs::remove_dir_all(&project).unwrap();
+    std::fs::create_dir(&project).unwrap();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": project, "tools": ["confirm"], "permissionPolicy": host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the registration kept the authorization and its index"
+    );
+    let replaced = settings.read::<McpSettings>(scope, &cancel).await.unwrap();
+    assert_eq!(
+        replaced.revision, "missing",
+        "the root serves the replacement directory, which holds no document"
+    );
+    settings
+        .update(
+            scope,
+            &replaced.revision,
+            McpSettings::from_value(json!({"mcpServers": {}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        settings
+            .read::<McpSettings>(scope, &cancel)
+            .await
+            .unwrap()
+            .revision,
+        "missing",
+        "the replacement directory holds the document written through the root"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

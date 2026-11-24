@@ -269,6 +269,11 @@ struct Inner {
     closing: HashMap<String, Arc<AgentHost>>,
     /// Session id -> owning agent id and negotiated protocol version.
     versions: HashMap<String, (String, u32)>,
+    /// Session id -> the cwd whose project root this process holds for it. A
+    /// Session is an owner from the load that authorizes its project until its
+    /// settlement, and the root is released once the last owner of its cwd
+    /// settles.
+    owners: HashMap<String, String>,
     /// Loader instances of the Agents this index created, until they close.
     /// They outlive the index's entries: an unloading scope forgets its
     /// entry, and the index closes the instance when it unloads.
@@ -289,6 +294,17 @@ impl Inner {
         self.sessions
             .get(id)
             .map_or(0, |slot| slot.uses.load(Ordering::Acquire))
+    }
+    /// The cwds whose root this process holds for Session `id`.
+    fn settle(&mut self, id: &str) -> Option<String> {
+        self.owners.remove(id)
+    }
+    fn own(&mut self, id: &str, cwd: &str) {
+        self.owners.insert(id.to_owned(), cwd.to_owned());
+    }
+    /// Whether a Session still owns `cwd`.
+    fn owns(&self, cwd: &str) -> bool {
+        self.owners.values().any(|owner| owner == cwd)
     }
     /// The Agent owning Session `id`: its recorded owner, live or closing,
     /// or the live Agent that has it loaded.
@@ -371,6 +387,20 @@ impl AgentDirectory {
         inner.agents.remove(agent_id);
         inner.pending.remove(agent_id);
         inner.versions.retain(|_, (owner, _)| owner != agent_id);
+    }
+    /// A loaded Session owns the cwd whose project root this process holds for
+    /// it, from the load that authorizes that project until its settlement.
+    fn own(&self, id: &str, cwd: &str) {
+        self.inner.lock().expect("agent index").own(id, cwd);
+    }
+    /// Ends a Session's ownership; answers the cwd it owned, or none when it
+    /// owned none.
+    fn settle(&self, id: &str) -> Option<String> {
+        self.inner.lock().expect("agent index").settle(id)
+    }
+    /// Whether a Session still owns `cwd`.
+    fn owns(&self, cwd: &str) -> bool {
+        self.inner.lock().expect("agent index").owns(cwd)
     }
 }
 /// Provides the [`AgentDirectory`] and the `sessions` service. Neither
@@ -688,20 +718,13 @@ impl AgentIndex {
             }
             drop(slot.gate.clone().lock_owned().await);
         }
-        let mut cwd = None;
         let result = match self.session(id) {
-            Some((_, session)) => {
-                cwd = Some(session.config().cwd.clone());
-                session.close().await
-            }
+            Some((_, session)) => session.close().await,
             None => match self
                 .host_by_session(id)
                 .and_then(|host| host.agent.get_session(id))
             {
-                Some(session) => {
-                    cwd = Some(session.config().cwd.clone());
-                    session.closed().await
-                }
+                Some(session) => session.closed().await,
                 None => Ok(()),
             },
         };
@@ -710,34 +733,31 @@ impl AgentIndex {
             hold.wait().await;
         }
         self.remove_version(id);
-        if let Some(cwd) = cwd {
-            self.release_project(&cwd);
-        }
+        self.settle_project(id);
         result
     }
-    /// Gives up a project's root descriptor once no loaded Session uses its
-    /// cwd. A close, a delete and an idle unload end one Session's use; a
-    /// detach does not, because the Session stays loaded and may still use the
-    /// project. The authorization and its index stay, and the next operation
-    /// opens the directory again, so releasing never withdraws access. An
-    /// authorization no Session used, from the hook catalog, MCP management or
-    /// a create or restore that failed before loading its Session, reports no
-    /// Session end and keeps its descriptor until another end on the same cwd
-    /// or the process closes. A Session the runtime fault supervisor closes
-    /// reports no end here either; its descriptor stays until another end on
-    /// the same cwd or the process.
-    fn release_project(&self, cwd: &str) {
-        let Some(settings) = &self.settings else {
+    /// Gives up a project's root descriptor once the last Session loaded from
+    /// its cwd settles. Each load records its Session as an owner of the cwd
+    /// before the Session appears in its Agent's list, so a close is answered by
+    /// the owners that remain rather than by a snapshot of the visible hosts.
+    /// The authorization and its index stay, and the next operation opens the
+    /// directory again, so releasing never withdraws access. A detach ends no
+    /// ownership, because the Session stays loaded and may still use the
+    /// project. An authorization no Session used, from the hook catalog, MCP
+    /// management or a create or restore that failed before loading its
+    /// Session, owns nothing and keeps its descriptor until the next settlement
+    /// on the same cwd or the process closes. A Session the runtime fault
+    /// supervisor closes reports no settlement of its own; its ownership stays
+    /// until the process closes.
+    fn settle_project(&self, session_id: &str) {
+        let Some(cwd) = self.directory.settle(session_id) else {
             return;
         };
-        let in_use = self.hosts().iter().any(|host| {
-            host.agent
-                .sessions()
-                .iter()
-                .any(|session| session.config().cwd == cwd)
-        });
-        if !in_use {
-            settings.release_project(Path::new(cwd));
+        if self.directory.owns(&cwd) {
+            return;
+        }
+        if let Some(settings) = &self.settings {
+            settings.release_project(Path::new(&cwd));
         }
     }
     /// Sessions can also close through the runtime fault supervisor.
@@ -1029,11 +1049,12 @@ impl AgentIndex {
                     }
                     if let Some(settings) = &self.settings {
                         settings
-                            .authorize_project(config.cwd.into(), &self.stopping)
+                            .authorize_project(config.cwd.clone().into(), &self.stopping)
                             .await
                             .map_err(|error| {
                                 AgentError::fault("project authorization", error.to_string())
                             })?;
+                        self.directory.own(id, &config.cwd);
                     }
                 }
                 let version = self
@@ -1041,35 +1062,45 @@ impl AgentIndex {
                     .unwrap_or(crate::protocol::PROTOCOL_VERSION);
                 let host = host.clone();
                 let slot = slot.clone();
-                let id = id.to_owned();
+                let restoring = id.to_owned();
                 let ctx = self
                     .ctx
                     .get()
                     .expect("AgentsPlugin apply sets its context")
                     .clone();
-                tokio::spawn(async move {
+                let restored = tokio::spawn(async move {
                     let session = host
                         .agent
-                        .restore_session_for_version(id.clone(), version)
+                        .restore_session_for_version(restoring.clone(), version)
                         .await?;
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
                         // this restore ran: release what it loaded and refuse
                         // it.
                         if let Err(error) = session.close().await {
-                            tracing::warn!(%error, session_id = %id, "Restored Session close failed");
+                            tracing::warn!(%error, session_id = %restoring, "Restored Session close failed");
                         }
-                        return Err(AgentError::Closed(id));
+                        return Err(AgentError::Closed(restoring));
                     }
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
-                        session_id: id,
+                        session_id: restoring,
                     })
                     .await?;
                     Ok::<_, AgentError>((session, gate, activity))
                 })
                 .await
-                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))??
+                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))
+                .and_then(|restored| restored);
+                match restored {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        // The restore authorized the project but loaded no
+                        // Session: its ownership ends with this refusal.
+                        self.settle_project(id);
+                        return Err(error);
+                    }
+                }
             }
             None => return Err(AgentError::Closed(id.into())),
         };
@@ -1121,7 +1152,7 @@ impl AgentIndex {
                     match session.unload_if_idle().await {
                         Ok(true) => {
                             tracing::debug!(session_id = id, "Idle Session unloaded");
-                            self.release_project(&session.config().cwd);
+                            self.settle_project(id);
                             continue;
                         }
                         Ok(false) => {}
@@ -1537,16 +1568,19 @@ impl AgentIndex {
         let step = step(id.clone());
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
+        let directory = self.directory.clone();
+        let owner = id.clone();
         (
             id,
             Box::pin(async move {
                 if let Some(settings) = settings {
                     settings
-                        .authorize_project(cwd.into(), &stopping)
+                        .authorize_project(cwd.clone().into(), &stopping)
                         .await
                         .map_err(|error| {
                             AgentError::fault("project authorization", error.to_string())
                         })?;
+                    directory.own(&owner, &cwd);
                 }
                 step.await
             }),
@@ -1664,6 +1698,7 @@ impl AgentIndex {
             Err(_) => {
                 drop(gate);
                 drop(slot);
+                self.settle_project(id);
                 self.directory.inner.lock().expect("agent index").sweep();
             }
         }
@@ -1753,16 +1788,13 @@ impl AgentIndex {
         let loaded = self
             .host_by_session(id)
             .and_then(|host| host.agent.get_session(id));
-        let cwd = loaded.as_ref().map(|session| session.config().cwd.clone());
         if let Some(session) = &loaded {
             slot.closed.store(true, Ordering::Release);
             if let Err(error) = session.close().await {
                 tracing::error!(%error, session_id = id, "Session cleanup failed before its delete");
             }
         }
-        if let Some(cwd) = &cwd {
-            self.release_project(cwd);
-        }
+        self.settle_project(id);
         let unloaded = loaded.is_none() && !slot.closed.load(Ordering::Acquire);
         // The delete notice names the Session's owner even when this process
         // never loaded it: `session_owners` still holds the row, and the
@@ -2137,12 +2169,12 @@ impl AgentIndex {
                 .insert(agent_id.to_owned(), entry.host.clone());
             entry
         };
-        let cwds: Vec<String> = entry
+        let sessions: Vec<String> = entry
             .host
             .agent
             .sessions()
             .iter()
-            .map(|session| session.config().cwd.clone())
+            .map(|session| session.id().to_owned())
             .collect();
         let closed = entry.host.agent.close().await;
         let unloaded = entry.view.shutdown().await;
@@ -2158,8 +2190,8 @@ impl AgentIndex {
             .expect("agent index")
             .closing
             .remove(agent_id);
-        for cwd in cwds {
-            self.release_project(&cwd);
+        for session in sessions {
+            self.settle_project(&session);
         }
         unloaded.map_err(AgentOpError::Unload)?;
         closed.map_err(AgentOpError::Settle)
