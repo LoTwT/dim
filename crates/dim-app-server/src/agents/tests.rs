@@ -5,7 +5,7 @@
 //! Agent would. The hold exists only in this crate's unit tests, like the
 //! title-write hold of the storage flow tests.
 use super::{
-    AgentDirectory, AgentIndex, Inner,
+    AgentDirectory, AgentIndex, Inner, SessionRestored,
     sessions::{InputWrite, LaunchRequest, RawBlock},
 };
 use crate::ServerConfig;
@@ -82,6 +82,23 @@ fn config(directory: &Path) -> ServerConfig {
     ServerConfig {
         database_path: Some(directory.join("dimcode.sqlite")),
         ..Default::default()
+    }
+}
+/// A configuration whose process carries the Settings service, so loading a
+/// Session authorizes and owns the project of its cwd as the product does.
+fn product_config(directory: &Path) -> ServerConfig {
+    let models = dim_agent_aimux::AimuxModels::from_config(
+        serde_json::from_value::<dim_agent_aimux::config::ModelConfigFile>(json!({
+            "defaultModel":{"providerId":"local","modelId":"alpha"},
+            "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                "models":[{"id":"alpha","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":64}}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    ServerConfig {
+        model_catalog: Some(Arc::new(models)),
+        ..config(directory)
     }
 }
 
@@ -482,4 +499,80 @@ fn a_settlement_answers_only_the_last_owner_of_a_cwd() {
         "another Session still owns the project"
     );
     assert_eq!(directory.settle("second"), Some("/project".to_owned()));
+}
+
+/// Refuses the announcement of every restored Session, as a listener that
+/// cannot accept the load would.
+struct RefusesSessionRestored;
+impl rutis::host::DynPlugin for RefusesSessionRestored {
+    fn name(&self) -> &str {
+        "test.refused-announcement"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            ctx.on::<SessionRestored>(|_, _| async {
+                Err::<Option<()>, _>(rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    "the stored announcement is refused".into(),
+                )))
+            })?;
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+/// A restore that loaded the Session keeps the project ownership it registered
+/// when announcing that load fails: the Session is live and still uses the
+/// project, so its ownership ends with its close, not with the failed
+/// announcement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_loaded_session_keeps_its_project_when_its_announcement_fails() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = stored().await;
+    let mut refusing = builder();
+    refusing.plugin(|_| Ok(Box::new(RefusesSessionRestored)));
+    let server = crate::serve(refusing, product_config(&stored.directory))
+        .await
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+
+    let refused = index
+        .acquire(&stored.session)
+        .await
+        .err()
+        .expect("the announcement refuses the acquisition");
+    assert!(
+        refused.to_string().contains("session-restored"),
+        "the announcement failed: {refused}"
+    );
+    assert!(
+        index.session(&stored.session).is_some(),
+        "the runtime loaded the Session before the announcement"
+    );
+    let root = settings
+        .project_root(&stored.directory.canonicalize().unwrap())
+        .expect("the restore authorized the project");
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the Session that loaded owns its project"
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the project's root stays held for the Session that loaded"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
 }

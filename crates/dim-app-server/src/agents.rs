@@ -544,6 +544,21 @@ fn history_page_query(branch: &str, from: u64, through: u64, limit: usize) -> Ti
     }
 }
 
+/// Ends Session `session_id`'s ownership of the project its load registered,
+/// and releases the project's root once no Session owns it.
+fn settle_ownership(
+    directory: &AgentDirectory,
+    settings: Option<&SettingsService>,
+    session_id: &str,
+) {
+    let Some(cwd) = directory.settle(session_id) else {
+        return;
+    };
+    if let Some(settings) = settings {
+        settings.release_project(Path::new(&cwd));
+    }
+}
+
 impl AgentIndex {
     /// Whether this profile resolves Session models through a host.
     pub(crate) fn selects_models(&self) -> bool {
@@ -746,19 +761,14 @@ impl AgentIndex {
     /// lock. The authorization and its index stay, and the next operation opens
     /// the directory again, so releasing never withdraws access. A detach ends no
     /// ownership, because the Session stays loaded and may still use the
-    /// project. An authorization no Session used, from the hook catalog, MCP
-    /// management or a create or restore that failed before loading its
-    /// Session, owns nothing and keeps its descriptor until the next settlement
-    /// on the same cwd or the process closes. A Session the runtime fault
-    /// supervisor closes reports no settlement of its own; its ownership stays
-    /// until the process closes.
+    /// project. An authorization no Session used, from the hook catalog or MCP
+    /// management, owns nothing and keeps its descriptor until the next
+    /// settlement on the same cwd or the process closes. A restore that loaded
+    /// no Session settles the ownership it registered itself, before its caller
+    /// is answered. A Session the runtime fault supervisor closes reports no
+    /// settlement of its own; its ownership stays until the process closes.
     fn settle_project(&self, session_id: &str) {
-        let Some(cwd) = self.directory.settle(session_id) else {
-            return;
-        };
-        if let Some(settings) = &self.settings {
-            settings.release_project(Path::new(&cwd));
-        }
+        settle_ownership(&self.directory, self.settings.as_deref(), session_id);
     }
     /// Sessions can also close through the runtime fault supervisor.
     /// Versions of a closing Agent stay until its settlement forgets them.
@@ -1063,25 +1073,41 @@ impl AgentIndex {
                 let host = host.clone();
                 let slot = slot.clone();
                 let restoring = id.to_owned();
+                let directory = self.directory.clone();
+                let settings = self.settings.clone();
                 let ctx = self
                     .ctx
                     .get()
                     .expect("AgentsPlugin apply sets its context")
                     .clone();
-                let restored = tokio::spawn(async move {
-                    let session = host
+                tokio::spawn(async move {
+                    let session = match host
                         .agent
                         .restore_session_for_version(restoring.clone(), version)
-                        .await?;
+                        .await
+                    {
+                        Ok(session) => session,
+                        Err(error) => {
+                            // The restore authorized this Session's project
+                            // before it ran and loaded no Session: its ownership
+                            // ends with this refusal, whether or not a caller
+                            // still awaits this task.
+                            settle_ownership(&directory, settings.as_deref(), &restoring);
+                            return Err(error);
+                        }
+                    };
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
-                        // this restore ran: release what it loaded and refuse
-                        // it.
+                        // this restore ran: release what it loaded, refuse it,
+                        // and end the ownership it registered.
                         if let Err(error) = session.close().await {
                             tracing::warn!(%error, session_id = %restoring, "Restored Session close failed");
                         }
+                        settle_ownership(&directory, settings.as_deref(), &restoring);
                         return Err(AgentError::Closed(restoring));
                     }
+                    // The Session is loaded: it owns its project, and announcing
+                    // that load neither adds nor takes ownership away.
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
                         session_id: restoring,
@@ -1091,16 +1117,7 @@ impl AgentIndex {
                 })
                 .await
                 .map_err(|error| AgentError::fault("Session restoration", error.to_string()))
-                .and_then(|restored| restored);
-                match restored {
-                    Ok(loaded) => loaded,
-                    Err(error) => {
-                        // The restore authorized the project but loaded no
-                        // Session: its ownership ends with this refusal.
-                        self.settle_project(id);
-                        return Err(error);
-                    }
-                }
+                .and_then(|restored| restored)?
             }
             None => return Err(AgentError::Closed(id.into())),
         };

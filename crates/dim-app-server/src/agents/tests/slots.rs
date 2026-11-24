@@ -17,7 +17,10 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{net::TcpStream, sync::Notify};
@@ -484,12 +487,14 @@ async fn poll_member(agent: &dim_agent_runtime::Agent, lead: &str) -> String {
 }
 
 /// Holds the next restore of one Session in its Session part's apply,
-/// while `acquire` holds the Session's gate and slot.
+/// while `acquire` holds the Session's gate and slot. A refused hold fails
+/// the part once released, so the restore loads no Session.
 #[derive(Clone, Default)]
 struct HeldRestore(Arc<HeldState>);
 #[derive(Default)]
 struct HeldState {
     held: Mutex<Option<String>>,
+    refused: AtomicBool,
     entered: Notify,
     release: Notify,
 }
@@ -504,6 +509,9 @@ impl HeldRestore {
     }
     fn hold(&self, id: &str) {
         *self.0.held.lock().unwrap() = Some(id.to_owned());
+    }
+    fn refuse(&self) {
+        self.0.refused.store(true, Ordering::Release);
     }
     async fn entered(&self) {
         tokio::time::timeout(DEADLINE, self.0.entered.notified())
@@ -547,6 +555,11 @@ impl DynPlugin for HeldRestorePart {
             if held {
                 state.entered.notify_one();
                 state.release.notified().await;
+                if state.refused.load(Ordering::Acquire) {
+                    return Err(rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                        "the stored Session is refused".into(),
+                    )));
+                }
             }
             Ok(Effect::Done)
         })
@@ -632,4 +645,79 @@ async fn a_closing_session_does_not_release_the_root_a_restore_owns() {
     );
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// A restore whose caller stops waiting still ends the ownership its load
+/// registered once the restore itself is refused: the rollback belongs to the
+/// restore task, before it gives up the Session's gate, not to the caller that
+/// dropped the handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_restore_settles_the_ownership_of_its_cancelled_caller() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = super::stored().await;
+    let held = HeldRestore::default();
+    let mut builder = builder();
+    held.install(&mut builder);
+    let server = crate::serve(builder, super::product_config(&stored.directory))
+        .await
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = stored.directory.canonicalize().unwrap();
+
+    held.hold(&stored.session);
+    held.refuse();
+    let waiting = tokio::spawn({
+        let index = index.clone();
+        let session = stored.session.clone();
+        async move { index.acquire(&session).await }
+    });
+    held.entered().await;
+    let root = settings
+        .project_root(&project)
+        .expect("the restore authorized the project");
+    assert!(testing::root_held(&files, root));
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the restore registers its ownership before it loads"
+    );
+
+    waiting.abort();
+    match waiting.await {
+        Err(error) => assert!(error.is_cancelled(), "the caller stopped waiting"),
+        Ok(_) => panic!("the cancelled caller returned a Session use"),
+    }
+    held.release();
+    let gate = index.slot(&stored.session).gate.clone().lock_owned().await;
+    drop(gate);
+    assert!(
+        !index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "a refused restore ends the ownership it registered, whether or not a caller awaits it"
+    );
+    assert!(
+        !testing::root_held(&files, root),
+        "the last owner's refusal released the project's root"
+    );
+    assert!(
+        index.session(&stored.session).is_none(),
+        "the refused restore loaded no Session"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
 }
