@@ -570,7 +570,7 @@ impl FileStorage {
                 if let Some(slot) = self.state.lock().unwrap().roots.get_mut(root) {
                     slot.unopened(epoch);
                 }
-                return Err(error.into());
+                return Err(error);
             }
         };
         let mut state = self.state.lock().unwrap();
