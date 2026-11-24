@@ -205,15 +205,19 @@ impl Root {
         self.epoch += 1;
     }
     /// Serves `opened`, an observation of the root's path made at `epoch`. A
-    /// slot that moved since then, by a registration or a release, answers
-    /// `None`: the caller's observation is not the newest one and is not
-    /// published.
+    /// slot that moved since then, by a registration or a release, does not
+    /// serve the observation: the caller's observation is not the newest one
+    /// and is not published. It still answers the revision the root serves when
+    /// `opened` reaches that same directory, so an open a transition overtook
+    /// binds what it reaches, and none when the root serves another directory.
     fn served_at(&mut self, epoch: u64, opened: Result<File>) -> Option<u64> {
-        if self.epoch != epoch {
-            return None;
+        if self.epoch == epoch {
+            self.serve(opened);
+            return Some(self.revision);
         }
-        self.serve(opened);
-        Some(self.revision)
+        let opened = opened.ok()?;
+        let observed = native::root_identity(&opened);
+        (!reaches_another_directory(self.served, &observed)).then_some(self.revision)
     }
 }
 
@@ -254,8 +258,9 @@ struct Lease {
     id: Uuid,
     owner: Weak<FileStorage>,
     path: FilePath,
-    /// The root revision the lease locked, or none when its open overlapped a
-    /// refresh or release. A mutation reaches only the directory served then.
+    /// The root revision the lease locked, or none when the root serves another
+    /// directory than the one its open reached. A mutation reaches only the
+    /// directory served then.
     root: Option<u64>,
     resources: Mutex<Option<LeaseResources>>,
 }
@@ -481,9 +486,11 @@ impl FileStorage {
         }
     }
 
-    /// The descriptor for `root` and the revision of the directory it serves,
-    /// or no revision when this open overlapped a refresh or release and was
-    /// not published. A released root keeps its index and path, so a reopened
+    /// The descriptor for `root` and the revision of the directory it serves. An
+    /// open that a release or a registration overtook is not published, and
+    /// still answers that revision when the directory it opened is the one the
+    /// root serves; it answers no revision when the root serves another
+    /// directory. A released root keeps its index and path, so a reopened
     /// descriptor is the same authorization as the one released.
     fn root_handle(&self, root: usize) -> Result<(File, Option<u64>)> {
         let (path, epoch) = {
@@ -636,8 +643,10 @@ impl FileStorage {
     /// Admission for a mutation through a lease: the root must still serve the
     /// directory the lease locked, or the descriptor it holds reaches one the
     /// path no longer names. A lease whose lock overlapped a refresh or release
-    /// is bound to no revision and its mutations are refused the same way. A
-    /// read keeps the file it pinned and passes [`admit`](Self::admit).
+    /// binds the generation of the directory it reaches when the root serves
+    /// it; it is bound to no revision, and its mutations are refused, only when
+    /// the root serves another directory. A read keeps the file it pinned and
+    /// passes [`admit`](Self::admit).
     fn admit_locked(
         self: &Arc<Self>,
         path: &FilePath,
@@ -968,6 +977,19 @@ impl FileStorage {
     }
 }
 
+/// Whether a directory observation names another directory than the root
+/// serves. An identity that cannot be read on either side leaves the question
+/// open: the volume reports none, or a deletion is pending, so the storage
+/// cannot tell, and a lease that reached this directory keeps its generation.
+fn reaches_another_directory(
+    served: Option<native::RootIdentity>,
+    observed: &io::Result<native::RootIdentity>,
+) -> bool {
+    match (served, observed) {
+        (Some(served), Ok(observed)) => served != *observed,
+        _ => false,
+    }
+}
 /// Whether a directory observation names the directory a root serves. Reading
 /// the identity can fail where the volume does not report one, such as FAT or
 /// exFAT, or while a deletion is still pending. An identity that cannot be read
@@ -1060,10 +1082,11 @@ mod root_publication {
         let opened = native::open_root(&path).unwrap();
         storage.release_root(index);
         let mut state = storage.state.lock().unwrap();
+        let revision = state.roots[index].revision;
         assert_eq!(
             state.roots[index].served_at(epoch, Ok(opened)),
-            None,
-            "the release keeps the root holding no descriptor"
+            Some(revision),
+            "the release names the directory the open reaches, and publishes nothing"
         );
         assert!(state.roots[index].handle.is_none());
         drop(state);
@@ -1071,6 +1094,32 @@ mod root_publication {
         assert!(
             storage.state.lock().unwrap().roots[index].handle.is_some(),
             "the next operation opens the directory its path names"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// An open that a registration overtook still reaches the directory the root
+    /// serves, so it binds that directory's generation instead of none: two opens
+    /// of one directory do not invalidate each other's leases.
+    #[test]
+    fn an_open_that_a_registration_overtook_binds_the_directory_it_reaches() {
+        let (directory, storage) = storage();
+        let path = directory.join("project");
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
+        storage.release_root(index);
+        let (_, epoch) = storage.observe(&path).expect("a registered root");
+        let opened = native::open_root(&path).unwrap();
+        assert_eq!(storage.register_observed(&path, &cancel).unwrap(), index);
+        let mut state = storage.state.lock().unwrap();
+        assert_ne!(
+            state.roots[index].epoch, epoch,
+            "the registration published while the open was in flight"
+        );
+        assert_eq!(
+            state.roots[index].served_at(epoch, Ok(opened)),
+            Some(state.roots[index].revision),
+            "the same directory keeps the generation the lease locked"
         );
         std::fs::remove_dir_all(&directory).unwrap();
     }
