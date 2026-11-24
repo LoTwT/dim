@@ -1145,6 +1145,75 @@ async fn a_released_root_opens_the_directory_its_path_names() {
     root.shutdown().await.unwrap();
 }
 
+/// A lease is bound to the directory the root served when it locked: after the
+/// path names another directory, its next replacement is refused instead of
+/// writing into the directory the path no longer names. Giving it up still
+/// releases the physical lock.
+#[tokio::test]
+async fn a_lease_on_a_replaced_root_refuses_its_next_replacement() {
+    let directory = Directory::new();
+    let root = Ctx::root().unwrap();
+    let plugin = root.plugin(FileStoragePlugin::new(vec![]));
+    (&plugin).await.unwrap();
+    let files = root.get::<FileStorage>().unwrap();
+    let cancel = CancellationToken::new();
+    let project = directory.0.join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("state.json"), b"first").unwrap();
+    let index = files.register_root(project.clone(), &cancel).await.unwrap();
+    let path = files.path(index, "state.json").unwrap();
+    let mut lease = files.lock(&path, &cancel).await.unwrap();
+    assert_eq!(lease.read(&cancel).await.unwrap(), b"first");
+    fs::remove_dir_all(&project).unwrap();
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("state.json"), b"second").unwrap();
+    assert_eq!(
+        files.register_root(project.clone(), &cancel).await.unwrap(),
+        index
+    );
+    assert!(
+        matches!(
+            lease.replace(b"third".to_vec(), None, &cancel).await,
+            Err(FileStorageError::InvalidPath(_))
+        ),
+        "a lease locked in the directory the path no longer names refuses to replace"
+    );
+    assert_eq!(fs::read(project.join("state.json")).unwrap(), b"second");
+    assert!(
+        lease.read(&cancel).await.is_err(),
+        "a lease reaches its file by name, and the directory it locked is gone"
+    );
+    drop(lease);
+    let released = files.lock(&path, &cancel).await;
+    assert!(released.is_ok(), "the replacement's lease is taken again");
+    root.shutdown().await.unwrap();
+}
+
+/// A release drops the descriptor without changing the directory the path
+/// names, so a lease taken before it still writes through the file it locked.
+#[tokio::test]
+async fn a_lease_survives_a_root_release() {
+    let directory = Directory::new();
+    let root = Ctx::root().unwrap();
+    let plugin = root.plugin(FileStoragePlugin::new(vec![]));
+    (&plugin).await.unwrap();
+    let files = root.get::<FileStorage>().unwrap();
+    let cancel = CancellationToken::new();
+    let project = directory.0.join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("state.json"), b"first").unwrap();
+    let index = files.register_root(project.clone(), &cancel).await.unwrap();
+    let path = files.path(index, "state.json").unwrap();
+    let mut lease = files.lock(&path, &cancel).await.unwrap();
+    files.release_root(index);
+    lease
+        .replace(b"second".to_vec(), None, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(fs::read(project.join("state.json")).unwrap(), b"second");
+    root.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn late_roots_preserve_indices_and_generation_boundaries_on_reload() {
     let directory = Directory::new();
