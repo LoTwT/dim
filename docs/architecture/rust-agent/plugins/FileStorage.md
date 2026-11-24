@@ -55,12 +55,14 @@ release does not put its descriptor back.
 A lease is bound to the directory generation it locked: `replace` and `backup`
 through it fail with `invalid` once the path names another directory, rather than
 writing into the directory the path no longer names. That generation advances
-only when the path names another directory, so a release, which names the same
-one, leaves the lease valid, and an open that a release or another registration
-overtook binds the generation of the directory it reaches when the root still
-serves it, so two opens of one directory do not invalidate each other. A lease's
-read keeps the file it pinned, and dropping the lease releases its physical lock
-either way.
+only when a registration reads an identity for the path and it differs from the
+one the root serves; a release, which names the same directory, leaves the lease
+valid, and an identity that cannot be read leaves the generation where it was,
+because the storage cannot tell whether the path names another directory. An
+open that a release or another registration overtook binds the generation of the
+directory it reaches when the root still serves it, so two opens of one
+directory do not invalidate each other. A lease's read keeps the file it pinned,
+and dropping the lease releases its physical lock either way.
 
 The App Server releases a project's root once the last Session loaded from its
 cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
@@ -391,10 +393,12 @@ directories, a marker whose release failed) and
 stack, where recursion overflowed at a few hundred levels). The unit
 tests `a_root_identity_that_cannot_be_read_is_not_the_held_directory` (a
 comparison that cannot read an identity does not count as the held directory),
-`a_registration_that_opened_before_a_refresh_does_not_publish_after_it`,
+`a_root_identity_that_cannot_be_read_keeps_the_generation` (nor does it start a
+generation), `a_registration_that_opened_before_a_refresh_does_not_publish_after_it`,
 `an_open_that_overlaps_a_release_does_not_hold_the_root_again` and
 `an_open_that_a_registration_overtook_binds_the_directory_it_reaches` (the
-publication of a root slot, and the generation an overtaken open binds), and
+publication of a root slot, and the generation an overtaken open binds),
+`a_generation_starts_only_for_another_readable_directory`, and
 `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
 module cover the comparison fallback, the publication order and generation,
 and the lock, removal and temporary-file interleavings that the public API

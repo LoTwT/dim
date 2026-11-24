@@ -164,9 +164,10 @@ struct Root {
     /// The directory the root last served, kept while no descriptor is held so
     /// a later open can tell whether the path still names it.
     served: Option<native::RootIdentity>,
-    /// Counts the directories this root has served. It advances only when the
-    /// path names another one, so a release, which names the same directory,
-    /// leaves the leases locked before it valid.
+    /// Counts the directories this root has served. It advances only when a
+    /// readable identity names another directory, so a release, which names the
+    /// same one, leaves the leases locked before it valid, and an identity that
+    /// cannot be read leaves the generation where it was.
     revision: u64,
     /// Counts the slot's transitions. An open publishes only at the value it
     /// observed, so an older observation never replaces a newer one.
@@ -184,8 +185,10 @@ impl Root {
     }
     /// Serves the directory an observation opened: the held descriptor stays
     /// when the path still names it, is replaced when the path names another,
-    /// and is dropped when the path did not open. Only a transition changes
-    /// what later opens must observe.
+    /// and is dropped when the path did not open. A comparison that cannot read
+    /// an identity replaces the descriptor but starts no generation: the storage
+    /// cannot tell that the path names another directory. Only a transition
+    /// changes what later opens must observe.
     fn serve(&mut self, opened: Result<File>) {
         let Ok(handle) = opened else {
             self.handle = None;
@@ -197,9 +200,12 @@ impl Root {
         if same && self.handle.is_some() {
             return;
         }
-        if !same {
-            self.served = observed.ok();
-            self.revision += 1;
+        let another = reaches_another_directory(self.served, &observed);
+        if let Ok(observed) = observed {
+            if another {
+                self.revision += 1;
+            }
+            self.served = Some(observed);
         }
         self.handle = Some(handle);
         self.epoch += 1;
@@ -1013,6 +1019,18 @@ fn a_root_identity_that_cannot_be_read_is_not_the_held_directory() {
     ));
     assert!(!same_directory(None, &Ok(Default::default())));
 }
+/// A comparison that cannot read an identity starts no directory generation
+/// either: the storage cannot tell that the path names another directory, so a
+/// lease taken before keeps writing into the directory it locked.
+#[cfg(test)]
+#[test]
+fn a_root_identity_that_cannot_be_read_keeps_the_generation() {
+    assert!(!reaches_another_directory(
+        Some(Default::default()),
+        &Err(io::Error::from(io::ErrorKind::Unsupported))
+    ));
+    assert!(!reaches_another_directory(None, &Ok(Default::default())));
+}
 
 #[cfg(all(test, any(unix, windows)))]
 mod root_publication {
@@ -1120,6 +1138,34 @@ mod root_publication {
             state.roots[index].served_at(epoch, Ok(opened)),
             Some(state.roots[index].revision),
             "the same directory keeps the generation the lease locked"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A generation starts only for a readable identity of another directory.
+    #[test]
+    fn a_generation_starts_only_for_another_readable_directory() {
+        let (directory, storage) = storage();
+        let path = directory.join("project");
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
+        let other = directory.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let held = native::open_root(&path).unwrap();
+        let another = native::open_root(&other).unwrap();
+        let mut state = storage.state.lock().unwrap();
+        let slot = &mut state.roots[index];
+        let revision = slot.revision;
+        slot.serve(Ok(held));
+        assert_eq!(
+            slot.revision, revision,
+            "the directory the root serves starts no generation"
+        );
+        slot.serve(Ok(another));
+        assert_eq!(
+            slot.revision,
+            revision + 1,
+            "another directory starts a generation"
         );
         std::fs::remove_dir_all(&directory).unwrap();
     }
