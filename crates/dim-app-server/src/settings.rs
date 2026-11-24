@@ -327,7 +327,10 @@ impl SettingsService {
     /// Releases the directory descriptor held for `cwd`'s authorized root. The
     /// authorization, its index and every path it produced stay: the next
     /// operation on that root opens the directory the path names then. A `cwd`
-    /// this Service did not authorize is unchanged.
+    /// this Service did not authorize is unchanged. The App Server releases
+    /// only once no loaded Session uses the project; releasing earlier would
+    /// still be correct, because a descriptor is reopened from its path, and
+    /// would only cost that open.
     pub fn release_project(&self, cwd: &Path) {
         let root = self.projects.lock().unwrap().get(cwd).copied();
         if let Some(root) = root {

@@ -7,7 +7,8 @@ use super::*;
 use dim_agent_capabilities::file_storage::{FileStorage, testing};
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
-use dim_app_server::settings::SettingsService;
+use dim_app_server::mcp::config::McpSettings;
+use dim_app_server::settings::{SettingsScope, SettingsService};
 use rutis::host::CtxHost;
 use std::sync::Weak;
 use tokio::sync::Notify;
@@ -1266,6 +1267,163 @@ async fn a_closed_session_releases_its_project_root() {
         root
     );
     assert!(testing::root_held(&files, root));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A delete ends a loaded Session without going through `session.close`, so it
+/// releases the project's descriptor itself once no Session uses it, and keeps
+/// the authorization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_session_releases_its_project_root() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let root = settings
+        .project_root(&project)
+        .expect("the creation authorized the project");
+    assert!(testing::root_held(&files, root));
+    assert_ok(&client.rpc("session.delete", json!({"sessionId": id})).await);
+    assert!(
+        !testing::root_held(&files, root),
+        "the delete released the project's descriptor"
+    );
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the delete kept the authorization"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// `agent.close` ends every Session of its Agent at once; each project those
+/// Sessions used loses its descriptor, and the authorization stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_close_releases_its_sessions_project_roots() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let agent = client.rpc("agent.create", json!({})).await;
+    assert_ok(&agent);
+    let agent_id = agent["result"]["agentId"].as_str().unwrap().to_owned();
+    let created = client
+        .rpc(
+            "session.create",
+            json!({
+                "cwd": project.clone(),
+                "tools": ["confirm"],
+                "permissionPolicy": host_policy(),
+                "agentId": agent_id,
+            }),
+        )
+        .await;
+    assert_ok(&created);
+    let root = settings
+        .project_root(&project)
+        .expect("the creation authorized the project");
+    assert!(testing::root_held(&files, root));
+    assert_ok(
+        &client
+            .rpc("agent.close", json!({"agentId": agent_id}))
+            .await,
+    );
+    assert!(
+        !testing::root_held(&files, root),
+        "the Agent close released its Session's project"
+    );
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the Agent close kept the authorization"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Two Sessions share one project. Ending one leaves the project in use: its
+/// descriptor stays, and the other Session reads and writes the project's
+/// settings through the same root. The last close releases the descriptor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_of_two_sessions_in_a_project_keeps_its_root_in_use() {
+    let store = Store::new();
+    let Served {
+        server, mut client, ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+            )
+            .await;
+        assert_ok(&created);
+        sessions.push(created["result"]["sessionId"].as_str().unwrap().to_owned());
+    }
+    let root = settings
+        .project_root(&project)
+        .expect("the creations authorized the project");
+    assert!(testing::root_held(&files, root));
+    let cancel = CancellationToken::new();
+    let scope = SettingsScope::Project(root);
+    let missing = settings.read::<McpSettings>(scope, &cancel).await.unwrap();
+    assert_eq!(missing.revision, "missing");
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId": sessions[0]}))
+            .await,
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the other Session still uses the project"
+    );
+    let written = settings
+        .update(
+            scope,
+            &missing.revision,
+            McpSettings::from_value(json!({"mcpServers": {}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let read = settings.read::<McpSettings>(scope, &cancel).await.unwrap();
+    assert!(
+        read.document == written.document,
+        "the second Session read back the document it wrote"
+    );
+    assert_ne!(read.revision, "missing");
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId": sessions[1]}))
+            .await,
+    );
+    assert!(
+        !testing::root_held(&files, root),
+        "the last close released the project's descriptor"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

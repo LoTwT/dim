@@ -715,13 +715,28 @@ impl AgentIndex {
         }
         result
     }
-    /// Gives up a project's root descriptor after a Session there stops using
-    /// it. A close or an idle unload ends the Session's use of the directory;
-    /// a detach does not, because it leaves the Session loaded. The
-    /// authorization and its index stay, and the next operation opens the
-    /// directory again, so releasing never withdraws access.
+    /// Gives up a project's root descriptor once no loaded Session uses its
+    /// cwd. A close, a delete and an idle unload end one Session's use; a
+    /// detach does not, because the Session stays loaded and may still use the
+    /// project. The authorization and its index stay, and the next operation
+    /// opens the directory again, so releasing never withdraws access. An
+    /// authorization no Session used, from the hook catalog, MCP management or
+    /// a create or restore that failed before loading its Session, reports no
+    /// Session end and keeps its descriptor until another end on the same cwd
+    /// or the process closes. A Session the runtime fault supervisor closes
+    /// reports no end here either; its descriptor stays until another end on
+    /// the same cwd or the process.
     fn release_project(&self, cwd: &str) {
-        if let Some(settings) = &self.settings {
+        let Some(settings) = &self.settings else {
+            return;
+        };
+        let in_use = self.hosts().iter().any(|host| {
+            host.agent
+                .sessions()
+                .iter()
+                .any(|session| session.config().cwd == cwd)
+        });
+        if !in_use {
             settings.release_project(Path::new(cwd));
         }
     }
@@ -1738,11 +1753,15 @@ impl AgentIndex {
         let loaded = self
             .host_by_session(id)
             .and_then(|host| host.agent.get_session(id));
+        let cwd = loaded.as_ref().map(|session| session.config().cwd.clone());
         if let Some(session) = &loaded {
             slot.closed.store(true, Ordering::Release);
             if let Err(error) = session.close().await {
                 tracing::error!(%error, session_id = id, "Session cleanup failed before its delete");
             }
+        }
+        if let Some(cwd) = &cwd {
+            self.release_project(cwd);
         }
         let unloaded = loaded.is_none() && !slot.closed.load(Ordering::Acquire);
         // The delete notice names the Session's owner even when this process
@@ -2118,6 +2137,13 @@ impl AgentIndex {
                 .insert(agent_id.to_owned(), entry.host.clone());
             entry
         };
+        let cwds: Vec<String> = entry
+            .host
+            .agent
+            .sessions()
+            .iter()
+            .map(|session| session.config().cwd.clone())
+            .collect();
         let closed = entry.host.agent.close().await;
         let unloaded = entry.view.shutdown().await;
         self.directory
@@ -2132,6 +2158,9 @@ impl AgentIndex {
             .expect("agent index")
             .closing
             .remove(agent_id);
+        for cwd in cwds {
+            self.release_project(&cwd);
+        }
         unloaded.map_err(AgentOpError::Unload)?;
         closed.map_err(AgentOpError::Settle)
     }

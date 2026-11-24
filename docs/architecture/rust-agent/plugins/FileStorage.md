@@ -28,22 +28,37 @@ folding names would break case-sensitive directories and their aliases.
 
 ## Authorized roots
 
-A root is its index and its path. Both are append-only: an index never comes to
-mean another directory, and a `FilePath` names its root for its generation's
-lifetime. Registering an already registered path opens the directory the path
-names now and keeps the index. The descriptor held for an earlier directory at
-that path is dropped when the two differ, and when the path no longer names a
-directory at all; a path that cannot be opened for another reason keeps its
-index and holds no descriptor.
+A root is its index and its path. Both are append-only: an index always names
+the same path, and a `FilePath` names its root for its generation's lifetime. A
+descriptor is not part of that identity. Registering an already registered path
+opens the directory the path names now and keeps the index: the held descriptor
+stays when it names the same directory, is replaced when the path names another
+one, and is dropped when the path names no directory. Reading either
+descriptor's identity can fail, on a volume that does not report file IDs or
+while a deletion is pending; that comparison failing is not a registration
+failure, and the newly opened descriptor, whose component-wise walk already
+rejected links, serves the path. The path is therefore the authorization: an
+operation reaches the directory that path names when it runs, never a
+descriptor of a directory the path no longer names.
 
 `release_root(index)` drops the descriptor and keeps the index, its path and
 every `FilePath` naming it. The next operation opens the directory the path
-names then, so a release withdraws no authorization, and an index never comes to
-mean a different directory: an idle root simply costs no descriptor. The App
-Server releases a project's root when a Session there closes or is unloaded; a
-detach leaves its Session loaded and releases nothing. Close still releases every
-descriptor. A reopened descriptor is not revalidated against an earlier one,
-because the path is the authorization and the authorization did not change.
+names then, so a release withdraws no authorization and changes no index. A
+released root simply costs no descriptor.
+
+The App Server releases a project's root once no loaded Session uses its cwd.
+`session.close`, `session.delete` and a Collaboration member's close all check
+the Sessions that remain, as do an idle unload and `agent.close` for each
+Session it ends. A `session.detach` releases nothing: the Session stays loaded
+and may still use the project, and its later close or unload releases the root.
+An authorization no Session used, from `hooks.catalog`, MCP management or a
+create or restore that failed before loading its Session, reports no Session
+end and keeps its descriptor until another end on the same cwd or the process
+closes. A Session the runtime's fault supervisor closes reports no end here
+either: its descriptor stays until another end on the same cwd or the process.
+FileStorage close still releases every descriptor. A reopened descriptor is not
+revalidated against an earlier one, because the path is the authorization and
+the authorization did not change.
 
 ## Bounded reads
 
@@ -338,7 +353,9 @@ and starts again from its target if a directory it returns to was deleted.
 replaced at a registered path keeps the index and the new directory serves the
 same `FilePath`), `a_released_root_opens_the_directory_its_path_names` (the
 released descriptor is closed, and the next operation opens the directory the
-path names then), `file_storage_flow` (path, lock, permission and platform checks),
+path names then), `a_root_identity_that_cannot_be_compared_keeps_registration_succeeding`
+(a comparison that cannot read an identity keeps the index and serves the newly
+opened directory), `file_storage_flow` (path, lock, permission and platform checks),
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
 marker, an existing file or link, cancellation),
@@ -357,11 +374,14 @@ stack, where recursion overflowed at a few hundred levels). The unit
 test `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the
 owner module drives the lock, removal and temporary-file interleavings that the
 public API cannot produce reliably. The App Server flows
-`an_unloaded_session_releases_its_project_root` and
-`a_closed_session_releases_its_project_root`
+`an_unloaded_session_releases_its_project_root`,
+`a_closed_session_releases_its_project_root`,
+`a_deleted_session_releases_its_project_root`,
+`an_agent_close_releases_its_sessions_project_roots` and
+`one_of_two_sessions_in_a_project_keeps_its_root_in_use`
 ([idle_unload.rs](../../../../crates/dim-app-server/tests/transport_flow/idle_unload.rs))
-check that a Session ending its use of a project releases the descriptor while
-the authorization keeps its index.
+check that a Session ending its use of a project releases the descriptor once no
+Session uses it, and that the authorization keeps its index.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
