@@ -393,11 +393,13 @@ impl FileStorage {
     /// A registered path keeps its index and its path: registering it again
     /// opens the directory the path names now, keeping the held descriptor when
     /// it is the same directory, replacing it when the path names another one,
-    /// and dropping it when the path cannot be opened. An index
-    /// therefore always names the same path, and an operation reaches the
-    /// directory that path names when it runs. A registration publishes only
-    /// while the root is where it was when the registration opened the path,
-    /// so it cannot serve an observation older than one published meanwhile.
+    /// and dropping it when the path cannot be opened. An index therefore always
+    /// names the same path, and an operation reaches the directory the root
+    /// holds: a directory another process replaces at the path is reached when
+    /// that path is registered again or after a release, not by every operation.
+    /// A registration publishes only while the root is where it was when the
+    /// registration opened the path, so it cannot serve an observation older
+    /// than one published meanwhile.
     pub async fn register_root(
         self: &Arc<Self>,
         root: PathBuf,
@@ -419,9 +421,10 @@ impl FileStorage {
         .await?
     }
 
-    /// Registers `root` until an observation of its path is published: the
-    /// observation is read before the path is opened, and one a refresh or
-    /// release overtook meanwhile is dropped and read again.
+    /// Registers `root` until its path is served: the observation is read before
+    /// the path is opened, and one a refresh or release overtook is answered with
+    /// the root's index when it reaches the directory the root serves, and read
+    /// again when it reaches another one.
     fn register_observed(&self, root: &Path, cancel: &CancellationToken) -> Result<usize> {
         loop {
             self.check(cancel)?;
@@ -445,9 +448,10 @@ impl FileStorage {
     }
 
     /// Publishes the descriptor `opened` for `root` at the state `observed`
-    /// names, appending the path when it was not registered. Answers `None`
-    /// when the slot moved since the observation, for the caller to observe
-    /// again.
+    /// names, appending the path when it was not registered. A slot that moved
+    /// since the observation publishes nothing: it answers the index anyway when
+    /// the open reached the directory the root serves, and `None` for the caller
+    /// to observe again when it reached another one.
     fn publish(
         &self,
         root: &Path,
