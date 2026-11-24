@@ -1134,6 +1134,14 @@ async fn a_released_root_opens_the_directory_its_path_names() {
     fs::write(project.join("state.json"), b"second").unwrap();
     assert_eq!(files.read(&path, &cancel).await.unwrap(), b"second");
     assert!(testing::root_held(&files, index));
+    // A path whose directory is gone holds no descriptor, and its index stays.
+    fs::remove_dir_all(&project).unwrap();
+    assert_eq!(files.register_root(project, &cancel).await.unwrap(), index);
+    assert!(!testing::root_held(&files, index));
+    assert!(matches!(
+        files.read(&path, &cancel).await,
+        Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
     root.shutdown().await.unwrap();
 }
 
