@@ -1145,6 +1145,43 @@ async fn a_released_root_opens_the_directory_its_path_names() {
     root.shutdown().await.unwrap();
 }
 
+/// Reading a held and a newly opened descriptor's identity can fail where the
+/// volume does not report one, such as FAT or exFAT, or while a deletion is
+/// still pending. That comparison failing is not a registration failure: the
+/// newly opened descriptor, whose component-wise walk rejected links, serves
+/// the path.
+#[tokio::test]
+async fn a_root_identity_that_cannot_be_compared_keeps_registration_succeeding() {
+    use dim_agent_capabilities::file_storage::testing;
+    let directory = Directory::new();
+    let root = Ctx::root().unwrap();
+    let plugin = root.plugin(FileStoragePlugin::new(vec![]));
+    (&plugin).await.unwrap();
+    let files = root.get::<FileStorage>().unwrap();
+    let cancel = CancellationToken::new();
+    let project = directory.0.join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("state.json"), b"first").unwrap();
+    let index = files.register_root(project.clone(), &cancel).await.unwrap();
+    let path = files.path(index, "state.json").unwrap();
+    assert_eq!(files.read(&path, &cancel).await.unwrap(), b"first");
+    fs::remove_dir_all(&project).unwrap();
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("state.json"), b"second").unwrap();
+    testing::fail_root_identity(&files);
+    assert_eq!(
+        files.register_root(project, &cancel).await.unwrap(),
+        index,
+        "an identity that cannot be compared does not fail registration"
+    );
+    assert_eq!(
+        files.read(&path, &cancel).await.unwrap(),
+        b"second",
+        "the newly opened directory serves the path"
+    );
+    root.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn late_roots_preserve_indices_and_generation_boundaries_on_reload() {
     let directory = Directory::new();

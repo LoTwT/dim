@@ -57,6 +57,12 @@ pub mod testing {
             .get(root)
             .is_some_and(Option::is_some)
     }
+
+    /// Makes the next comparison of a held root's identity fail, as a volume
+    /// that does not report file IDs does. Feature `testing` only.
+    pub fn fail_root_identity(storage: &FileStorage) {
+        *storage.fail_identity.lock().unwrap() = true;
+    }
 }
 
 const RESOURCE_PREFIX: &str = ".dim-file-storage-";
@@ -176,6 +182,10 @@ pub struct FileStorage {
     state: Mutex<State>,
     stopping: CancellationToken,
     drained: Notify,
+    /// Set by `testing::fail_root_identity`; the next comparison of a held
+    /// root's identity fails. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    fail_identity: Mutex<bool>,
 }
 
 struct Operation(Arc<FileStorage>);
@@ -304,15 +314,19 @@ impl FileStorage {
             }),
             stopping: CancellationToken::new(),
             drained: Notify::new(),
+            #[cfg(feature = "testing")]
+            fail_identity: Mutex::new(false),
         }))
     }
 
     /// The trusted host supplies a canonical absolute directory. Root indices
     /// are append-only and the Plugin retains their configuration across reloads.
-    /// A registered path keeps its index and names the directory it names now:
-    /// registering it again opens that directory, replacing the descriptor held
-    /// for an earlier one at the path, and a path that no longer names a
-    /// directory holds none. What an index means therefore never changes.
+    /// A registered path keeps its index and its path: registering it again
+    /// opens the directory the path names now, keeping the held descriptor when
+    /// it is the same directory, replacing it when the path names another one,
+    /// and dropping it when the path no longer names a directory. An index
+    /// therefore always names the same path, and an operation reaches the
+    /// directory that path names when it runs.
     pub async fn register_root(
         self: &Arc<Self>,
         root: PathBuf,
@@ -340,7 +354,7 @@ impl FileStorage {
                 match opened {
                     Ok(handle) => {
                         let held = match &*slot {
-                            Some(held) => native::same_identity(held, &handle)?,
+                            Some(held) => owner.same_directory(held, &handle),
                             None => false,
                         };
                         if !held {
@@ -361,6 +375,19 @@ impl FileStorage {
             Ok(index)
         })
         .await?
+    }
+
+    /// Whether `held` still names the directory `opened` does. Reading either
+    /// descriptor's identity can fail where the volume does not report one, such
+    /// as FAT or exFAT, or while a deletion is still pending. An identity that
+    /// cannot be read is not a match: the caller keeps `opened`, whose
+    /// component-wise path walk already rejected links.
+    fn same_directory(&self, held: &File, opened: &File) -> bool {
+        #[cfg(feature = "testing")]
+        if std::mem::take(&mut *self.fail_identity.lock().unwrap()) {
+            return false;
+        }
+        native::same_identity(held, opened).unwrap_or(false)
     }
 
     /// Releases the descriptor held for `root`. The index, its path and every
