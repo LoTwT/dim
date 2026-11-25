@@ -1849,7 +1849,8 @@ async fn a_recorded_run_is_one_append_input_for_the_next_request() {
             "<dim-shell-input kind=\"command\" status=\"completed\" exit=\"0\" truncated=\"false\">\n$ echo hi\nhi\n\n</dim-shell-input>"}]})
     );
     assert!(events.iter().any(|event| event["name"] == "applied"
-        && event["data"] == json!({"input_id": input["id"], "mode": "append"})));
+        && event["data"]
+            == json!({"input_id": input["id"], "mode": "append", "tool_mode": "normal"})));
     assert!(
         events.iter().all(|event| event["type"] != "turn"),
         "{events:?}"

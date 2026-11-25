@@ -150,13 +150,8 @@ impl ToolBinding {
         let (definitions, sets) = self.registry.snapshot();
         let visible = project(mode, &definitions).0;
         let settings = prepare(&visible)?;
-        self.bind_snapshot(
-            request_id,
-            settings.tools.as_deref().unwrap_or_default(),
-            sets,
-            mode,
-        )
-        .map_err(AgentError::InvalidInput)?;
+        self.bind_snapshot(request_id, &definitions, sets, mode)
+            .map_err(AgentError::InvalidInput)?;
         Ok(settings)
     }
 
