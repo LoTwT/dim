@@ -64,11 +64,12 @@ impl InputQueue {
         let mut drafts = Vec::new();
         for decision in decisions {
             match decision {
-                Decision::Apply(input_id, mode) => {
+                Decision::Apply(input_id, mode, tool_mode) => {
                     drafts.push(
                         EventKind::InputApplied(InputAppliedData {
                             input_id,
                             mode: Some(mode),
+                            tool_mode: Some(tool_mode),
                         })
                         .into(),
                     );

@@ -431,22 +431,12 @@ impl ToolRegistry {
     /// by the effective mode.
     pub fn visible_definitions(&self) -> Vec<ToolDefinition> {
         let declared = self.snapshot().0;
-        let mode = self.effective_of(&declared);
-        declared
-            .into_iter()
-            .filter(|tool| visible_under(mode, &tool.name))
-            .collect()
+        project(self.tool_mode(), &declared).0
     }
     /// The tool names a Code Mode program may call; empty in the other modes.
     pub fn delegated_definitions(&self) -> Vec<ToolDefinition> {
         let declared = self.snapshot().0;
-        if self.effective_of(&declared) != ToolMode::Codemode {
-            return Vec::new();
-        }
-        declared
-            .into_iter()
-            .filter(|tool| tool.name != "codemode")
-            .collect()
+        project(self.tool_mode(), &declared).1
     }
     /// The current or a still-held replaced version of a key.
     pub fn source(&self, key: &str, version: &str) -> Option<Arc<ToolSourceSet>> {
@@ -905,6 +895,34 @@ fn visible_under(mode: ToolMode, name: &str) -> bool {
         ToolMode::Codemode => matches!(name, "codemode" | "skill"),
         ToolMode::Shell => matches!(name, "execute" | "ask_user" | "recall"),
     }
+}
+
+/// Projects `declared` under `mode`: the request's `visible` declarations and
+/// the child `delegated` set. A mode whose entry tool is not in `declared`
+/// runs `normal`.
+pub(crate) fn project(
+    mode: ToolMode,
+    declared: &[ToolDefinition],
+) -> (Vec<ToolDefinition>, Vec<ToolDefinition>) {
+    let mode = match mode.entry_tool() {
+        Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
+        _ => ToolMode::Normal,
+    };
+    let visible = declared
+        .iter()
+        .filter(|tool| visible_under(mode, &tool.name))
+        .cloned()
+        .collect();
+    let delegated = if mode == ToolMode::Codemode {
+        declared
+            .iter()
+            .filter(|tool| tool.name != "codemode")
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (visible, delegated)
 }
 
 pub fn definition(name: &str, description: &str, schema: serde_json::Value) -> ToolDefinition {

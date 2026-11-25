@@ -6,6 +6,7 @@ use crate::{
     host::HostFuture,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
+    tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
@@ -23,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 /// What InputQueue writes for an input it decided on.
 #[derive(Debug, Clone)]
 enum Decision {
-    Apply(String, InputMode),
+    Apply(String, InputMode, ToolMode),
     Delete(String, Option<InputMessageData>),
 }
 /// InputQueue's answer to one `input/withdraw`.
@@ -191,7 +192,7 @@ impl QueueState {
         if self.turn.is_none() && mode != InputMode::Append {
             self.starting = true;
         }
-        vec![Decision::Apply(entry.id.clone(), mode)]
+        vec![Decision::Apply(entry.id.clone(), mode, ToolMode::Normal)]
     }
 }
 /// Consumes `input/message` and decides by its mode when Loop may consume
@@ -216,6 +217,9 @@ pub struct InputQueue {
     answered: tokio::sync::Notify,
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
+    /// The Session's tools: the effective mode is recorded when an input is
+    /// applied, so its turn keeps that mode.
+    tools: Arc<ToolRegistry>,
 }
 
 struct WithdrawalWaiter<'a> {
@@ -280,6 +284,14 @@ impl InputQueue {
         }
         let mut state = self.state.lock().unwrap();
         let decisions = state.step(&event);
+        let mode = self.tools.effective_tool_mode();
+        let decisions = decisions
+            .into_iter()
+            .map(|decision| match decision {
+                Decision::Apply(id, queue_mode, _) => Decision::Apply(id, queue_mode, mode),
+                other => other,
+            })
+            .collect();
         let (published, answer) = self.write(decisions, event.sequence)?;
         self.publish(published, state.queued);
         if matches!(event.kind, EventKind::InputWithdraw(_)) {
@@ -368,6 +380,7 @@ pub struct InputQueuePlugin {
     dispatcher: Key<Dispatcher>,
     tree: Key<TreeCommands>,
     identity: Key<TimelineIdentity>,
+    tools: Key<ToolRegistry>,
 }
 impl InputQueuePlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -378,6 +391,7 @@ impl InputQueuePlugin {
             dispatcher: names.key()?,
             tree: names.key()?,
             identity: names.key()?,
+            tools: names.key()?,
         })
     }
 }
@@ -391,6 +405,7 @@ impl DynPlugin for InputQueuePlugin {
             self.dispatcher.erase(),
             self.tree.erase(),
             self.identity.erase(),
+            self.tools.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -399,6 +414,7 @@ impl DynPlugin for InputQueuePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let tree = ctx.require_at(&self.tree)?;
             let identity = ctx.require_at(&self.identity)?;
+            let tools = ctx.require_at(&self.tools)?;
             let queue = Arc::new(InputQueue {
                 state: Mutex::new(QueueState::default()),
                 observable: Arc::new(StateCell::new(InputSnapshot::default())),
@@ -409,6 +425,7 @@ impl DynPlugin for InputQueuePlugin {
                 answers: Mutex::new(HashMap::new()),
                 answered: tokio::sync::Notify::new(),
                 lifecycle: ctx.cancellation_token(),
+                tools,
             });
             let owner = queue.clone();
             let read = queue.clone();

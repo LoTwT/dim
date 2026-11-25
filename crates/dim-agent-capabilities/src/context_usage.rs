@@ -1079,7 +1079,8 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
-        let (tools, sources) = self.registry.snapshot();
+        let tools = self.registry.visible_definitions();
+        let (_, sources) = self.registry.snapshot();
         let versions = fingerprint(
             &sources
                 .iter()

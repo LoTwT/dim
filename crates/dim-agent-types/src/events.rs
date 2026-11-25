@@ -285,6 +285,15 @@ pub struct InputAppliedData {
         deserialize_with = "crate::optional_non_null"
     )]
     pub mode: Option<InputMode>,
+    /// The tool mode in force when the input was applied; the turn keeps it.
+    /// Absent in records written before the field and in samples against the
+    /// frozen contract, and reads as `normal`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub tool_mode: Option<ToolMode>,
 }
 
 /// Loop took an applied input into the turn; history places the input here.
