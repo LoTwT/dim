@@ -302,9 +302,7 @@ impl ModeTransition {
             .map(|(_, handler)| handler.clone())
             .collect();
         for handler in handlers {
-            if let Err(error) = handler(mode, cause).await {
-                return Err(error);
-            }
+            handler(mode, cause).await?;
         }
         Ok(())
     }
