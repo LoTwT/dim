@@ -1685,6 +1685,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
         ("fileReads", "hot-path"),
+        ("execStop", "control"),
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
@@ -1693,6 +1694,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
         ("mentionIndex", "host-resource"),
+        ("modeTransition", "control"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),
         ("prepareContextHost", "hot-path"),
@@ -1703,6 +1705,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("serverControl", "control"),
         ("sessionStore", "owner-api"),
         ("settingsService", "owner-api"),
+        ("shellSession", "control"),
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),
         ("timelineTreeControl", "owner-api"),
