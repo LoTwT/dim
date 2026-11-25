@@ -279,21 +279,18 @@ impl Default for ModeTransition {
 impl ModeTransition {
     /// Registers a handler until its returned id is removed.
     pub fn register(&self, handler: ModeSettleHandler) -> u64 {
-        let id = self
-            .next
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.handlers.lock().unwrap().push((id, handler));
         id
     }
     pub fn remove(&self, id: u64) {
-        self.handlers.lock().unwrap().retain(|(held, _)| *held != id);
+        self.handlers
+            .lock()
+            .unwrap()
+            .retain(|(held, _)| *held != id);
     }
     /// Runs every registered handler in registration order.
-    pub async fn settle(
-        &self,
-        mode: ToolMode,
-        cause: ModeChangeCause,
-    ) -> Result<(), HostError> {
+    pub async fn settle(&self, mode: ToolMode, cause: ModeChangeCause) -> Result<(), HostError> {
         let handlers: Vec<_> = self
             .handlers
             .lock()

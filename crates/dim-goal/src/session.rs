@@ -11,14 +11,10 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     timeline_tree::TreeCommands,
-    tool_registry::{
-        ModeChangeCause, ModeTransition, ToolContribution, ToolHandler, ToolRegistry,
-    },
+    tool_registry::{ModeChangeCause, ModeTransition, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
-use dim_agent_types::{
-    GoalViewStatus, ToolCall, ToolDefinition, ToolMode, ToolResult, ToolSource,
-};
+use dim_agent_types::{GoalViewStatus, ToolCall, ToolDefinition, ToolMode, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -102,8 +98,8 @@ impl DynPlugin for GoalSession {
             let settle_tree = tree.clone();
             let settle_changes = self.changes.clone();
             let settle_session = identity.session_id.clone();
-            let settle = transition.register(Arc::new(
-                move |mode: ToolMode, _cause: ModeChangeCause| {
+            let settle =
+                transition.register(Arc::new(move |mode: ToolMode, _cause: ModeChangeCause| {
                     let tree = settle_tree.clone();
                     let changes = settle_changes.clone();
                     let session_id = settle_session.clone();
@@ -125,16 +121,13 @@ impl DynPlugin for GoalSession {
                             ) {
                                 continue;
                             }
-                            if let Err(error) =
-                                changes.change(&key, Change::PauseMode).await
-                            {
+                            if let Err(error) = changes.change(&key, Change::PauseMode).await {
                                 return Err(HostError::failed(error.to_string()));
                             }
                         }
                         Ok(())
                     })
-                },
-            ));
+                }));
             let settle_transition = transition.clone();
             ctx.effect(move || async move {
                 settle_transition.remove(settle);
