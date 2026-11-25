@@ -874,6 +874,44 @@ async fn timeout_occupies_shell_and_wakes() {
     harness.shutdown().await;
 }
 
+/// An ended command no longer occupies the shell: the next call runs its
+/// command instead of asking for a resend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_after_the_occupying_command_ends_runs() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 0.4 && echo occupied", "timeoutMs": 100}),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    assert!(
+        text(&results(&events)[0]).contains("occupies the shell"),
+        "{}",
+        text(&results(&events)[0])
+    );
+    until(&session, "occupying wake", |events| {
+        !notifications(events).is_empty()
+    })
+    .await;
+    harness
+        .run(&session, &[("execute", json!({"command": "echo next"}))])
+        .await;
+    let events = until(&session, "next result", |events| tool_results(events) == 2).await;
+    let result = &results(&events)[1];
+    assert!(text(result).contains("next"), "{}", text(result));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_background_task() {
     let harness = Harness::new(platform(&[]).await).await;
@@ -896,10 +934,9 @@ async fn stop_background_task() {
     let pid = pid_in(&pid_file).await;
 
     let stop = session
-        .service_opt::<dyn dim_agent_capabilities::exec_stop::ExecStop>("main")
-        .unwrap()
-        .expect("the minimal profile provides the branch stop owner");
-    let ended = stop.clone().stop(task_id.clone()).await.unwrap();
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = stop.stop(task_id.clone()).await.unwrap();
     assert_eq!(ended.status, ExecStatus::Cancelled);
     assert!(gone(&pid).await);
     let repeated = stop.stop(task_id).await.unwrap();
@@ -1167,7 +1204,7 @@ async fn a_call_that_converts_before_its_output_writes_only_the_command_output()
             &session,
             &[(
                 "execute",
-                json!({"command": "echo first; echo second", "timeoutMs": 0}),
+                json!({"command": "sleep 0.1; echo first; echo second", "timeoutMs": 0}),
             )],
         )
         .await;
@@ -1213,13 +1250,13 @@ async fn shell_exit_kills_background_jobs() {
     assert_eq!(end.task_id, task_id);
     assert_eq!(end.status, ExecStatus::Failed);
     assert!(
-        text(&end.result).contains("shell was reset"),
+        text(&end.result).contains("shell exited"),
         "{}",
         text(&end.result)
     );
     assert!(
         gone(&pid).await,
-        "background process {pid} survived the shell reset: result={:?}, process={:?}",
+        "background process {pid} survived the shell exit: result={:?}, process={:?}",
         end.result,
         std::process::Command::new("ps")
             .args(["-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", &pid])
@@ -1492,10 +1529,12 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
         ended(events).len() == 1 && notifications(events).len() == 1
     })
     .await;
+    assert_eq!(ended(&after)[0].1.status, ExecStatus::Failed);
     assert_eq!(count(&after, "exec/started"), 1);
     assert!(
-        text(&ended(&after)[0].1.result).contains("shell was reset"),
-        "the live shell must settle before recovery inspects history"
+        text(&ended(&after)[0].1.result).contains("shell reset"),
+        "the live shell must settle before recovery inspects history: {}",
+        text(&ended(&after)[0].1.result)
     );
     {
         let ready = tokio::time::timeout(

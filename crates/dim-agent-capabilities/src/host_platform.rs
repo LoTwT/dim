@@ -440,21 +440,6 @@ pub struct OutputPageReply {
     pub reset: Option<bool>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ShellEvent {
-    Output { cursor: u64, text: String },
-    Marker { cursor: u64, line: String },
-}
-
-impl ShellEvent {
-    pub(crate) fn cursor(&self) -> u64 {
-        match self {
-            Self::Output { cursor, .. } | Self::Marker { cursor, .. } => *cursor,
-        }
-    }
-}
-
 /// A request to start a persistent PTY shell on this execution node.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -630,20 +615,6 @@ pub struct OutputRequest {
     pub task_id: String,
     pub cursor: Option<u64>,
     pub limit: Option<u64>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ShellEventRequest {
-    pub task_id: String,
-    pub cursor: u64,
-    pub wait_ms: u64,
-    pub limit: usize,
-}
-
-pub(crate) struct ShellEventPage {
-    pub events: Vec<ShellEvent>,
-    pub next_cursor: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -1409,13 +1380,6 @@ impl HostPlatform {
         }
     }
 
-    pub(crate) fn job_marker(&self, id: &str) -> Option<String> {
-        match &self.task(id)?.kind {
-            TaskKind::Job(job) => Some(job.end_marker.clone()),
-            _ => None,
-        }
-    }
-
     pub(crate) fn job_completion(
         &self,
         id: &str,
@@ -1775,24 +1739,6 @@ impl HostPlatform {
             truncated: page.truncated,
             retained_from: 0,
             reset: None,
-        })
-    }
-
-    /// The private ShellSession transport: the lossless owner event page.
-    /// Not a public data-face operation and never exposed through TypeScript.
-    pub(crate) async fn shell_events(
-        &self,
-        request: ShellEventRequest,
-    ) -> Result<ShellEventPage, HostPlatformError> {
-        let shell = self
-            .shell_task(&request.task_id)
-            .ok_or(HostPlatformError::TaskUnknown)?;
-        let page = shell
-            .events_page(request.cursor, Some(request.wait_ms), request.limit)
-            .await;
-        Ok(ShellEventPage {
-            events: page.events,
-            next_cursor: page.next_cursor,
         })
     }
 
@@ -4029,13 +3975,12 @@ pub(crate) mod shell {
         OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page,
     };
     use std::{
-        collections::VecDeque,
         io::{self, Read, Write},
         path::{Path, PathBuf},
         sync::{Arc, Mutex, Weak},
-        time::{Duration, Instant},
+        time::Duration,
     };
-    use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
+    use tokio::sync::{Mutex as AsyncMutex, watch};
     use tokio_util::sync::CancellationToken;
 
     const RETAINED: usize = 64 * 1024;
@@ -4049,10 +3994,8 @@ pub(crate) mod shell {
     pub(crate) struct ShellTask {
         pty: AsyncMutex<Option<PtyProcessTree>>,
         capture: Mutex<Capture>,
-        events: Mutex<ShellEvents>,
         active_command: Mutex<Option<Weak<super::TaskRecord>>>,
         children: Mutex<Vec<Weak<super::TaskRecord>>>,
-        event_notify: Arc<Notify>,
         kill: CancellationToken,
         path: PathBuf,
         edition: super::ShellEdition,
@@ -4263,8 +4206,6 @@ pub(crate) mod shell {
         }
     }
 
-    const EVENT_RETAIN_CHARS: usize = 1024 * 1024;
-
     fn parse_shell_job(line: &str) -> Option<(String, u32)> {
         let (prefix, tail) = last_full_marker(line)?;
         if prefix != "__DIM_END_" {
@@ -4274,13 +4215,6 @@ pub(crate) mod shell {
         let pid = parts.next()?.parse().ok()?;
         let task_id = parts.next()?;
         Some((task_id.to_owned(), pid))
-    }
-
-    fn shell_event_len(event: &super::ShellEvent) -> usize {
-        match event {
-            super::ShellEvent::Output { text, .. } => text.len(),
-            super::ShellEvent::Marker { line, .. } => line.len(),
-        }
     }
 
     fn last_full_marker(line: &str) -> Option<(&'static str, &str)> {
@@ -4311,113 +4245,6 @@ pub(crate) mod shell {
             }
         }
         found.map(|(_, marker)| marker)
-    }
-
-    #[derive(Default)]
-    struct ShellEvents {
-        items: VecDeque<super::ShellEvent>,
-        pending: String,
-        base: u64,
-        next: u64,
-        chars: usize,
-    }
-
-    impl ShellEvents {
-        fn push(&mut self, text: String) {
-            self.pending.push_str(&text);
-            while let Some(newline) = self.pending.find('\n') {
-                let line: String = self.pending.drain(..=newline).collect();
-                let cursor = self.next;
-                self.next += 1;
-                self.chars += line.len();
-                if last_full_marker(&line).is_some() {
-                    self.items
-                        .push_back(super::ShellEvent::Marker { cursor, line });
-                } else {
-                    self.items
-                        .push_back(super::ShellEvent::Output { cursor, text: line });
-                }
-            }
-            if self.pending.len() > 65536 {
-                let cursor = self.next;
-                self.next += 1;
-                let text = std::mem::take(&mut self.pending);
-                self.chars += text.len();
-                self.items
-                    .push_back(super::ShellEvent::Output { cursor, text });
-            }
-        }
-
-        fn trim(&mut self) {
-            let mut removed = false;
-            while self.chars > EVENT_RETAIN_CHARS {
-                let Some(front) = self.items.pop_front() else {
-                    break;
-                };
-                self.chars = self.chars.saturating_sub(shell_event_len(&front));
-                removed = true;
-            }
-            if removed {
-                self.base = self
-                    .items
-                    .front()
-                    .map(super::ShellEvent::cursor)
-                    .unwrap_or(self.next);
-            }
-        }
-
-        fn finish(&mut self) {
-            if self.pending.is_empty() {
-                return;
-            }
-            let cursor = self.next;
-            self.next += 1;
-            let text = std::mem::take(&mut self.pending);
-            self.chars += text.len();
-            self.items
-                .push_back(super::ShellEvent::Output { cursor, text });
-        }
-
-        fn page(&mut self, cursor: u64, limit: usize) -> EventPage {
-            while let Some(front) = self.items.front() {
-                if front.cursor() >= cursor {
-                    break;
-                }
-                if let Some(front) = self.items.pop_front() {
-                    self.chars = self.chars.saturating_sub(shell_event_len(&front));
-                    self.base = front.cursor() + 1;
-                }
-            }
-            let reset = cursor < self.base;
-            let mut events = Vec::new();
-            let mut used = 0;
-            for event in self.items.iter().filter(|event| event.cursor() >= cursor) {
-                let length = shell_event_len(event);
-                if !events.is_empty() && used + length > limit {
-                    break;
-                }
-                used += length;
-                events.push(event.clone());
-                if used >= limit {
-                    break;
-                }
-            }
-            let next_cursor = events
-                .last()
-                .map(|event| event.cursor() + 1)
-                .unwrap_or(cursor.max(self.base));
-            EventPage {
-                events,
-                next_cursor,
-                reset,
-            }
-        }
-    }
-
-    pub(crate) struct EventPage {
-        pub(crate) events: Vec<super::ShellEvent>,
-        pub(crate) next_cursor: u64,
-        pub(crate) reset: bool,
     }
 
     #[derive(Default)]
@@ -4608,10 +4435,8 @@ pub(crate) mod shell {
                 let shell = Arc::new(ShellTask {
                     pty: AsyncMutex::new(None),
                     capture: Mutex::default(),
-                    events: Mutex::default(),
                     active_command: Mutex::new(None),
                     children: Mutex::new(Vec::new()),
-                    event_notify: Arc::new(Notify::new()),
                     kill: CancellationToken::new(),
                     path,
                     edition: runtime.edition,
@@ -4675,14 +4500,6 @@ pub(crate) mod shell {
                         }
                     }
                     drop(capture);
-                    {
-                        let mut events = pump.events.lock().unwrap();
-                        events.trim();
-                        if !shell_record.is_terminal() {
-                            events.push(chunk);
-                        }
-                    }
-                    pump.event_notify.notify_waiters();
                 }
                 let (raw_tail, tail) = filter.finish();
                 if !raw_tail.is_empty() {
@@ -4710,15 +4527,11 @@ pub(crate) mod shell {
                         let _ = file.write_all(&tail.as_bytes()[..take]);
                     }
                     drop(capture);
-                    let mut events = pump.events.lock().unwrap();
-                    events.trim();
-                    events.push(tail);
                 }
-                if let Some(pump) = pump.upgrade() {
-                    if let Some(line) = splitter.finish() {
-                        classify_line(&line, &pump, &jobs);
-                    }
-                    pump.events.lock().unwrap().finish();
+                if let Some(pump) = pump.upgrade()
+                    && let Some(line) = splitter.finish()
+                {
+                    classify_line(&line, &pump, &jobs);
                 }
                 let _ = drained.send(());
             });
@@ -4901,32 +4714,6 @@ pub(crate) mod shell {
             }
         }
 
-        pub(crate) async fn events_page(
-            &self,
-            cursor: u64,
-            wait_ms: Option<u64>,
-            limit: usize,
-        ) -> EventPage {
-            let wait = wait_ms.unwrap_or(0);
-            let deadline = Instant::now() + Duration::from_millis(wait.min(86_400_000));
-            loop {
-                let page = {
-                    let mut events = self.events.lock().unwrap();
-                    let page = events.page(cursor, limit);
-                    drop(events);
-                    page
-                };
-                if !page.events.is_empty() || page.reset || wait == 0 || Instant::now() >= deadline
-                {
-                    return page;
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                tokio::select! {
-                    _ = self.event_notify.notified() => {}
-                    _ = tokio::time::sleep(remaining) => {}
-                }
-            }
-        }
         pub(crate) async fn write(&self, data: &[u8]) -> io::Result<()> {
             self.pty
                 .lock()

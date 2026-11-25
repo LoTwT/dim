@@ -138,9 +138,8 @@ note to the result text when the shown output matches; stops, timeouts and
 offload failures get none. Codes and structured content are unchanged.
 
 `exec_stop {taskId}` stops a detached command owned by the calling branch. The
-App Server resolves the branch's `dyn ExecStop` when the profile provides it (ShellSession in the
-minimal profile) and otherwise uses BackgroundExec; both map `unknown`/`closed`/`read` to the same
-RPC errors. It waits for cleanup and returns the committed terminal
+App Server calls the branch's `BackgroundExec` in every profile; the operation maps
+`unknown`/`closed`/`read` to the same RPC errors. It waits for cleanup and returns the committed terminal
 `{task_id, status, result}` in the model-readable content. An already-ended task
 keeps its result. Only `cancelled` confirms cancellation; `failed` remains an error,
 including when the process tree could not be released. An unknown task fails
@@ -645,10 +644,12 @@ a filesystem lock, permission grant or cross-process compare-and-swap.
 ## BackgroundExec
 
 Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/background.rs).
-Owns commands transferred from foreground execution, their terminal records and
-bounded completion notices on the calling branch. It also settles abandoned exec
-facts and posts completion notices for ShellSession; that producer retains its live
-PTY and stop port. See [Shell exec recovery](../../../design/shell-exec-recovery.md)
+Owns every task it registers — a detached `exec` command, a persistent shell's
+background job and a shell command that outlived its foreground wait — with their
+terminal records and bounded completion notices on the calling branch. It also
+settles abandoned exec facts. `ShellSession` hands its tasks to `start` and keeps
+its queue and occupancy; the owner records every shell task's terminal and is the
+one stop entry for both task kinds. See [Shell exec recovery](../../../design/shell-exec-recovery.md)
 for the profile and generation handoff.
 
 `start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v48](../../../design/appserver/native-storage-format.md#v48-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
@@ -676,7 +677,8 @@ a running task so it ends `cancelled`
 and does not wake, and answers an already ended task's record without changing
 its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live
-process, so it is the `exec` tool's own operation and is not on the face.
+process, so it is the caller's own operation — the `exec` tool and `ShellSession` —
+and is not on the face.
 
 Historical `outputPage`, `wait` and `stop` calls use the owner's bounded task-fact reads, without rebuilding a historical task cache. `wait` returns a historical terminal record without waiting for execution; `timeoutMs` governs the completion wait for a live task. Failed reads or inconsistent required facts answer `read`, not `unknown`. Dropping a historical call cancels its read.
 

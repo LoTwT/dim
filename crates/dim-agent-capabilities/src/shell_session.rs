@@ -1,50 +1,37 @@
 //! Persistent shell execution capability: one long-lived PTY shell per branch.
 //!
 //! Every command runs in the same interactive shell, wrapped with runtime
-//! marker pairs: the
-//! command text carries the fragments only, so echoes cannot forge a full
-//! marker. A dedicated OS thread owns the blocking PTY reader and forwards
-//! chunks to an async consumer through a channel; no lock is held across a
-//! blocking read. Commands are serialized through a queue; a foreground
-//! timeout converts the call into an occupying task, and explicit
-//! background jobs report completion through their own markers, ending in
-//! `exec/ended`. BackgroundExec consumes terminals and owns their notices and recovery.
+//! marker pairs: the command text carries the fragments only, so echoes cannot
+//! forge a full marker. HostPlatform owns the PTY, reads it, parses the markers
+//! and records each command's and job's terminal. This part owns the queue and a
+//! foreground timeout moves the running command to BackgroundExec; explicit
+//! background jobs go there too. BackgroundExec publishes every shell task's
+//! terminal, its completion notice and its recovery.
 
-use crate::workspace_tools::background::BackgroundExec;
+use crate::workspace_tools::background::{BackgroundExec, StartError, StartRequest, WaitError};
 use crate::{
-    exec_stop::{ExecStop, TaskError},
     host::{HostError, SessionFiles},
     host_platform::{
         HostPlatform, HostPlatformError, OutputRequest, ShellCommandStart, ShellEdition,
-        ShellEvent, ShellEventRequest, ShellJobStart, ShellRequest, ShellStatus, ShellWrite,
-        TaskRequest, WaitReply, WaitRequest, WaitStatus,
+        ShellJobStart, ShellRequest, ShellStatus, ShellWrite, TaskRequest, WaitReply, WaitRequest,
+        WaitStatus,
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dim_agent_runtime::{Dispatcher, Names, SessionLifecycle, Timeline};
-use dim_agent_types::{
-    EventKind, ExecEndedData, ExecStartedData, ExecStatus, JsonObject, ToolContent, ToolEffect,
-    ToolResult,
-};
+use dim_agent_runtime::{Dispatcher, Names};
+use dim_agent_types::{ExecEndedData, JsonObject, ToolContent, ToolEffect, ToolResult};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-const RETAINED_BUFFER_LIMIT: usize = 64 * 1024;
-/// The size `retained` must pass before it is cut back to
-/// `RETAINED_BUFFER_LIMIT`. A burst arrives in thousands of small chunks, so
-/// trimming at the limit itself would re-copy the buffer once per chunk; the
-/// slack makes the cut amortized while the buffer stays bounded by twice the
-/// limit, which is far above the longest marker line it must hold.
-const RETAINED_BUFFER_TRIM: usize = 2 * RETAINED_BUFFER_LIMIT;
 const OUTPUT_LIMIT: usize = 16_000;
 const MAX_TIMEOUT_MS: u64 = 3_600_000;
 const DESCRIPTION_CHARS: usize = 200;
@@ -83,48 +70,30 @@ struct QueuedCommand {
     done: oneshot::Sender<Result<ToolResult, String>>,
 }
 
-/// The foreground call that outlived its timeout; the shell is occupied
-/// until its end marker arrives.
+/// The foreground call that outlived its timeout; the shell stays occupied
+/// until its terminal record arrives.
 struct OccupyingTask {
+    /// The branch-visible id BackgroundExec answers.
     task_id: String,
+    /// The owner's task id the command's output is read by.
+    host_task_id: String,
     output_path: PathBuf,
     delivered: usize,
-    ended: Arc<Notify>,
-    _hold: Option<dim_agent_runtime::SessionHold>,
-}
-
-struct BackgroundTask {
-    task_id: String,
-    output_path: PathBuf,
-    _hold: Option<dim_agent_runtime::SessionHold>,
 }
 
 struct Inner {
     shell: Option<String>,
-    /// Counts spawned shells; a consumer loop serves only its own shell.
+    /// Counts spawned shells; an exit waiter serves only its own shell.
     generation: u64,
     dialect: ShellDialect,
     shell_exe: Option<PathBuf>,
     queue: VecDeque<QueuedCommand>,
     queue_running: bool,
-    /// Raw stream tail, for the markers of commands that own no capture:
-    /// initialization, background jobs and their pids.
-    retained: String,
     occupying: Option<OccupyingTask>,
-    background: HashMap<String, BackgroundTask>,
     /// Note for the call that was running when the shell exited.
     shell_exit: Option<String>,
     /// The next call after a shell death reports the reset.
     had_reset: bool,
-    /// Final snapshot of the last occupying task, for occupied-period waits.
-    occupy_tail: Option<String>,
-    occupy_exit: Option<String>,
-}
-
-/// A terminal produced by the reader and its waiting caller.
-struct Settlement {
-    data: ExecEndedData,
-    ended: Option<Arc<Notify>>,
 }
 
 pub struct ShellSession {
@@ -133,7 +102,6 @@ pub struct ShellSession {
     config: ShellSessionConfig,
     lifecycle: CancellationToken,
     host: Arc<HostPlatform>,
-    timeline: Arc<Timeline>,
     #[expect(
         dead_code,
         reason = "stored at composition; no shell path dispatches through it"
@@ -143,20 +111,21 @@ pub struct ShellSession {
     /// native storage, where shell output has no owner.
     owner: Option<Arc<SessionFiles>>,
     session_id: String,
-    session_lifecycle: Option<Arc<SessionLifecycle>>,
-    recovery: Option<Arc<BackgroundExec>>,
+    /// Owns every shell task's terminal, notice and recovery.
+    background: Arc<BackgroundExec>,
     tasks: Arc<tokio::sync::Mutex<TaskTracker>>,
 }
 
 impl ShellSession {
-    /// The branch must mount BackgroundExec to recover exec facts and publish completion notices.
+    /// The branch must mount BackgroundExec: it owns every shell task's
+    /// terminal, completion notice and recovery.
     pub fn new(
         config: ShellSessionConfig,
         host: Arc<HostPlatform>,
-        timeline: Arc<Timeline>,
         dispatcher: Arc<Dispatcher>,
         owner: Option<Arc<SessionFiles>>,
         session_id: String,
+        background: Arc<BackgroundExec>,
     ) -> Self {
         Self {
             facts: None,
@@ -167,23 +136,17 @@ impl ShellSession {
                 shell_exe: None,
                 queue: VecDeque::new(),
                 queue_running: false,
-                retained: String::new(),
                 occupying: None,
-                background: HashMap::new(),
                 shell_exit: None,
                 had_reset: false,
-                occupy_tail: None,
-                occupy_exit: None,
             }),
             config,
             lifecycle: CancellationToken::new(),
             host,
-            timeline,
             dispatcher,
             owner,
             session_id,
-            session_lifecycle: None,
-            recovery: None,
+            background,
             tasks: Arc::new(tokio::sync::Mutex::new(TaskTracker::new())),
         }
     }
@@ -278,91 +241,109 @@ impl ShellSession {
         Ok(result)
     }
 
-    /// While the shell is occupied: wait for the occupying task, then report
-    /// new output; the caller's command was never sent.
+    /// While the shell is occupied: wait for the occupying task's terminal,
+    /// then report its output; the caller's command was never sent. A task the
+    /// owner already recorded as terminal no longer occupies the shell, so the
+    /// caller's command runs.
     async fn occupied_wait(
         self: &Arc<Self>,
         queued: &QueuedCommand,
     ) -> Option<Result<ToolResult, String>> {
-        let (notify, task_id, output_path) = {
+        let (task_id, host_task_id, output_path, delivered) = {
             let inner = self.inner.lock().await;
             let task = inner.occupying.as_ref()?;
             (
-                task.ended.clone(),
                 task.task_id.clone(),
+                task.host_task_id.clone(),
                 task.output_path.clone(),
+                task.delivered,
             )
         };
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_millis(queued.timeout_ms.min(86_400_000));
-        let ended = tokio::select! {
+        match self.background.wait(task_id.clone(), 0).await {
+            Ok(_) => {
+                self.clear_occupancy(&task_id).await;
+                return None;
+            }
+            Err(WaitError::Timeout) => {}
+            Err(error) => return Some(Err(occupancy_error(&task_id, error))),
+        }
+        let wait = self
+            .background
+            .wait(task_id.clone(), queued.timeout_ms.min(86_400_000));
+        tokio::pin!(wait);
+        let outcome = tokio::select! {
             _ = queued.cancel.cancelled() => {
                 return Some(Err("command cancelled while waiting for the shell".into()));
             }
             _ = self.lifecycle.cancelled() => {
                 return Some(Err("shell session closed while waiting for the shell".into()));
             }
-            _ = &mut notified => true,
-            _ = tokio::time::sleep_until(deadline) => false,
+            outcome = &mut wait => outcome,
         };
-        let inner = self.inner.lock().await;
-        if ended || inner.occupying.is_none() {
-            let tail = inner.occupy_tail.clone().unwrap_or_default();
-            let exit = inner.occupy_exit.clone().unwrap_or_default();
-            let mut text = String::new();
-            if !tail.is_empty() {
-                text.push_str(&tail);
-                if !tail.ends_with('\n') {
+        match outcome {
+            Ok(ended) => {
+                self.clear_occupancy(&task_id).await;
+                let mut text = ended_text(&ended);
+                if !text.is_empty() && !text.ends_with('\n') {
                     text.push('\n');
                 }
+                text.push_str(
+                    "The command was not executed: the shell was occupied. Resend it now.",
+                );
+                Some(Ok(ToolResult::text(text)))
             }
-            if !exit.is_empty() {
-                text.push_str(&exit);
-                text.push('\n');
-            }
-            text.push_str("The command was not executed: the shell was occupied. Resend it now.");
-            return Some(Ok(ToolResult::text(text)));
-        }
-        let delivered = inner.occupying.as_ref().expect("checked above").delivered;
-        drop(inner);
-        let page = self
-            .host
-            .output(OutputRequest {
-                task_id: task_id.clone(),
-                cursor: Some(delivered as u64),
-                limit: Some(OUTPUT_LIMIT as u64),
-            })
-            .await
-            .ok();
-        let mut text = String::new();
-        if let Some(page) = page {
-            if !page.text.is_empty() {
-                text.push_str(&page.text);
-                if !page.text.ends_with('\n') {
-                    text.push('\n');
+            Err(WaitError::Timeout) => {
+                let page = self
+                    .host
+                    .output(OutputRequest {
+                        task_id: host_task_id,
+                        cursor: Some(delivered as u64),
+                        limit: Some(OUTPUT_LIMIT as u64),
+                    })
+                    .await
+                    .ok();
+                let mut text = String::new();
+                if let Some(page) = page {
+                    if !page.text.is_empty() {
+                        text.push_str(&page.text);
+                        if !page.text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    }
+                    let mut inner = self.inner.lock().await;
+                    if let Some(task) = inner
+                        .occupying
+                        .as_mut()
+                        .filter(|task| task.task_id == task_id)
+                    {
+                        task.delivered = page
+                            .next_cursor
+                            .unwrap_or(task.delivered as u64 + page.bytes)
+                            as usize;
+                    }
                 }
+                text.push_str(&format!(
+                    "Task {} still occupies the shell. The command was not executed; resend it after the task ends.\nTask ID: {}\nOutput: {}",
+                    task_id,
+                    task_id,
+                    output_path.display()
+                ));
+                Some(Ok(ToolResult::text(text)))
             }
-            let mut inner = self.inner.lock().await;
-            if let Some(task) = inner
-                .occupying
-                .as_mut()
-                .filter(|task| task.task_id == task_id)
-            {
-                task.delivered =
-                    page.next_cursor
-                        .unwrap_or(task.delivered as u64 + page.bytes) as usize;
-            }
+            Err(error) => Some(Err(occupancy_error(&task_id, error))),
         }
-        text.push_str(&format!(
-            "Task {} still occupies the shell. The command was not executed; resend it after the task ends.\nTask ID: {}\nOutput: {}",
-            task_id,
-            task_id,
-            output_path.display()
-        ));
-        Some(Ok(ToolResult::text(text)))
+    }
+
+    /// Drops the occupancy mark of a task whose terminal the owner recorded.
+    async fn clear_occupancy(&self, task_id: &str) {
+        let mut inner = self.inner.lock().await;
+        if inner
+            .occupying
+            .as_ref()
+            .is_some_and(|task| task.task_id == task_id)
+        {
+            inner.occupying = None;
+        }
     }
 
     async fn write_shell(&self, bytes: &[u8]) -> Result<(), HostError> {
@@ -516,74 +497,25 @@ impl ShellSession {
             inner.dialect = dialect;
             inner.shell_exit = None;
             inner.had_reset = false;
-            inner.occupy_tail = None;
-            inner.occupy_exit = None;
             inner.shell = Some(task_id.clone());
             inner.generation
         };
         let this = self.clone();
-        let lifecycle = self.lifecycle.clone();
         {
             let tasks = self.tasks.lock().await;
             tasks.spawn(async move {
-                let mut event_cursor = 0u64;
-                let wait_cancel = lifecycle.clone();
-                let cancelled: crate::host::CancelledFn = std::sync::Arc::new(move || {
-                    let cancel = wait_cancel.clone();
-                    Box::pin(async move {
-                        cancel.cancelled().await;
-                        Ok(())
-                    })
-                });
-                let wait = this.host.wait(
-                    WaitRequest {
-                        task_id: task_id.clone(),
-                        timeout_ms: None,
-                    },
-                    cancelled,
-                );
-                tokio::pin!(wait);
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = lifecycle.cancelled() => break,
-                        page = this.host.shell_events(ShellEventRequest {
-                            task_id: task_id.clone(),
-                            cursor: event_cursor,
-                            wait_ms: 100,
-                            limit: 64 * 1024,
-                        }) => match page {
-                            Ok(page) => {
-                                for event in page.events {
-                                    this.handle_event(event).await;
-                                }
-                                event_cursor = page.next_cursor;
-                            }
-                            Err(_) => break,
+                let end = this
+                    .host
+                    .wait(
+                        WaitRequest {
+                            task_id,
+                            timeout_ms: None,
                         },
-                        result = &mut wait => {
-                            let end = result.ok();
-                            loop {
-                                let page = this.host.shell_events(ShellEventRequest {
-                                    task_id: task_id.clone(),
-                                    cursor: event_cursor,
-                                    wait_ms: 0,
-                                    limit: 64 * 1024,
-                                }).await;
-                                let Ok(page) = page else { break };
-                                if page.events.is_empty() {
-                                    break;
-                                }
-                                for event in page.events {
-                                        this.handle_event(event).await;
-                                }
-                                event_cursor = page.next_cursor;
-                            }
-                            this.handle_shell_exit(generation, end).await;
-                            break;
-                        },
-                    }
-                }
+                        cancelled_fn(&this.lifecycle),
+                    )
+                    .await
+                    .ok();
+                this.handle_shell_exit(generation, end).await;
             });
         }
         let exe_name = {
@@ -615,7 +547,7 @@ impl ShellSession {
         Ok(reset_note)
     }
 
-    /// Sends the init command and waits for its markers; a timeout
+    /// Sends the init command and waits for its terminal; a timeout
     /// terminates the shell and fails the call.
     async fn send_initial(self: &Arc<Self>, command: &str) -> Result<(), String> {
         let (start, end) = marker_pair();
@@ -627,34 +559,56 @@ impl ShellSession {
             ShellDialect::Posix => posix_command(command, &start, &end),
             ShellDialect::Pwsh => pwsh_command(command, &start, &end),
         };
-        self.write_line(&wrapped).await.map_err(|e| e.to_string())?;
-        let end_marker = end.full();
-        let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
-        loop {
-            {
-                let inner = self.inner.lock().await;
-                if inner.retained.contains(&end_marker) {
-                    return Ok(());
-                }
-                if inner.shell.is_none() {
-                    return Err("shell exited during initialization".into());
-                }
+        let command_id = format!("shell-init-{}", uuid::Uuid::new_v4().simple());
+        let output_path = self.config.output_dir.join(format!("{command_id}.log"));
+        self.start_command(&command_id, &start.full(), &end.full(), &wrapped)
+            .await
+            .map_err(|error| error.to_string())?;
+        let reply = self
+            .host
+            .wait(
+                WaitRequest {
+                    task_id: command_id.clone(),
+                    timeout_ms: Some(INIT_TIMEOUT.as_millis() as u64),
+                },
+                never_cancelled(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = std::fs::remove_file(&output_path);
+        if reply.status == WaitStatus::Running {
+            let mut inner = self.inner.lock().await;
+            let task_id = inner.shell.take();
+            let captured = reply.preview.clone();
+            inner.had_reset = true;
+            drop(inner);
+            if let Some(task_id) = task_id {
+                self.stop_shell(&task_id).await;
             }
-            if tokio::time::Instant::now() >= deadline {
-                let mut inner = self.inner.lock().await;
-                let task_id = inner.shell.take();
-                let captured = inner.retained.clone();
-                inner.had_reset = true;
-                drop(inner);
-                if let Some(task_id) = task_id {
-                    self.stop_shell(&task_id).await;
-                }
-                return Err(format!(
-                    "shell did not initialize; captured output: {captured}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = self
+                .host
+                .settle(TaskRequest {
+                    task_id: command_id.clone(),
+                })
+                .await;
+            return Err(format!(
+                "shell did not initialize; captured output: {captured}"
+            ));
         }
+        let _ = self
+            .host
+            .settle(TaskRequest {
+                task_id: command_id.clone(),
+            })
+            .await;
+        if matches!(
+            reply.failure,
+            Some(crate::host_platform::TaskFailure::ShellReset)
+                | Some(crate::host_platform::TaskFailure::ShellExited)
+        ) {
+            return Err("shell exited during initialization".into());
+        }
+        Ok(())
     }
 
     /// Writes a wrapped command and starts its owner-side capture.
@@ -686,50 +640,17 @@ impl ShellSession {
         Ok(())
     }
 
-    /// Consumes PTY output: folds it into the retained buffer and strips a
-    /// registered job's end marker. Terminal facts come from the host watcher.
-    async fn handle_event(self: &Arc<Self>, event: ShellEvent) {
-        match event {
-            ShellEvent::Output { text, .. } => self.handle_output(&text).await,
-            ShellEvent::Marker { line, .. } => self.handle_output(&line).await,
-        }
-    }
-
-    async fn handle_output(self: &Arc<Self>, text: &str) {
-        let mut inner = self.inner.lock().await;
-        inner.retained.push_str(text);
-        let markers: Vec<String> = inner
-            .background
-            .values()
-            .filter_map(|task| self.host.job_marker(&task.task_id))
-            .collect();
-        for marker in markers {
-            strip_marker(&mut inner.retained, &marker);
-        }
-        if inner.retained.len() > RETAINED_BUFFER_TRIM {
-            inner.retained = tail_bytes(&inner.retained, RETAINED_BUFFER_LIMIT).to_owned();
-        }
-    }
-
-    /// The shell of `generation` died: note the exit, settle each child from
-    /// the owner terminal when it is available (falling back to the reset
-    /// result only when the owner has no terminal), and mark the reset.
+    /// The shell of `generation` died: note the exit, drop the occupying mark
+    /// and release the owner's shell record. The owner has already swept every
+    /// command and job child to its terminal, so BackgroundExec publishes their
+    /// results and this part only waits for a new shell.
     async fn handle_shell_exit(self: &Arc<Self>, generation: u64, end: Option<WaitReply>) {
-        let mut settled: Vec<Settlement> = Vec::new();
-        let mut orphans: Vec<(String, PathBuf)> = Vec::new();
-        let mut cleanup_unconfirmed = false;
-        #[allow(
-            unused_assignments,
-            reason = "the early generation return leaves the initial value unread"
-        )]
-        let mut shell_task = None;
-        {
+        let shell_task = {
             let mut inner = self.inner.lock().await;
             if inner.generation != generation {
                 return;
             }
             let task_id = inner.shell.take();
-            shell_task = task_id.clone();
             if task_id.is_some() {
                 let note = match end {
                     Some(reply) => match (reply.signal.as_deref(), reply.exit_code) {
@@ -742,93 +663,12 @@ impl ShellSession {
                 inner.shell_exit = Some(note);
             }
             inner.had_reset = true;
-            if inner.dialect == ShellDialect::Posix {
-                orphans = inner
-                    .background
-                    .iter()
-                    .map(|(id, task)| (id.clone(), task.output_path.clone()))
-                    .collect();
-            }
-        }
-        for (task_id, output_path) in orphans {
-            let killed = self
-                .host
-                .kill(TaskRequest {
-                    task_id: task_id.clone(),
-                })
-                .await
-                .map_err(|error| std::io::Error::other(error.to_string()));
-            let reply = self
-                .host
-                .wait(
-                    WaitRequest {
-                        task_id: task_id.clone(),
-                        timeout_ms: Some(2_000),
-                    },
-                    never_cancelled(),
-                )
-                .await
-                .ok();
-            if reply
-                .as_ref()
-                .is_none_or(|reply| reply.status == WaitStatus::Running)
-            {
-                cleanup_unconfirmed = true;
-                continue;
-            }
-            let removed = self
-                .inner
-                .lock()
-                .await
-                .background
-                .remove(&task_id)
-                .is_some();
-            if !removed {
-                continue;
-            }
-            let reply = reply.expect("checked above");
-            if killed.is_ok() {
-                let _ = self
-                    .host
-                    .settle(TaskRequest {
-                        task_id: task_id.clone(),
-                    })
-                    .await;
-            }
-            let mut data = ended_from_reply(&task_id, &reply, &output_path);
-            if let Err(error) = killed {
-                cleanup_unconfirmed = true;
-                if let ToolContent::Text(text) = &mut data.result.content {
-                    text.push_str(&format!("\nJob could not be terminated: {error}"));
-                }
-                if let Some(fields) = data.result.structured_content.as_mut() {
-                    fields.insert("code".into(), "exec_terminate_failed".into());
-                }
-            }
-            settled.push(Settlement { data, ended: None });
-        }
+            inner.occupying = None;
+            task_id
+        };
         if let Some(task_id) = shell_task {
-            if cleanup_unconfirmed {
-                let _ = self
-                    .host
-                    .kill(TaskRequest {
-                        task_id: task_id.clone(),
-                    })
-                    .await;
-            } else {
-                self.stop_shell(&task_id).await;
-            }
+            self.stop_shell(&task_id).await;
         }
-        for settlement in settled {
-            self.settle(settlement.data);
-            if let Some(notify) = settlement.ended {
-                notify.notify_waiters();
-            }
-        }
-    }
-
-    fn settle(&self, data: ExecEndedData) {
-        let _ = self.timeline.append(EventKind::ExecEnded(data).into());
     }
 
     /// One foreground call: start its owner-side capture, wait for the
@@ -1101,7 +941,9 @@ impl ShellSession {
             .map_err(|failure| failure.to_string())
     }
 
-    /// Registers the running command as the occupying task and reports it.
+    /// Hands the command that outlived its timeout to BackgroundExec and
+    /// reports it. BackgroundExec registers the task, publishes its terminal
+    /// and settles it; this part only keeps the occupancy for the queue.
     async fn occupy_current(
         self: &Arc<Self>,
         command: &str,
@@ -1109,26 +951,9 @@ impl ShellSession {
         output_path: &Path,
         context: &CallContext,
     ) -> Result<ToolResult, String> {
-        let description = describe(command);
-        let never = CancellationToken::new();
-        let cancelled: crate::host::CancelledFn = Arc::new(move || {
-            let never = never.clone();
-            Box::pin(async move {
-                never.cancelled().await;
-                Ok(())
-            })
-        });
-        let reply = self
-            .host
-            .wait(
-                WaitRequest {
-                    task_id: command_id.to_owned(),
-                    timeout_ms: Some(0),
-                },
-                cancelled,
-            )
-            .await
-            .ok();
+        if self.lifecycle.is_cancelled() {
+            return Err("shell session closed".into());
+        }
         let page = self
             .host
             .output(OutputRequest {
@@ -1142,121 +967,46 @@ impl ShellSession {
             .as_ref()
             .map(|page| page.text.clone())
             .unwrap_or_default();
-        let omitted = reply.as_ref().is_some_and(|reply| reply.output_truncated)
-            || page.as_ref().is_some_and(|page| page.truncated);
+        let omitted = page.as_ref().is_some_and(|page| page.truncated);
+        let started = self
+            .background
+            .start(StartRequest {
+                turn_id: context.turn_id.clone(),
+                request_id: context.request_id.clone(),
+                call_id: context.call_id.clone(),
+                task_id: command_id.to_owned(),
+                host_task_id: command_id.to_owned(),
+                description: describe(command),
+                title: None,
+                output_path: output_path.to_string_lossy().into_owned(),
+            })
+            .await
+            .map_err(|error| match error {
+                StartError::Closing => "shell session closed".to_owned(),
+                StartError::Timeline(error) => error.to_string(),
+            })?;
         {
             let mut inner = self.inner.lock().await;
-            if self.lifecycle.is_cancelled() {
-                return Err("shell session closed".into());
-            }
-            self.timeline
-                .append(
-                    EventKind::ExecStarted(ExecStartedData {
-                        turn_id: context.turn_id.clone(),
-                        request_id: context.request_id.clone(),
-                        call_id: context.call_id.clone(),
-                        task_id: command_id.to_owned(),
-                        description,
-                        title: None,
-                        output_path: output_path.to_string_lossy().into_owned(),
-                    })
-                    .into(),
-                )
-                .map_err(|error| error.to_string())?;
-            let hold = self
-                .session_lifecycle
-                .as_ref()
-                .and_then(|lifecycle| lifecycle.take_hold());
-            inner.occupy_tail = None;
-            inner.occupy_exit = None;
             inner.occupying = Some(OccupyingTask {
-                task_id: command_id.to_owned(),
+                task_id: started.clone(),
+                host_task_id: command_id.to_owned(),
                 output_path: output_path.to_path_buf(),
                 delivered: preview.len(),
-                ended: Arc::new(Notify::new()),
-                _hold: hold,
             });
         }
-        let ended = {
-            let inner = self.inner.lock().await;
-            inner
-                .occupying
-                .as_ref()
-                .expect("just installed")
-                .ended
-                .clone()
-        };
-        let this = self.clone();
-        let id = command_id.to_owned();
-        let path = output_path.to_path_buf();
-        let tasks = self.tasks.lock().await;
-        tasks.spawn(async move {
-            let reply = this
-                .host
-                .wait(
-                    WaitRequest {
-                        task_id: id.clone(),
-                        timeout_ms: None,
-                    },
-                    never_cancelled(),
-                )
-                .await;
-            let (result, status, preview, exit) = match reply {
-                Ok(reply) => {
-                    let code = wait_code(&reply);
-                    (
-                        ended_result(&id, &path, &reply.preview, &code),
-                        exit_status(&code),
-                        reply.preview.clone(),
-                        exit_line(&code),
-                    )
-                }
-                Err(_) => (
-                    reset_result(&id, &path, ""),
-                    ExecStatus::Failed,
-                    String::new(),
-                    "[Task failed: shell was reset]".to_owned(),
-                ),
-            };
-            let published = {
-                let mut inner = this.inner.lock().await;
-                if inner
-                    .occupying
-                    .as_ref()
-                    .is_some_and(|task| task.task_id == id)
-                {
-                    inner.occupy_tail = Some(preview);
-                    inner.occupy_exit = Some(exit);
-                    inner.occupying = None;
-                    true
-                } else {
-                    false
-                }
-            };
-            if !published {
-                return;
-            }
-            this.settle(ExecEndedData {
-                task_id: id.clone(),
-                status,
-                result,
-            });
-            let _ = this.host.settle(TaskRequest { task_id: id }).await;
-            ended.notify_waiters();
-        });
         let mut text = String::new();
         push_output(&mut text, &preview);
         if omitted {
             text.push_str("[Output truncated]\n");
         }
         text.push_str(&format!(
-            "Command is still running and occupies the shell.\nTask ID: {command_id}\nOutput: {}",
+            "Command is still running and occupies the shell.\nTask ID: {started}\nOutput: {}",
             output_path.display()
         ));
         let mut result = ToolResult::text(text);
         result.structured_content = Some(structured(json!({
             "type": "started",
-            "taskId": command_id,
+            "taskId": started,
             "outputPath": output_path.to_string_lossy(),
         })));
         Ok(result)
@@ -1309,348 +1059,47 @@ impl ShellSession {
                 )
             }
         };
-        {
-            let mut inner = self.inner.lock().await;
-            if self.lifecycle.is_cancelled() {
-                return Err("shell session closed".into());
-            }
-            self.timeline
-                .append(
-                    EventKind::ExecStarted(ExecStartedData {
-                        turn_id: context.turn_id.clone(),
-                        request_id: context.request_id.clone(),
-                        call_id: context.call_id.clone(),
-                        task_id: task_id.clone(),
-                        description: description.clone(),
-                        title: None,
-                        output_path: output_path_text.clone(),
-                    })
-                    .into(),
-                )
-                .map_err(|error| error.to_string())?;
-            let hold = self
-                .session_lifecycle
-                .as_ref()
-                .and_then(|lifecycle| lifecycle.take_hold());
-            inner.background.insert(
-                task_id.clone(),
-                BackgroundTask {
-                    task_id: task_id.clone(),
-                    output_path: output_path.clone(),
-                    _hold: hold,
-                },
-            );
-        }
-        if let Err(error) = self
-            .write_line_job(
-                &wrapped,
-                ShellJobStart {
-                    task_id: task_id.clone(),
-                    end_marker: completion.full(),
-                    output_path: output_path_text,
-                },
-            )
+        self.write_line_job(
+            &wrapped,
+            ShellJobStart {
+                task_id: task_id.clone(),
+                end_marker: completion.full(),
+                output_path: output_path_text.clone(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let started = self
+            .background
+            .start(StartRequest {
+                turn_id: context.turn_id.clone(),
+                request_id: context.request_id.clone(),
+                call_id: context.call_id.clone(),
+                task_id: task_id.clone(),
+                host_task_id: task_id,
+                description,
+                title: None,
+                output_path: output_path_text,
+            })
             .await
-        {
-            let task = self.inner.lock().await.background.remove(&task_id);
-            if task.is_some() {
-                self.settle(ExecEndedData {
-                    task_id: task_id.clone(),
-                    status: ExecStatus::Failed,
-                    result: ToolResult::error(error.to_string()),
-                });
-            }
-            return Err(error.to_string());
-        }
-        let error_path = pwsh_paths.as_ref().map(|(_, error)| error.clone());
-        let this = self.clone();
-        let host = self.host.clone();
-        let watched = task_id.clone();
-        let watched_output = output_path.clone();
-        self.tasks.lock().await.spawn(async move {
-            let reply = host
-                .wait(
-                    WaitRequest {
-                        task_id: watched.clone(),
-                        timeout_ms: None,
-                    },
-                    never_cancelled(),
-                )
-                .await;
-            if let Ok(reply) = reply {
-                if this
-                    .inner
-                    .lock()
-                    .await
-                    .background
-                    .remove(&watched)
-                    .is_none()
-                {
-                    return;
-                }
-                let _ = host
-                    .settle(TaskRequest {
-                        task_id: watched.clone(),
-                    })
-                    .await;
-                let mut data = ended_from_reply(&watched, &reply, &watched_output);
-                if let Some(error_path) = &error_path
-                    && let ToolContent::Text(text) = &mut data.result.content
-                {
-                    text.push_str(&format!("\nStandard error: {}", error_path.display()));
-                }
-                this.settle(data);
-            }
-        });
-        let mut result = ToolResult::text(format!(
-            "Background command started.\nTask ID: {task_id}\nOutput: {}",
+            .map_err(|error| match error {
+                StartError::Closing => "shell session closed".to_owned(),
+                StartError::Timeline(error) => error.to_string(),
+            })?;
+        let mut text = format!(
+            "Background command started.\nTask ID: {started}\nOutput: {}",
             output_path.display()
-        ));
+        );
+        if let Some((_, error_path)) = &pwsh_paths {
+            text.push_str(&format!("\nStandard error: {}", error_path.display()));
+        }
+        let mut result = ToolResult::text(text);
         result.structured_content = Some(structured(json!({
             "type": "started",
-            "taskId": task_id,
+            "taskId": started,
             "outputPath": output_path.to_string_lossy(),
         })));
         Ok(ran(result, command, None))
-    }
-
-    /// Stops a task by id.
-    pub async fn stop(self: &Arc<Self>, task_id: &str) -> Result<ExecEndedData, TaskError> {
-        let occupying = {
-            let mut inner = self.inner.lock().await;
-            if inner
-                .occupying
-                .as_ref()
-                .is_some_and(|task| task.task_id == task_id)
-            {
-                inner.occupying.take()
-            } else {
-                None
-            }
-        };
-        if let Some(occ) = occupying {
-            {
-                let inner = self.inner.lock().await;
-                if inner.shell.is_some() {
-                    drop(inner);
-                    let _ = self.write_shell(b"\x03").await;
-                }
-            }
-            let never = CancellationToken::new();
-            let cancelled: crate::host::CancelledFn = Arc::new(move || {
-                let never = never.clone();
-                Box::pin(async move {
-                    never.cancelled().await;
-                    Ok(())
-                })
-            });
-            let reply = self
-                .host
-                .wait(
-                    WaitRequest {
-                        task_id: task_id.to_owned(),
-                        timeout_ms: Some(STOP_WAIT.as_millis() as u64),
-                    },
-                    cancelled,
-                )
-                .await
-                .ok();
-            let found = reply
-                .as_ref()
-                .is_some_and(|reply| reply.status != WaitStatus::Running);
-            let page = self
-                .host
-                .output(OutputRequest {
-                    task_id: task_id.to_owned(),
-                    cursor: None,
-                    limit: Some(OUTPUT_LIMIT as u64),
-                })
-                .await
-                .ok();
-            let preview = page.map(|page| page.text).unwrap_or_default();
-            {
-                let mut inner = self.inner.lock().await;
-                inner.occupy_tail = Some(preview);
-                inner.occupy_exit = None;
-                if !found {
-                    let shell = inner.shell.take();
-                    inner.shell_exit = Some("[shell was terminated]".into());
-                    inner.had_reset = true;
-                    drop(inner);
-                    if let Some(shell) = shell {
-                        self.stop_shell(&shell).await;
-                    }
-                }
-            }
-            let _ = self
-                .host
-                .settle(TaskRequest {
-                    task_id: task_id.to_owned(),
-                })
-                .await;
-            let data = ExecEndedData {
-                task_id: task_id.to_owned(),
-                status: ExecStatus::Cancelled,
-                result: ToolResult::text("Command interrupted."),
-            };
-            self.settle(data.clone());
-            occ.ended.notify_waiters();
-            return Ok(data);
-        }
-        let task = {
-            let mut inner = self.inner.lock().await;
-            inner.background.remove(task_id)
-        };
-        if let Some(task) = task {
-            let killed = self
-                .host
-                .kill(TaskRequest {
-                    task_id: task.task_id.clone(),
-                })
-                .await;
-            if matches!(killed, Err(HostPlatformError::TaskRunning)) {
-                let task_id = task.task_id.clone();
-                let output_path = task.output_path.clone();
-                self.inner
-                    .lock()
-                    .await
-                    .background
-                    .insert(task_id.clone(), task);
-                let this = self.clone();
-                let host = self.host.clone();
-                let watched = task_id.clone();
-                self.tasks.lock().await.spawn(async move {
-                    let reply = host
-                        .wait(
-                            WaitRequest {
-                                task_id: watched.clone(),
-                                timeout_ms: None,
-                            },
-                            never_cancelled(),
-                        )
-                        .await;
-                    if let Ok(reply) = reply {
-                        if this
-                            .inner
-                            .lock()
-                            .await
-                            .background
-                            .remove(&watched)
-                            .is_none()
-                        {
-                            return;
-                        }
-                        let _ = host
-                            .settle(TaskRequest {
-                                task_id: watched.clone(),
-                            })
-                            .await;
-                        this.settle(ended_from_reply(&watched, &reply, &output_path));
-                    }
-                });
-                return Ok(ExecEndedData {
-                    task_id,
-                    status: ExecStatus::Cancelled,
-                    result: ToolResult::text(
-                        "Background command stop requested; it will end after it starts.",
-                    ),
-                });
-            }
-            let kill_failed = killed.is_err();
-            let data = match killed {
-                Ok(()) => {
-                    let reply = self
-                        .host
-                        .wait(
-                            WaitRequest {
-                                task_id: task.task_id.clone(),
-                                timeout_ms: None,
-                            },
-                            never_cancelled(),
-                        )
-                        .await
-                        .ok();
-                    let _ = self
-                        .host
-                        .settle(TaskRequest {
-                            task_id: task.task_id.clone(),
-                        })
-                        .await;
-                    reply.map_or_else(
-                        || ExecEndedData {
-                            task_id: task_id.to_owned(),
-                            status: ExecStatus::Cancelled,
-                            result: ToolResult::text("Background command stopped."),
-                        },
-                        |reply| ended_from_reply(task_id, &reply, &task.output_path),
-                    )
-                }
-                Err(error) => {
-                    let mut result = ToolResult::error(format!(
-                        "Background command could not be terminated: {error}\nOutput: {}",
-                        task.output_path.display()
-                    ));
-                    result.structured_content = Some(structured(json!({
-                        "code": "exec_terminate_failed",
-                        "taskId": task_id,
-                        "outputPath": task.output_path.to_string_lossy(),
-                    })));
-                    ExecEndedData {
-                        task_id: task_id.to_owned(),
-                        status: ExecStatus::Failed,
-                        result,
-                    }
-                }
-            };
-            if kill_failed {
-                let watched = task.task_id.clone();
-                let output_path = task.output_path.clone();
-                self.inner
-                    .lock()
-                    .await
-                    .background
-                    .insert(watched.clone(), task);
-                let this = self.clone();
-                let host = self.host.clone();
-                self.tasks.lock().await.spawn(async move {
-                    let reply = host
-                        .wait(
-                            WaitRequest {
-                                task_id: watched.clone(),
-                                timeout_ms: None,
-                            },
-                            never_cancelled(),
-                        )
-                        .await;
-                    if let Ok(reply) = reply {
-                        if this
-                            .inner
-                            .lock()
-                            .await
-                            .background
-                            .remove(&watched)
-                            .is_none()
-                        {
-                            return;
-                        }
-                        let _ = host
-                            .settle(TaskRequest {
-                                task_id: watched.clone(),
-                            })
-                            .await;
-                        this.settle(ended_from_reply(&watched, &reply, &output_path));
-                    }
-                });
-                return Ok(data);
-            }
-            self.settle(data.clone());
-            return Ok(data);
-        }
-        Err(TaskError::Unknown)
-    }
-
-    async fn write_line(&self, line: &str) -> Result<(), HostError> {
-        self.write_shell(format!("{line}\n").as_bytes()).await
     }
 
     async fn write_line_job(&self, line: &str, job: ShellJobStart) -> Result<(), HostError> {
@@ -1670,43 +1119,15 @@ impl ShellSession {
     }
 }
 
-impl ExecStop for ShellSession {
-    fn stop(
-        self: Arc<Self>,
-        task_id: String,
-    ) -> BoxFuture<'static, Result<ExecEndedData, TaskError>> {
-        Box::pin(async move {
-            match ShellSession::stop(&self, &task_id).await {
-                Err(TaskError::Unknown) => match &self.recovery {
-                    Some(recovery) => recovery.stop(task_id).await.map_err(|error| match error {
-                        crate::workspace_tools::background::TaskError::Closed => TaskError::Closed,
-                        crate::workspace_tools::background::TaskError::Unknown => {
-                            TaskError::Unknown
-                        }
-                        crate::workspace_tools::background::TaskError::Read(_) => TaskError::Read,
-                    }),
-                    None => Err(TaskError::Unknown),
-                },
-                other => other,
-            }
-        })
-    }
-}
-
-/// Settles the occupying task once its capture saw a complete end marker
-/// line, taking the capture with it.
 /// The plugin.
 pub struct ShellSessionPlugin {
-    recovery: Key<BackgroundExec>,
+    background: Key<BackgroundExec>,
     facts: Key<crate::file_access::FileAccessFacts>,
     session: Key<ShellSession>,
-    stop: Key<dyn ExecStop>,
-    timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     host: Key<HostPlatform>,
     lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
-    session_lifecycle: Key<SessionLifecycle>,
     identity: Key<dim_agent_runtime::TimelineIdentity>,
     config: Option<ShellSessionConfig>,
 }
@@ -1722,16 +1143,13 @@ impl ShellSessionPlugin {
     /// Derive execution settings from the owning Session.
     pub fn session(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            recovery: names.key()?,
+            background: names.key()?,
             facts: names.key()?,
             session: names.key()?,
-            stop: names.key()?,
-            timeline: names.key()?,
             dispatcher: names.key()?,
             host: names.key()?,
             lifecycle: names.key()?,
             session_config: names.key()?,
-            session_lifecycle: names.key()?,
             identity: names.key()?,
             config: None,
         })
@@ -1744,24 +1162,20 @@ impl DynPlugin for ShellSessionPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
-            self.recovery.erase(),
-            self.timeline.erase(),
+            self.background.erase(),
             self.dispatcher.erase(),
             self.host.erase(),
             self.lifecycle.erase(),
             self.session_config.erase(),
-            self.session_lifecycle.erase(),
             self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let host = ctx.require_at(&self.host)?;
-            let recovery = ctx.require_at(&self.recovery)?;
+            let background = ctx.require_at(&self.background)?;
             let config = ctx.require_at(&self.session_config)?;
-            let session_lifecycle = ctx.require_at(&self.session_lifecycle)?;
             let identity = ctx.require_at(&self.identity)?;
             let owner = ctx.get::<SessionFiles>();
             let mut session = ShellSession::new(
@@ -1776,14 +1190,12 @@ impl DynPlugin for ShellSessionPlugin {
                         .join(&identity.branch_id),
                 }),
                 host,
-                timeline,
                 dispatcher,
                 owner,
                 identity.session_id.clone(),
+                background,
             );
             session.facts = Some((ctx.clone(), self.facts.clone()));
-            session.recovery = Some(recovery);
-            session.session_lifecycle = Some(session_lifecycle);
             let session = Arc::new(session);
             let service = session.clone();
             ctx.effect(move || async move {
@@ -1804,21 +1216,9 @@ impl DynPlugin for ShellSessionPlugin {
                 tasks.wait().await;
                 let generation = service.inner.lock().await.generation;
                 service.handle_shell_exit(generation, None).await;
-                let remaining = service
-                    .inner
-                    .lock()
-                    .await
-                    .background
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for task in remaining {
-                    let _ = ShellSession::stop(&service, &task).await;
-                }
                 Ok(())
             })?;
-            ctx.provide_at(self.session.clone(), session.clone())?;
-            ctx.provide_at::<dyn ExecStop>(self.stop.clone(), session)?;
+            ctx.provide_at(self.session.clone(), session)?;
             Ok(Effect::Done)
         })
     }
@@ -1862,24 +1262,15 @@ fn push_output(text: &mut String, output: &str) {
     }
 }
 
-fn exit_status(code: &str) -> ExecStatus {
-    match code {
-        "0" => ExecStatus::Completed,
-        "cancelled" => ExecStatus::Cancelled,
-        _ => ExecStatus::Failed,
-    }
-}
-
-fn wait_code(reply: &WaitReply) -> String {
-    if reply.status == WaitStatus::Cancelled {
-        "cancelled".to_owned()
-    } else {
-        reply
-            .exit_code
-            .map(|code| code.to_string())
-            .or_else(|| reply.signal.clone())
-            .unwrap_or_else(|| "failed".to_owned())
-    }
+fn cancelled_fn(token: &CancellationToken) -> crate::host::CancelledFn {
+    let token = token.clone();
+    std::sync::Arc::new(move || {
+        let token = token.clone();
+        Box::pin(async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    })
 }
 
 fn never_cancelled() -> crate::host::CancelledFn {
@@ -1902,60 +1293,30 @@ fn exit_line(code: &str) -> String {
     }
 }
 
-fn ended_from_reply(task_id: &str, reply: &WaitReply, output_path: &Path) -> ExecEndedData {
-    let code = wait_code(reply);
-    let mut result = if matches!(
-        reply.failure,
-        Some(
-            crate::host_platform::TaskFailure::ShellReset
-                | crate::host_platform::TaskFailure::ShellExited
-        )
-    ) {
-        reset_result(task_id, output_path, &reply.preview)
-    } else {
-        ended_result(task_id, output_path, &reply.preview, &code)
-    };
-    if let Some(failure) = &reply.failure
-        && let ToolContent::Text(text) = &mut result.content
-    {
-        text.push('\n');
-        text.push_str(&failure.to_string());
-    }
-    let status = match reply.status {
-        WaitStatus::Exited if reply.exit_code == Some(0) && reply.failure.is_none() => {
-            ExecStatus::Completed
-        }
-        WaitStatus::Cancelled => ExecStatus::Cancelled,
-        _ => ExecStatus::Failed,
-    };
-    ExecEndedData {
-        task_id: task_id.to_owned(),
-        status,
-        result,
+/// The model-readable text of a terminal record.
+fn ended_text(data: &ExecEndedData) -> String {
+    match &data.result.content {
+        ToolContent::Text(text) => text.clone(),
+        ToolContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                dim_agent_types::ContentBlock::Text { text } => Some(text.as_str()),
+                dim_agent_types::ContentBlock::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
-fn ended_result(task_id: &str, output_path: &Path, preview: &str, code: &str) -> ToolResult {
-    let status = exit_status(code);
-    let label = match status {
-        ExecStatus::Completed => "completed",
-        ExecStatus::Failed => "failed",
-        ExecStatus::Cancelled => "cancelled",
-    };
-    let mut text = preview.to_owned();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
+fn occupancy_error(task_id: &str, error: WaitError) -> String {
+    match error {
+        WaitError::Unknown => {
+            format!("task {task_id} still occupies the shell but has no task facts")
+        }
+        WaitError::Closed => "shell session closed while waiting for the shell".to_owned(),
+        WaitError::Timeout => format!("task {task_id} still occupies the shell"),
+        WaitError::Read(error) => error.to_string(),
     }
-    text.push_str(&exit_line(code));
-    let mut result = ToolResult::text(text);
-    result.is_error = (status == ExecStatus::Failed).then_some(true);
-    result.structured_content = Some(structured(json!({
-        "type": "finished",
-        "status": label,
-        "taskId": task_id,
-        "outputPath": output_path.to_string_lossy(),
-    })));
-    result
 }
 
 fn shell_exit_note(terminal: &crate::host_platform::Terminal) -> String {
@@ -1963,34 +1324,6 @@ fn shell_exit_note(terminal: &crate::host_platform::Terminal) -> String {
         (Some(signal), _) => format!("[shell killed by signal: {signal}]"),
         (_, Some(code)) => format!("[shell exited: code {code}]"),
         _ => "[shell exited]".to_owned(),
-    }
-}
-
-/// A shell death settles open tasks as failed with a reset note.
-fn reset_result(task_id: &str, output_path: &Path, preview: &str) -> ToolResult {
-    let mut text = preview.to_owned();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("[Task failed: shell was reset]");
-    let mut result = ToolResult::text(text);
-    result.is_error = Some(true);
-    result.structured_content = Some(structured(json!({
-        "type": "finished",
-        "status": "failed",
-        "taskId": task_id,
-        "outputPath": output_path.to_string_lossy(),
-    })));
-    result
-}
-
-/// Removes a completion marker line from a capture.
-fn strip_marker(text: &mut String, marker: &str) {
-    if let Some(pos) = text.find(marker) {
-        let end = text[pos..]
-            .find('\n')
-            .map_or(text.len(), |offset| pos + offset + 1);
-        text.replace_range(pos..end, "");
     }
 }
 
@@ -2043,17 +1376,6 @@ pub(crate) fn regularize_output(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-fn tail_bytes(s: &str, limit: usize) -> &str {
-    if s.len() <= limit {
-        return s;
-    }
-    let mut start = s.len() - limit;
-    while !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
 }
 
 struct MarkerPair {

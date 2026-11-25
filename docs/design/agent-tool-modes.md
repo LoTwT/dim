@@ -305,14 +305,12 @@ product), and mounting `ShellTools` instead of `WorkspaceTools` for shell Sessio
 the client methods that part registers (`session.files` mention search, command-output paging), so a
 shell Session would lose client features that have nothing to do with its tools.
 
-Stopping a task is a separate route. Today `session.exec.stop` resolves the branch's
-`BackgroundExec` and stops a native process; a live persistent-shell command belongs to
-`ShellSession`, which provides the branch's `dyn ExecStop`. With `execute` in the product, both
-kinds exist in one Session:
+Stopping a task is a separate route. `session.exec.stop` resolves the branch's
+`BackgroundExec` and stops the task. A live persistent-shell command is handed to the same owner
+when its call converts, so both kinds exist in one Session:
 
-- The stop route resolves the live owner first: the branch's `ExecStop` for a live shell task, then
-  `BackgroundExec` for a native process. A task neither owns is read from shared history for its
-  terminal result; history never answers for a live task.
+- The stop route calls `BackgroundExec` for every task kind. A task it does not own is read from
+  shared history for its terminal result; history never answers for a live task.
 - Both parts stay mounted when the mode changes, so a task started in `shell` or `codemode` can
   still be stopped after the Session switches to `normal`.
 - `session.stop` remains the turn's stop and stops no background task.
@@ -475,8 +473,8 @@ force (the `effective` value) and shows the named refusal otherwise.
   `set`/`resume` are refused while `shell` is in force; a chosen `shell` that runs `normal` (no
   `execute`) neither pauses nor refuses; after leaving, the operator resumes the goal.
 - Flow: stop a shell task with `session.exec.stop` after switching the Session to `normal`; the
-  route resolves the live `ExecStop` before `BackgroundExec`, and neither answers for a live task
-  from history. The minimal-execution profile's Session runs `shell` and keeps `execute`.
+  route calls `BackgroundExec`, and history never answers for a live task. The
+  minimal-execution profile's Session runs `shell` and keeps `execute`.
 - Clients: a web component test for the composer menu and the remembered choice, and one tmux TUI
   case for the row and the picker.
 - No event type or envelope changes. The stored configuration gains an optional field that old
