@@ -1406,47 +1406,69 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
-/** The call routing makes to a Session-scope data face. */
+/** A call to a Session-scope data face. */
 export type SessionFaceCall = {
   sessionId: string
   service: string
   method: string
-  /** The method's arguments, in order, as the calling language writes them. */
+  /** The method's arguments, in order. */
   args?: import('./plugin.js').BridgeJsonValue[]
 }
 
-/** The call routing makes to a line-scope data face. */
+/** A call from the process to a line-scope data face. */
 export type LineFaceCall = {
   sessionId: string
   lineId: string
   service: string
   method: string
-  /** The method's arguments, in order, as the calling language writes them. */
+  /** The method's arguments, in order. */
   args?: import('./plugin.js').BridgeJsonValue[]
 }
 
 /**
- * Calls by id to the scope a live instance owns (module docs).
+ * Calls by id to a live Session or line (process scope), provided as the
+ * process name `route`.
  *
- * One `Route` serves every Agent of one host: each Agent registers the
- * Sessions it publishes, so a process part reaches a Session of any Agent.
- * Rust parts read it as the process name `route` and call the owner's face
- * directly; a language runtime or a UI leaf calls [`Self::session`] or
- * [`Self::line`] by that name instead.
+ * One route serves every Agent of one host: each Agent registers the Sessions
+ * it publishes, so a process part reaches a Session of any of them.
  */
 export interface Route {
   /**
-   * Calls a Session-scope data face: [`Route::session_owner`] for a
-   * language that names the face instead of holding it.
-   * @throws {AgentErrorThrown}
+   * Calls a Session-scope data face of the live Session `call.session_id`.
+   * @throws {RouteErrorThrown}
    */
   session(call: SessionFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
   /**
-   * Calls a line-scope data face: [`Route::line_owner`] for a language that
-   * names the face instead of holding it.
-   * @throws {AgentErrorThrown}
+   * Calls a line-scope data face of the line `call.line_id` in the live
+   * Session `call.session_id`.
+   * @throws {RouteErrorThrown}
    */
   line(call: LineFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
+}
+
+/** A call from a Session part to one of its own lines. */
+export type OwnLineCall = {
+  lineId: string
+  service: string
+  method: string
+  /** The method's arguments, in order. */
+  args?: import('./plugin.js').BridgeJsonValue[]
+}
+
+/**
+ * Calls by id to one of this Session's lines, provided to the Session's parts
+ * and their runtimes as the Session name `lineRoute`.
+ *
+ * A Session part reaches its own Session's lines only: the route holds no
+ * Session id, so a caller cannot name another Session, and a line of another
+ * Session is [`RouteError::NoLine`].
+ */
+export interface LineRoute {
+  /**
+   * Calls a line-scope data face of this Session's line `call.line_id`.
+   * @throws {RouteErrorThrown}
+   */
+  line(call: OwnLineCall): Promise<import('./plugin.js').BridgeJsonValue>
 }
 
 export type SessionInstanceDefinition = {
@@ -1818,6 +1840,9 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
+/** What a method returning `Err(RouteError)` throws. */
+export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "NoLine" | "NotDataFace" | "WrongScope" | "Owner", undefined>
+
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
@@ -1867,6 +1892,7 @@ export interface Services {
   timeline: Timeline
   partRegistry: PartRegistry
   route: Route
+  lineRoute: LineRoute
   sessionLoader: SessionLoader
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig

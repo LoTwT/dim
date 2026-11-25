@@ -291,8 +291,8 @@ pub(crate) struct Assembly {
     /// its Agents ([`AgentBuilder::build`]); the minimal host takes a fresh one.
     pub parts: Arc<crate::parts::PartRegistry>,
     /// The Sessions this builder's Agents publish, for calls by id
-    /// ([`AgentBuilder::route`]).
-    pub route: Arc<crate::Route>,
+    /// ([`Route`]).
+    pub route: Arc<crate::route::Index>,
     /// Registered parts the profile requires, by name.
     required_parts: Arc<HashSet<String>>,
     /// The rows a Session and a branch need Active, as [`AgentBuilder::install`]
@@ -303,6 +303,9 @@ pub(crate) struct Assembly {
     /// The builder's catalog, as its Agents were built: the facades read a
     /// name in the group it registers.
     pub catalog: Arc<rutis_loader::ServiceCatalog>,
+    /// The names the builder marked internal, as its Agents were built: a
+    /// route resolves only a name that is not among them.
+    pub faces: Arc<Faces>,
 }
 /// The closed set of reasons a service face is internal (#1289).
 pub const FACE_REASONS: [&str; 8] = [
@@ -369,6 +372,7 @@ impl AgentBuilder {
                 required_rows: Arc::default(),
                 extensions: vec![],
                 catalog: Arc::default(),
+                faces: Arc::default(),
             },
         }
     }
@@ -424,15 +428,6 @@ impl AgentBuilder {
     /// only their own plugins' parts.
     pub fn parts(&self) -> Arc<crate::PartRegistry> {
         self.assembly.parts.clone()
-    }
-    /// The route from ids to the live Sessions this builder's Agents publish
-    /// ([`Route`]): [`Self::plugin_rows`] provides it to the host's process
-    /// plugins as `route`, so a process part reaches a Session of any of those
-    /// Agents by id. Rust parts call the owner's data face directly
-    /// ([`Route::session_owner`], [`Route::line_owner`]); another language
-    /// calls the same route by that name.
-    pub fn route(&self) -> Arc<crate::Route> {
-        self.assembly.route.clone()
     }
     /// Adds a process plugin: `make` builds it from the names its
     /// dependencies resolve to at the process, usually
@@ -507,7 +502,7 @@ impl AgentBuilder {
         let route = self.assembly.route.clone();
         let route: PartMake = Arc::new(move |names| {
             Ok(Box::new(crate::route::RoutePlugin {
-                route: route.clone(),
+                index: route.clone(),
                 key: names.key()?,
             }))
         });
@@ -847,6 +842,7 @@ impl AgentBuilder {
         let mut assembly = self.assembly.clone();
         assembly.abandoned = tokio_util::task::TaskTracker::new();
         assembly.catalog = Arc::new(self.catalog.clone());
+        assembly.faces = Arc::new(self.faces.clone());
         if !self.custom_store {
             let store = Arc::new(MemoryTimelineStore::default());
             assembly.store = TimelineStoreBinding::new(store.clone());
@@ -1186,10 +1182,23 @@ impl SessionAssembly {
     }
 
     /// The live line instance `id`, or `None` when this Session never created
-    /// it, it is gone, or it is closing.
+    /// it, it is gone, or it is closing. An entry whose instance is gone is
+    /// dropped here.
     pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
-        let line = self.lines.lock().unwrap().get(id).and_then(Weak::upgrade)?;
+        let mut lines = self.lines.lock().unwrap();
+        let line = lines.get(id)?.upgrade();
+        let Some(line) = line else {
+            lines.remove(id);
+            return None;
+        };
+        drop(lines);
         (!line.is_closing()).then_some(line)
+    }
+
+    /// What a route reads of this Session's assembly to decide whether it may
+    /// resolve a name: the catalog's groups and the names it marked internal.
+    pub(crate) fn reach(&self) -> (&rutis_loader::ServiceCatalog, &Faces) {
+        (&self.assembly.catalog, &self.assembly.faces)
     }
 }
 
@@ -1249,6 +1258,10 @@ impl DynPlugin for SessionScopePlugin {
             for provide in &owner.assembly.values {
                 provide(ctx, &scope)?;
             }
+            ctx.provide_at(
+                scope.key::<crate::LineRoute>(),
+                Arc::new(crate::LineRoute::new(owner)),
+            )?;
             {
                 let mut loaded = owner.loaded.lock().unwrap();
                 if loaded.is_some() {
@@ -1561,6 +1574,7 @@ impl TimelineFactory {
                     branch.lifecycle.clone(),
                     parent.lifecycle.faults.clone(),
                     parent.assembly.catalog.clone(),
+                    parent.assembly.faces.clone(),
                 );
                 parent.register_line(&id, Arc::downgrade(&context));
                 Ok(context)

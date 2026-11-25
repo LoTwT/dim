@@ -178,4 +178,5 @@ impl BranchScope {
     }
 }
 impl PublicService for SessionConfig {}
+impl PublicService for crate::LineRoute {}
 impl PublicService for dyn LoopState {}
