@@ -16,6 +16,7 @@ use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, host_key};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -658,6 +659,107 @@ async fn a_runtime_close_ends_the_project_ownership_it_did_not_start() {
         released + 1,
         "the last owner's close released the project's directory"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
+}
+
+/// A load's ownership ends only with the load that registered it. One close has
+/// two settlements: the idle pass settles the Session it unloaded under its
+/// admission gate, and the guard the load registered waits in a detached task
+/// for the same close. Here that watcher reaches its awaited close only after
+/// the pass unloaded the Session and a second load of the same ID registered a
+/// new ownership, so a settlement that names only the Session would end the
+/// load that replaced it and release the root it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delayed_close_watcher_keeps_the_ownership_of_the_load_after_it() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = stored().await;
+    let server = crate::serve(
+        builder(),
+        ServerConfig {
+            idle_unload_after: Duration::from_secs(3600),
+            ..product_config(&stored.directory)
+        },
+    )
+    .await
+    .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = stored.directory.canonicalize().unwrap();
+
+    let first = index.acquire(&stored.session).await.unwrap();
+    let root = settings
+        .project_root(&project)
+        .expect("the restore authorized the project");
+    assert!(
+        testing::root_held(&files, root),
+        "the first load holds the project's directory"
+    );
+    let (_, session) = index
+        .session(&stored.session)
+        .expect("the Session is loaded");
+    // The guard the first load registered is watched by its close, which this
+    // test cannot await directly. Registering the same Session again under the
+    // same agent and cwd gives this test the same guard, and the test keeps its
+    // watcher unawaited across the unload and the next load.
+    let watcher = index
+        .directory
+        .own(
+            &stored.session,
+            index.default_agent_id(),
+            &session.config().cwd,
+        )
+        .when_closed(session.closed());
+    drop(first);
+    let mut marks = HashMap::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            index.unload_idle(&mut marks).await;
+            if index.session(&stored.session).is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the idle pass unloads the Session");
+
+    let second = index.acquire(&stored.session).await.unwrap();
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the second load registers its own ownership"
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the second load holds the project's directory"
+    );
+
+    watcher.await;
+    assert!(
+        testing::root_held(&files, root),
+        "the first load's delayed close does not release the root the restored Session holds"
+    );
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the first load's delayed close leaves the ownership of the load that replaced it"
+    );
+    drop(second);
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(stored.directory).unwrap();

@@ -257,11 +257,12 @@ struct Entry {
     host: Arc<AgentHost>,
     view: FiberView,
 }
-/// The Agent a Session's project ownership belongs to, and the cwd whose root
-/// this process holds for it.
+/// The Agent a Session's project ownership belongs to, the cwd whose root this
+/// process holds for it, and the load that registered the ownership.
 struct Owner {
     agent: String,
     cwd: String,
+    load: u64,
 }
 #[derive(Default)]
 struct Inner {
@@ -280,6 +281,9 @@ struct Inner {
     /// authorizes its project until its settlement, and the root is released
     /// once the last owner of its cwd settles.
     owners: HashMap<String, Owner>,
+    /// Counts the loads that registered an ownership, so one names the load
+    /// that registered it.
+    loads: u64,
     /// Loader instances of the Agents this index created, until they close.
     /// They outlive the index's entries: an unloading scope forgets its
     /// entry, and the index closes the instance when it unloads.
@@ -301,20 +305,30 @@ impl Inner {
             .get(id)
             .map_or(0, |slot| slot.uses.load(Ordering::Acquire))
     }
-    /// Ends Session `id`'s ownership and answers the cwd it owned.
-    fn settle(&mut self, id: &str) -> Option<String> {
+    /// Ends Session `id`'s ownership and answers the cwd it owned. `load`
+    /// names whose ownership ends: `None` ends whoever owns the Session, as
+    /// the synchronous settlements do, and `Some` ends only the ownership that
+    /// load registered.
+    fn settle(&mut self, id: &str, load: Option<u64>) -> Option<String> {
+        let owner = self.owners.get(id)?;
+        if load.is_some_and(|load| owner.load != load) {
+            return None;
+        }
         self.owners.remove(id).map(|owner| owner.cwd)
     }
     /// Records Session `id` as an owner of the cwd whose project root this
-    /// process holds for it.
-    fn own(&mut self, id: &str, agent: &str, cwd: &str) {
+    /// process holds for it, and answers the load that registered it.
+    fn own(&mut self, id: &str, agent: &str, cwd: &str) -> u64 {
+        self.loads += 1;
         self.owners.insert(
             id.to_owned(),
             Owner {
                 agent: agent.to_owned(),
                 cwd: cwd.to_owned(),
+                load: self.loads,
             },
         );
+        self.loads
     }
     /// Whether a Session still owns `cwd`.
     fn owns(&self, cwd: &str) -> bool {
@@ -411,21 +425,26 @@ impl AgentDirectory {
     /// The guard ends the ownership when it is dropped; a Session that reaches
     /// the process hands it to its close instead.
     fn own(self: &Arc<Self>, id: &str, agent: &str, cwd: &str) -> ProjectOwnership {
-        self.inner.lock().expect("agent index").own(id, agent, cwd);
+        let load = self.inner.lock().expect("agent index").own(id, agent, cwd);
         ProjectOwnership {
             directory: self.clone(),
             session: id.to_owned(),
+            load,
         }
     }
     /// Ends a Session's ownership and releases the project's root once no
     /// Session owns its cwd. Removing the owner and reading the owners that
     /// remain happen under one index lock, so two settlements cannot both
-    /// release one project. Idempotent: an id this process does not own is
-    /// unchanged.
-    fn settle(&self, id: &str) {
+    /// release one project. `load` names whose ownership ends: `None` ends
+    /// whoever owns the Session, as the closes, deletes and idle unloads this
+    /// process starts do, and `Some` ends only the ownership that load
+    /// registered, so a guard dropped after a later load of the same Session
+    /// leaves that load's ownership. Idempotent: an ownership the settlement
+    /// does not name is unchanged.
+    fn settle(&self, id: &str, load: Option<u64>) {
         let cwd = {
             let mut inner = self.inner.lock().expect("agent index");
-            let Some(cwd) = inner.settle(id) else {
+            let Some(cwd) = inner.settle(id, load) else {
                 return;
             };
             if inner.owns(&cwd) {
@@ -480,6 +499,10 @@ impl AgentDirectory {
 pub(crate) struct ProjectOwnership {
     directory: Arc<AgentDirectory>,
     session: String,
+    /// The load that registered this ownership. The guard settles only it: a
+    /// close watcher can reach its close after a later load of the same
+    /// Session registered a new ownership, which this one must leave.
+    load: u64,
 }
 impl ProjectOwnership {
     /// Ends the ownership once `closed`, the Session's close, completes.
@@ -491,7 +514,7 @@ impl ProjectOwnership {
 }
 impl Drop for ProjectOwnership {
     fn drop(&mut self) {
-        self.directory.settle(&self.session);
+        self.directory.settle(&self.session, Some(self.load));
     }
 }
 /// Provides the [`AgentDirectory`] and the `sessions` service. Neither
@@ -825,7 +848,7 @@ impl AgentIndex {
             hold.wait().await;
         }
         self.remove_version(id);
-        self.directory.settle(id);
+        self.directory.settle(id, None);
         result
     }
     /// Sessions can also close through the runtime fault supervisor.
@@ -1220,7 +1243,7 @@ impl AgentIndex {
                     match session.unload_if_idle().await {
                         Ok(true) => {
                             tracing::debug!(session_id = id, "Idle Session unloaded");
-                            self.directory.settle(id);
+                            self.directory.settle(id, None);
                             continue;
                         }
                         Ok(false) => {}
@@ -1886,7 +1909,7 @@ impl AgentIndex {
                 tracing::error!(%error, session_id = id, "Session cleanup failed before its delete");
             }
         }
-        self.directory.settle(id);
+        self.directory.settle(id, None);
         let unloaded = loaded.is_none() && !slot.closed.load(Ordering::Acquire);
         // The delete notice names the Session's owner even when this process
         // never loaded it: `session_owners` still holds the row, and the

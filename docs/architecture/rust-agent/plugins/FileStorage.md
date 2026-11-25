@@ -81,13 +81,17 @@ ownership it registered itself, before its caller can be told either way, so a
 caller that stopped waiting leaves none behind. A loaded Session's ownership
 ends with its close, which the process observes even when it did not start the
 close, so a Session the runtime's fault supervisor stops releases its project
-too. `agent.close` ends every ownership the Agent registered, including a
-Session whose build reached the runtime after the close began, and an Agent
-scope that unloads ends the ownerships of the Sessions its own close ended. A
-`session.detach` ends no ownership: the Session stays loaded and may still use
-the project, and its later close or unload releases the root. An authorization
-no Session used, from `hooks.catalog` or MCP management, owns nothing and keeps
-its descriptor until the next settlement on the same cwd or the process closes.
+too. A guard settles only the ownership its own load registered: the idle pass
+and a load's guard watch one close, and a guard that reaches it after a later
+load of the same Session ID registered a new ownership leaves that ownership
+and the root it holds. `agent.close` ends every ownership the Agent registered,
+including a Session whose build reached the runtime after the close began, and
+an Agent scope that unloads ends the ownerships of the Sessions its own close
+ended. A `session.detach` ends no ownership: the Session stays loaded and may
+still use the project, and its later close or unload releases the root. An
+authorization no Session used, from `hooks.catalog` or MCP management, owns
+nothing and keeps its descriptor until the next settlement on the same cwd or
+the process closes.
 FileStorage close still releases every descriptor. A reopened descriptor is not
 revalidated against an earlier one, because the path is the authorization and
 the authorization did not change.
@@ -433,12 +437,15 @@ restore inside its Session part and closes another Session on the same cwd, whic
 the loaded Sessions alone would read as the last use, and
 `a_refused_restore_settles_the_ownership_of_its_cancelled_caller` ends the
 ownership a restore registered when its caller stopped waiting. The unit tests
-`settlements_end_only_the_ownership_they_name` and
-`a_runtime_close_ends_the_project_ownership_it_did_not_start`
+`settlements_end_only_the_ownership_they_name`,
+`a_runtime_close_ends_the_project_ownership_it_did_not_start` and
+`a_delayed_close_watcher_keeps_the_ownership_of_the_load_after_it`
 ([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) check that a
 settlement answers its project only when it removed the last owner, that an
-Agent close ends every ownership it registered, and that a guard a Session hands
-to its close settles an ownership this process did not close.
+Agent close ends every ownership it registered, that a guard a Session hands to
+its close settles an ownership this process did not close, and that a first
+load's watcher delayed past the idle pass and a second load of the same Session
+ID leaves the ownership the second load registered.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
