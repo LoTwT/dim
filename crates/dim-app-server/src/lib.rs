@@ -31,6 +31,7 @@ pub mod provider_settings;
 pub mod runtime_manager;
 pub mod session_grants;
 pub mod session_language;
+mod session_tool_mode;
 pub mod session_typescript;
 pub mod settings;
 pub mod settings_methods;

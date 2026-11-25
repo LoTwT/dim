@@ -1463,6 +1463,36 @@ impl SessionStore {
     /// Writes the Session's reply language into its config record as one JSON
     /// member; the rest of the record is unchanged. A missing Session is
     /// `Closed`.
+    pub async fn set_session_tool_mode(
+        &self,
+        session_id: &str,
+        mode: dim_agent_runtime::ToolMode,
+    ) -> Result<()> {
+        let session = session_id.to_owned();
+        self.timeline
+            .db
+            .run(move |connection| {
+                let changed = if mode.is_normal() {
+                    connection.execute(
+                        "UPDATE agent_sessions SET config = json_remove(config, '$.toolMode') \
+                         WHERE session_id = ?1",
+                        params![&session],
+                    )
+                } else {
+                    connection.execute(
+                        "UPDATE agent_sessions SET config = json_set(config, '$.toolMode', ?2) \
+                         WHERE session_id = ?1",
+                        params![&session, mode.as_str()],
+                    )
+                }
+                .map_err(error)?;
+                if changed != 1 {
+                    return Err(AgentError::Closed(session));
+                }
+                Ok(())
+            })
+            .await
+    }
     pub async fn set_session_language(
         &self,
         session_id: &str,

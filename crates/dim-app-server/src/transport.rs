@@ -823,6 +823,8 @@ async fn run_connection(
                                             "session.branch_set_default",
                                             "session.create.origin",
                                             "session.language",
+                                            "session.tool_mode",
+                                            "session.create.toolMode",
                                             "session.attach.expectedCwd",
                                             "session.attach.expectedConfig",
                                         ]);

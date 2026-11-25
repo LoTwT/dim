@@ -26,6 +26,7 @@ mod read_image_flow;
 mod session_files_flow;
 #[cfg(unix)]
 mod session_language_flow;
+mod session_tool_mode_flow;
 mod settings_flow;
 #[path = "storage_flow.rs"]
 mod storage_flow;
