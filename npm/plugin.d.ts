@@ -301,6 +301,11 @@ export interface Sessions {
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
+  /** Calls a data face of a live Session, or of one of its lines, by id
+   * (#2127). A Session with no live instance answers `no_session`, one that is
+   * closing `session_closing`, and a line that is closing, closed or not its
+   * own `no_line`. */
+  call(request: import('./branch-services.js').SessionsCall): Promise<SessionsResult<unknown>>;
 }
 
 /** One type an `eventHub` source declares (design A.1). */

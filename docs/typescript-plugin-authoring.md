@@ -29,12 +29,33 @@ requires finite numbers and integers representable by Rust's signed or unsigned
 The external client protocol's `JsonValue` remains JSON-only and does not admit
 `bigint`. These types describe their respective boundaries, not a conversion step.
 
+## Calling a Session or line by id
+
+A part of a line calls its own line's services directly. A part outside that line names
+the id instead, and the owner of the index looks it up at the call: `sessionScope.lineCall`
+for a line of its own Session, `sessions.call` for a Session or a line of it, from the
+process. Both carry `{service, method, args}` — the target's own operation — and answer
+`no_session`, `session_closing` or `no_line` when the target is not live
+([#2127](https://github.com/arcships/dim/issues/2127), ADR 027).
+
+```ts
+// a Session part
+await sessionScope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: [{ input_id: id }] })
+// a process part
+await sessions.call({ sessionId, lineId: 'main', service: 'inputQueue', method: 'withdraw', args: [{ input_id: id }] })
+await sessions.call({ sessionId, service: 'sessionConfig', method: 'get', args: [] })
+```
+
+The request types are generated, so `service`, `method` and `args` are the target's own and
+a typo fails `tsc`. Nothing a call returns may be kept: the next call looks the target up
+again.
+
 ## Available services
 
 | Need | Service and scope | Availability |
 | --- | --- | --- |
 | Persist a process plugin's own data | `pluginFiles`, process | Implemented when the host supplies an authorized product root and provisions parent directories; use its native transactions and lifecycle scope. |
-| Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. |
+| Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. `call({sessionId, lineId?, service, method, args})` reaches a Session's or a line's data face by id ([Calling a Session or line by id](#calling-a-session-or-line-by-id)). |
 | Publish events to subscribed branches | `eventHub`, process | Implemented by EventHub: `declare` and `publish`, served to the calling row. Inject it: the row loads only while EventHub runs and declares at `apply`. |
 | Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
 | Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |

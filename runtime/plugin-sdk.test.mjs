@@ -53,6 +53,9 @@ test('packed plugin service types compile the author guide and enforce the publi
       .replace("'./part-row.ts'", "'./part-row.mjs'"));
     return file;
   });
+  const routed = path.join(directory, 'branch-calls.mts');
+  writeFileSync(routed, readFileSync(path.join(root, 'runtime/fixtures/branch-calls.ts'), 'utf8')
+    .replaceAll("'../../npm/branch-services.js'", "'dimcode/branch-services.js'"));
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
 import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
@@ -370,6 +373,6 @@ void panel;
   assert.equal(declarations.status, 0, declarations.stdout + declarations.stderr);
   const checked = spawnSync(process.execPath, [compiler,
     '--strict', '--noEmit', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
-    ...files, ...promptFixtures, calls, branchFixture, partRow, permissionsFixture, workflowFixture, eventHubFixture, uiFixture], { encoding: 'utf8' });
+    ...files, ...promptFixtures, routed, calls, branchFixture, partRow, permissionsFixture, workflowFixture, eventHubFixture, uiFixture], { encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });

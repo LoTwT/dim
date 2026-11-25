@@ -1403,22 +1403,7 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
-/** A call to one of the caller's own Session's data faces. */
-export type SessionCall = {
-  service: string
-  method: string
-  /** The method's arguments, in order. */
-  args?: import('./plugin.js').BridgeJsonValue[]
-}
 
-/** A call to one of the caller's own Session's lines. */
-export type LineCall = {
-  lineId: string
-  service: string
-  method: string
-  /** The method's arguments, in order. */
-  args?: import('./plugin.js').BridgeJsonValue[]
-}
 
 /**
  * One Session's own lines and data faces, provided to the Session's parts and
@@ -1872,3 +1857,54 @@ export interface Services {
   listenAddresses: ListenAddresses
   uiResources: UiResources
 }
+
+/** The data faces a line reaches. */
+export type LineFaces = {
+  approval: Approval
+  backgroundExec: BackgroundExec
+  branchLine: BranchLine
+  dispatcher: Dispatcher
+  inputQueue: InputQueue
+  permission: Permission
+  timeline: Timeline
+  timelineIdentity: TimelineIdentity
+  wait: Wait
+}
+
+/** The data faces a Session reaches. */
+export type SessionFaces = {
+  agentConfig: AgentConfig
+  collaborationConfig: CollaborationConfig
+  initialPromptConfiguration: InitialPromptConfiguration
+  mcpSession: McpSession
+  sessionConfig: SessionConfig
+  sessionIdentity: SessionIdentity
+  sessionLanguage: SessionLanguage
+  sessionLoader: SessionLoader
+  skillsConfig: SkillsConfig
+  toolHost: ToolHost
+  treeCommands: TreeCommands
+  uiResources: UiResources
+}
+
+/** One call a route resolves: `service` and `method` name a data face and one of its methods, and `args` are that method's parameters. */
+type Call<Faces, Address> = {
+  [S in keyof Faces]: {
+    [M in keyof Faces[S]]: Address & {
+      service: S
+      method: M
+      args: Faces[S][M] extends (...args: infer A) => unknown ? A : never
+    }
+  }[keyof Faces[S]]
+}[keyof Faces]
+
+/** A call to one of the caller's own Session's lines. */
+export type LineCall = Call<LineFaces, { lineId: string }>
+
+/** A call to one of the caller's own Session's data faces. */
+export type SessionCall = Call<SessionFaces, {}>
+
+/** A call through Agents: a Session's face, or one of its lines' faces. */
+export type SessionsCall =
+  | Call<LineFaces, { sessionId: string; lineId: string }>
+  | Call<SessionFaces, { sessionId: string }>
