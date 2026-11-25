@@ -657,6 +657,7 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
                 EventKind::InputApplied(InputAppliedData {
                     input_id: id.clone(),
                     mode: Some(InputMode::Queue),
+                    tool_mode: None,
                 })
                 .into(),
                 EventKind::InputConsumed(InputConsumedData {
@@ -673,6 +674,7 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
                 EventKind::InputApplied(InputAppliedData {
                     input_id: wake_id.clone(),
                     mode: Some(InputMode::Steer),
+                    tool_mode: None,
                 })
                 .into(),
                 EventKind::InputConsumed(InputConsumedData { input_id: wake_id }).into(),
@@ -728,6 +730,7 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
                     EventKind::InputApplied(InputAppliedData {
                         input_id: "pending-wake".into(),
                         mode: Some(InputMode::Steer),
+                        tool_mode: None,
                     })
                     .into(),
                     EventKind::InputConsumed(InputConsumedData {

@@ -200,6 +200,7 @@ async fn queue_resume_reuses_an_application_written_by_an_older_owner_after_a_sa
                 EventKind::InputApplied(InputAppliedData {
                     input_id: input_id.clone(),
                     mode: Some(InputMode::Queue),
+                    tool_mode: None,
                 }),
             ),
         ],

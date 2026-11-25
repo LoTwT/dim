@@ -2700,6 +2700,7 @@ fn an_input_that_never_counted_and_thinking_are_not_told() {
     recorded.push(EventKind::InputApplied(InputAppliedData {
         input_id: pending.clone(),
         mode: Some(InputMode::Queue),
+        tool_mode: None,
     }));
     let taken = recorded.push(input_message("counted once"));
     recorded.push(turn_start("t1"));

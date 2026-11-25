@@ -1985,6 +1985,7 @@ async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_in
     write(EventKind::InputApplied(InputAppliedData {
         input_id: driving.id.clone(),
         mode: Some(InputMode::Queue),
+        tool_mode: None,
     }));
     let checked = |text: &str| {
         let mut data = input(text, InputMode::Steer);

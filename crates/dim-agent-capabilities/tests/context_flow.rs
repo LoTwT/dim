@@ -1451,6 +1451,7 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
                 EventKind::InputApplied(InputAppliedData {
                     input_id: input.id.clone(),
                     mode: Some(InputMode::Queue),
+                    tool_mode: None,
                 })
                 .into(),
             )
@@ -1830,6 +1831,7 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
             EventKind::InputApplied(InputAppliedData {
                 input_id: first.id.clone(),
                 mode: Some(InputMode::Queue),
+                tool_mode: None,
             })
             .into(),
         )

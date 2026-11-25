@@ -4,7 +4,9 @@
 //! the mode in force.
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{adapters::MockTools, defaults};
-use dim_agent_runtime::{AgentBuilder, AgentConfig};
+use dim_agent_runtime::testing::chain_events;
+use dim_agent_runtime::{AgentBuilder, AgentConfig, Session};
+use dim_agent_types::{EventKind, ModelRequest};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -35,15 +37,18 @@ impl Drop for Home {
     }
 }
 
-fn builder() -> AgentBuilder {
+fn builder(codemode: bool) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
+    if codemode {
+        dim_codemode::install(&mut builder);
+    }
     defaults::mock_model_hosts(&mut builder);
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     builder
 }
 
-async fn launch(home: &Home) -> RunningServer {
+async fn launch(home: &Home, codemode: bool) -> RunningServer {
     let models = AimuxModels::from_config(
         serde_json::from_value::<ModelConfigFile>(json!({
             "defaultModel": {"providerId": "local", "modelId": "scripted"},
@@ -59,7 +64,7 @@ async fn launch(home: &Home) -> RunningServer {
         model_catalog: Some(Arc::new(models)),
         ..Default::default()
     };
-    serve(builder(), config).await.unwrap()
+    serve(builder(codemode), config).await.unwrap()
 }
 
 struct Client {
@@ -129,6 +134,23 @@ impl Client {
     }
 }
 
+fn live_session(server: &RunningServer, id: &str) -> Session {
+    server.agent().unwrap().get_session(id).unwrap()
+}
+
+async fn last_request(session: &Session) -> Arc<ModelRequest> {
+    chain_events(session, "main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ModelCall(data) => Some(data.request.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("a model request")
+}
+
 fn stored_config(home: &Home, session: &str) -> String {
     let connection = rusqlite::Connection::open(home.database()).unwrap();
     connection
@@ -140,10 +162,10 @@ fn stored_config(home: &Home, session: &str) -> String {
         .unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_session_starts_normal_and_falls_back_when_the_entry_tool_is_absent() {
     let home = Home::new();
-    let server = launch(&home).await;
+    let server = launch(&home, false).await;
     let mut client = Client::connect(&server).await;
     let session = client.create(&home, json!({})).await;
 
@@ -174,10 +196,10 @@ async fn a_new_session_starts_normal_and_falls_back_when_the_entry_tool_is_absen
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_records_the_operators_choice() {
     let home = Home::new();
-    let server = launch(&home).await;
+    let server = launch(&home, false).await;
     let mut client = Client::connect(&server).await;
     let session = client.create(&home, json!({"toolMode": "codemode"})).await;
 
@@ -191,4 +213,94 @@ async fn create_records_the_operators_choice() {
         stored_config(&home, &session).contains("\"toolMode\":\"codemode\""),
         "the record carries the creation choice"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chosen_mode_without_its_entry_tool_declares_the_normal_surface() {
+    let home = Home::new();
+    let server = launch(&home, false).await;
+    let mut client = Client::connect(&server).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": home.work(), "toolMode": "codemode"}),
+        )
+        .await;
+    let session = created["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_owned();
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    let idle = client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await;
+    assert!(idle.get("error").is_none(), "{idle}");
+    let request = last_request(&live_session(&server, &session)).await;
+    let names = request
+        .tools
+        .as_ref()
+        .expect("a normal request declares tools")
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !names.is_empty(),
+        "the normal surface is not empty: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "codemode"),
+        "normal hides the entry tool: {names:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codemode_declares_only_its_entry_and_skill() {
+    let home = Home::new();
+    let server = launch(&home, true).await;
+    let mut client = Client::connect(&server).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": home.work(), "toolMode": "codemode", "tools": ["codemode", "skill"]}),
+        )
+        .await;
+    let session = created["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_owned();
+    let mode = client.get(&session).await;
+    assert_eq!(mode["result"]["effective"], "codemode", "{mode}");
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    let idle = client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await;
+    assert!(idle.get("error").is_none(), "{idle}");
+    let request = last_request(&live_session(&server, &session)).await;
+    let mut names = request
+        .tools
+        .as_ref()
+        .expect("a codemode request declares tools")
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["codemode"], "{names:?}");
 }

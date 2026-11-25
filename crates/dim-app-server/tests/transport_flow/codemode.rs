@@ -167,7 +167,7 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
     let created = client
         .rpc(
             "session.create",
-            json!({"cwd":std::env::temp_dir(),"tools":["codemode","echo"]}),
+            json!({"cwd":std::env::temp_dir(),"tools":["codemode","echo"],"toolMode":"codemode"}),
         )
         .await;
     assert_ok(&created);

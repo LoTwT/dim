@@ -132,6 +132,7 @@ async fn indexed_input_controls_do_not_compare_every_selected_identity_against_e
                 EventKind::InputApplied(InputAppliedData {
                     input_id: id.clone(),
                     mode: Some(InputMode::Append),
+                    tool_mode: None,
                 }),
             ));
             ids.push(json!(id));

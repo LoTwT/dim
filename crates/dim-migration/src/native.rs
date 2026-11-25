@@ -696,6 +696,7 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                     EventKind::InputApplied(InputAppliedData {
                         input_id: id.clone(),
                         mode: Some(InputMode::Append),
+                        tool_mode: None,
                     }),
                     None,
                     now,
