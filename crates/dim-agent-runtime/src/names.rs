@@ -93,6 +93,7 @@ pub fn register<T: ?Sized + Send + Sync + 'static>(
 pub fn catalog() -> ServiceCatalog {
     let mut catalog = ServiceCatalog::new();
     register::<crate::PartRegistry>(&mut catalog, None);
+    register::<crate::Route>(&mut catalog, None);
     let session = Some(SESSION_GROUP);
     register::<SessionConfig>(&mut catalog, session);
     catalog.register_shared_instance(name_of::<AgentConfig>(), SESSION_GROUP);

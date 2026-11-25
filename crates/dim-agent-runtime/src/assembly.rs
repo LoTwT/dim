@@ -290,6 +290,9 @@ pub(crate) struct Assembly {
     /// The parts plugins register: the builder's, for the host that builds
     /// its Agents ([`AgentBuilder::build`]); the minimal host takes a fresh one.
     pub parts: Arc<crate::parts::PartRegistry>,
+    /// The Sessions this builder's Agents publish, for calls by id
+    /// ([`AgentBuilder::route`]).
+    pub route: Arc<crate::Route>,
     /// Registered parts the profile requires, by name.
     required_parts: Arc<HashSet<String>>,
     /// The rows a Session and a branch need Active, as [`AgentBuilder::install`]
@@ -361,6 +364,7 @@ impl AgentBuilder {
                 features: Default::default(),
                 optional_plugins: Default::default(),
                 parts: Arc::default(),
+                route: Arc::default(),
                 required_parts: Arc::default(),
                 required_rows: Arc::default(),
                 extensions: vec![],
@@ -420,6 +424,15 @@ impl AgentBuilder {
     /// only their own plugins' parts.
     pub fn parts(&self) -> Arc<crate::PartRegistry> {
         self.assembly.parts.clone()
+    }
+    /// The route from ids to the live Sessions this builder's Agents publish
+    /// ([`Route`]): [`Self::plugin_rows`] provides it to the host's process
+    /// plugins as `route`, so a process part reaches a Session of any of those
+    /// Agents by id. Rust parts call the owner's data face directly
+    /// ([`Route::session_owner`], [`Route::line_owner`]); another language
+    /// calls the same route by that name.
+    pub fn route(&self) -> Arc<crate::Route> {
+        self.assembly.route.clone()
     }
     /// Adds a process plugin: `make` builds it from the names its
     /// dependencies resolve to at the process, usually
@@ -491,13 +504,21 @@ impl AgentBuilder {
                 key: names.key()?,
             }))
         });
+        let route = self.assembly.route.clone();
+        let route: PartMake = Arc::new(move |names| {
+            Ok(Box::new(crate::route::RoutePlugin {
+                route: route.clone(),
+                key: names.key()?,
+            }))
+        });
         let mut rows = vec![];
         let mut optional_rows = vec![];
-        let optional = std::iter::once(false).chain(
+        let optional = std::iter::once(false).chain(std::iter::once(false)).chain(
             (0..self.assembly.plugins.len())
                 .map(|index| self.assembly.optional_plugins.contains(&index)),
         );
         for (make, optional) in std::iter::once(&registry)
+            .chain(std::iter::once(&route))
             .chain(&self.assembly.plugins)
             .zip(optional)
         {
@@ -816,12 +837,6 @@ impl AgentBuilder {
         let mut builder = self.clone();
         builder.assembly.parts = Arc::default();
         builder
-    }
-    /// Whether plugins were added ([`Self::plugin`]); a host without any
-    /// places no process rows.
-    #[cfg(feature = "testing")]
-    pub(crate) fn has_plugins(&self) -> bool {
-        !self.assembly.plugins.is_empty()
     }
     /// The longest a host waits for its assembly without progress.
     #[cfg(feature = "testing")]
@@ -1142,6 +1157,9 @@ pub(crate) struct SessionAssembly {
     /// The views its scope mounted when it opened, until its creation ends.
     pub(crate) handed: Mutex<Handed>,
     pub(crate) copies: crate::parts::Copies,
+    /// The line instances this Session's tree created, by id. An entry whose
+    /// context is gone, closing or closed resolves to no line.
+    lines: Mutex<HashMap<String, Weak<TimelineContext>>>,
 }
 impl SessionAssembly {
     pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScope>>> {
@@ -1150,6 +1168,28 @@ impl SessionAssembly {
             .unwrap()
             .clone()
             .ok_or_else(|| AgentError::Closed(self.id.clone()))
+    }
+
+    /// The Session-scope data face `T` of the loaded Session subtree.
+    pub(crate) fn session_face<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
+        crate::names::in_group::<T>(&self.assembly.catalog, SESSION_GROUP)?;
+        let loaded = self.loaded()?;
+        loaded
+            .ctx
+            .get_at::<T>(&loaded.scope.key::<T>())
+            .ok_or_else(|| AgentError::Reloading(std::any::type_name::<T>().into()))
+    }
+
+    /// Records the line instance `id` only while it is live.
+    pub(crate) fn register_line(&self, id: &str, line: Weak<TimelineContext>) {
+        self.lines.lock().unwrap().insert(id.to_owned(), line);
+    }
+
+    /// The live line instance `id`, or `None` when this Session never created
+    /// it, it is gone, or it is closing.
+    pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
+        let line = self.lines.lock().unwrap().get(id).and_then(Weak::upgrade)?;
+        (!line.is_closing()).then_some(line)
     }
 }
 
@@ -1502,8 +1542,8 @@ impl TimelineFactory {
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
                 required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
-                Ok(TimelineContext::start(
-                    id,
+                let context = TimelineContext::start(
+                    id.clone(),
                     ctx.clone(),
                     created.view.clone(),
                     created.children.clone(),
@@ -1521,7 +1561,9 @@ impl TimelineFactory {
                     branch.lifecycle.clone(),
                     parent.lifecycle.faults.clone(),
                     parent.assembly.catalog.clone(),
-                ))
+                );
+                parent.register_line(&id, Arc::downgrade(&context));
+                Ok(context)
             })
             .catch_unwind()
             .await
@@ -1887,6 +1929,7 @@ pub(crate) async fn build_session(
         mounted: Arc::default(),
         handed: Mutex::default(),
         copies: Arc::default(),
+        lines: Mutex::default(),
     });
     let instance = |owner: &Arc<SessionAssembly>| {
         let owner = owner.clone();

@@ -499,6 +499,11 @@ impl Session {
     /// begin the background work they deferred during assembly.
     fn activate(&self) {
         self.0.owner.lifecycle.advance(SessionPhase::Active);
+        self.0
+            .owner
+            .assembly
+            .route
+            .register(self.id(), Arc::downgrade(&self.0.owner));
         let weak = Arc::downgrade(&self.0);
         let mut faults = self.0.owner.lifecycle.faults.watch();
         let stop = self.0.owner.closing.clone();
@@ -744,12 +749,7 @@ impl Session {
     /// Reads a service of the Session group from the currently loaded
     /// Session subtree.
     pub fn session_service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
-        crate::names::in_group::<T>(&self.0.owner.assembly.catalog, SESSION_GROUP)?;
-        let loaded = self.0.owner.loaded()?;
-        loaded
-            .ctx
-            .get_at::<T>(&loaded.scope.key::<T>())
-            .ok_or_else(|| AgentError::Reloading(std::any::type_name::<T>().into()))
+        self.0.owner.session_face::<T>()
     }
     /// The instance of the loaded Session subtree, so a host can find the
     /// loader rows this Session runs. Keys under it stay readable only from
@@ -924,6 +924,7 @@ impl Session {
                     store.remove_session(this.id());
                 }
             }
+            this.0.owner.assembly.route.forget(this.id(), &this.0.owner);
             *this.0.owner.loaded.lock().unwrap() = None;
             span.record(
                 "outcome",

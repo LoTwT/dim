@@ -345,6 +345,15 @@ impl TimelineContext {
     pub(crate) fn scope_view(&self) -> &FiberView {
         &self.view
     }
+    /// The branch instance's context, for reads of its data faces by id
+    /// ([`Route`]).
+    pub(crate) fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+    /// The branch group instance this line runs in.
+    pub(crate) fn scope_instance(&self) -> rutis::host::InstanceId {
+        self.scope.instance
+    }
     /// The loader row ids this branch's profile requires.
     pub(crate) fn required_rows(&self) -> &[String] {
         &self.required
