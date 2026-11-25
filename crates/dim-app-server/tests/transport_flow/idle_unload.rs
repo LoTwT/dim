@@ -1208,7 +1208,11 @@ async fn an_unloaded_session_releases_its_project_root() {
         testing::root_held(&files, root),
         "the Session holds the project's directory"
     );
-    eventually("the Session unloaded", || !testing::root_held(&files, root)).await;
+    let released = testing::root_releases(&files, root);
+    eventually("the Session unloaded", || {
+        testing::root_releases(&files, root) > released
+    })
+    .await;
     assert_eq!(
         settings.project_root(&project),
         Some(root),
@@ -1251,9 +1255,10 @@ async fn a_closed_session_releases_its_project_root() {
         .project_root(&project)
         .expect("the creation authorized the project");
     assert!(testing::root_held(&files, root));
+    let released = testing::root_releases(&files, root);
     assert_ok(&client.rpc("session.close", json!({"sessionId": id})).await);
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the close released the project's descriptor"
     );
     assert_eq!(
@@ -1296,9 +1301,10 @@ async fn a_deleted_session_releases_its_project_root() {
         .project_root(&project)
         .expect("the creation authorized the project");
     assert!(testing::root_held(&files, root));
+    let released = testing::root_releases(&files, root);
     assert_ok(&client.rpc("session.delete", json!({"sessionId": id})).await);
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the delete released the project's descriptor"
     );
     assert_eq!(
@@ -1341,13 +1347,14 @@ async fn an_agent_close_releases_its_sessions_project_roots() {
         .project_root(&project)
         .expect("the creation authorized the project");
     assert!(testing::root_held(&files, root));
+    let released = testing::root_releases(&files, root);
     assert_ok(
         &client
             .rpc("agent.close", json!({"agentId": agent_id}))
             .await,
     );
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the Agent close released its Session's project"
     );
     assert_eq!(
@@ -1415,13 +1422,14 @@ async fn one_of_two_sessions_in_a_project_keeps_its_root_in_use() {
         "the second Session read back the document it wrote"
     );
     assert_ne!(read.revision, "missing");
+    let released = testing::root_releases(&files, root);
     assert_ok(
         &client
             .rpc("session.close", json!({"sessionId": sessions[1]}))
             .await,
     );
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the last close released the project's descriptor"
     );
     server.shutdown();

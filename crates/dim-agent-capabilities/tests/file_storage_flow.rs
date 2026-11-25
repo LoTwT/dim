@@ -1111,7 +1111,9 @@ async fn a_recreated_directory_at_a_registered_path_is_read_through_it() {
 }
 
 /// A released root keeps its index and path: the descriptor is closed and the
-/// next operation opens the directory the path names then.
+/// next operation opens the directory the path names then. An operation that
+/// reaches another directory starts a generation, so a lease locked in the one
+/// the path no longer names refuses its next mutation.
 #[tokio::test]
 async fn a_released_root_opens_the_directory_its_path_names() {
     use dim_agent_capabilities::file_storage::testing;
@@ -1126,6 +1128,7 @@ async fn a_released_root_opens_the_directory_its_path_names() {
     fs::write(project.join("state.json"), b"first").unwrap();
     let index = files.register_root(project.clone(), &cancel).await.unwrap();
     let path = files.path(index, "state.json").unwrap();
+    let mut lease = files.lock(&path, &cancel).await.unwrap();
     assert!(testing::root_held(&files, index));
     files.release_root(index);
     assert!(!testing::root_held(&files, index));
@@ -1134,6 +1137,14 @@ async fn a_released_root_opens_the_directory_its_path_names() {
     fs::write(project.join("state.json"), b"second").unwrap();
     assert_eq!(files.read(&path, &cancel).await.unwrap(), b"second");
     assert!(testing::root_held(&files, index));
+    assert!(
+        matches!(
+            lease.replace(b"third".to_vec(), None, &cancel).await,
+            Err(FileStorageError::InvalidPath(_))
+        ),
+        "the operation opened another directory, so the lease locked in the old one refuses"
+    );
+    assert_eq!(fs::read(project.join("state.json")).unwrap(), b"second");
     // A path whose directory is gone holds no descriptor, and its index stays.
     fs::remove_dir_all(&project).unwrap();
     assert_eq!(files.register_root(project, &cancel).await.unwrap(), index);
@@ -1142,6 +1153,7 @@ async fn a_released_root_opens_the_directory_its_path_names() {
         files.read(&path, &cancel).await,
         Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
     ));
+    drop(lease);
     root.shutdown().await.unwrap();
 }
 

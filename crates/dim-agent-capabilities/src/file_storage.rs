@@ -36,7 +36,7 @@ pub use face::{FsHost, FsPermissions, FsRemove, OpenRead};
 /// Read-only reader lifetime observations for filesystem flow tests.
 #[cfg(feature = "testing")]
 pub mod testing {
-    use super::{FileReader, FileStorage};
+    use super::{FileReader, FileStorage, Root};
 
     pub fn reader_id(reader: &FileReader) -> String {
         reader.0.id.to_string()
@@ -55,7 +55,20 @@ pub mod testing {
             .unwrap()
             .roots
             .get(root)
-            .is_some_and(|slot| slot.handle.is_some())
+            .is_some_and(Root::holds)
+    }
+
+    /// How many times `root` was released. A release drops the descriptor, so a
+    /// later read of an authorized project may hold the root again; the count
+    /// says the release happened either way.
+    pub fn root_releases(storage: &FileStorage, root: usize) -> u64 {
+        storage
+            .state
+            .lock()
+            .unwrap()
+            .roots
+            .get(root)
+            .map_or(0, |slot| slot.releases)
     }
 }
 
@@ -160,114 +173,126 @@ struct State {
 /// What this generation holds for one authorized root. A released slot holds
 /// no descriptor until an operation opens its path again.
 struct Root {
-    handle: Option<File>,
-    /// The directory the root last served, kept while no descriptor is held so
-    /// a later open can tell whether the path still names it. None after an
-    /// observation whose identity could not be read, so the next one is not
-    /// taken for a directory the root served before it.
-    served: Option<native::RootIdentity>,
-    /// Counts the directories this root has served. It advances when a readable
-    /// identity names another directory, and when one is read after the root
-    /// recorded none, so a release, which names the same one, leaves the leases
-    /// locked before it valid, and an identity that cannot be read leaves the
-    /// generation where it was.
-    revision: u64,
-    /// Counts the slot's transitions. An open publishes only at the value it
-    /// observed, so an older observation never replaces a newer one.
-    epoch: u64,
-    /// The epoch of an observation that could not open the path, until an
-    /// observation reads the path's identity again. A lease published at or
-    /// before it holds a directory the path did not open, so its mutations are
-    /// refused until then. A release reads no path, so it neither records nor
-    /// discards this.
-    unavailable: Option<u64>,
-    /// The epoch of the newest observation that read the path's identity. A
-    /// failed open observed before it is older evidence than that reading and
-    /// reports nothing; a release advances the epoch without reading the path
-    /// and leaves this where it was.
-    verified: Option<u64>,
+    /// Serializes the observations that open the root's path with the slot
+    /// transitions they publish, so two observations of one root cannot
+    /// overtake each other. Blocking work takes it; nothing else does.
+    io_gate: Arc<Mutex<()>>,
+    slot: Slot,
+    /// Counts this root's releases. An observation that read another value
+    /// before it opened the path installs no descriptor: the release that
+    /// moved it dropped the root's descriptor, and an open in flight is no
+    /// reason to hold it again.
+    releases: u64,
+}
+
+/// What a root holds for the directory its path names.
+enum Slot {
+    /// The root serves the directory its path names now.
+    Open {
+        /// The descriptor the root holds for it; none after a release.
+        handle: Option<File>,
+        /// The directory the last observation read from the path, or none when
+        /// it could not read one. A later readable identity names a directory
+        /// this root cannot show it already served, so it starts a generation.
+        identity: Option<native::RootIdentity>,
+        /// Counts the directories this root has served. A lease is admitted
+        /// only while the root is Open at the generation it locked, so a lease
+        /// locked before the path named another directory, or stopped opening,
+        /// cannot mutate through it.
+        generation: u64,
+    },
+    /// An observation could not open the root's path. No lease may mutate what
+    /// it locked until an observation opens the path and reads `last_identity`,
+    /// the directory the root served before it; the storage cannot tell that
+    /// its leases still hold a directory the path names.
+    Unavailable {
+        last_identity: Option<native::RootIdentity>,
+        generation: u64,
+    },
 }
 impl Root {
     /// A root that holds `handle` as its first directory.
     fn held(handle: File) -> Self {
-        let served = native::root_identity(&handle).ok();
         Self {
-            verified: served.is_some().then_some(0),
-            served,
-            handle: Some(handle),
-            revision: 0,
-            epoch: 0,
-            unavailable: None,
+            io_gate: Arc::new(Mutex::new(())),
+            slot: Slot::Open {
+                identity: native::root_identity(&handle).ok(),
+                handle: Some(handle),
+                generation: 0,
+            },
+            releases: 0,
         }
     }
-    /// Serves the directory an observation opened: the held descriptor stays
-    /// when the path still names it, is replaced when the path names another,
-    /// and is dropped when the path did not open.
-    fn serve(&mut self, opened: Result<File>) {
+    /// Whether the root holds a descriptor for its path.
+    fn holds(&self) -> bool {
+        matches!(
+            self.slot,
+            Slot::Open {
+                handle: Some(_),
+                ..
+            }
+        )
+    }
+    /// Publishes the observation `opened` of the root's path, made after this
+    /// root reported `releases` releases, and answers the generation that
+    /// serves the directory it reached.
+    ///
+    /// A path that did not open makes the root Unavailable: every lease's
+    /// mutations are refused until an observation opens the path and reads the
+    /// directory the root served before it. An open that reads the directory
+    /// the root serves keeps the generation, so a release and two opens of one
+    /// directory do not invalidate a lease. One that reads another directory
+    /// starts a generation, and so does the first readable one after an
+    /// observation read none. An identity that cannot be read cannot show that
+    /// the path names another directory: from Open it leaves the generation
+    /// where it was, and from Unavailable it starts one, because the root
+    /// cannot show that the path reaches the directory that failed.
+    fn observes(&mut self, opened: &Result<File>, releases: u64) -> Result<u64> {
         let Ok(handle) = opened else {
-            self.unopened(self.epoch);
-            return;
+            let (last_identity, generation) = match &self.slot {
+                Slot::Open {
+                    identity,
+                    generation,
+                    ..
+                } => (*identity, *generation),
+                Slot::Unavailable {
+                    last_identity,
+                    generation,
+                } => (*last_identity, *generation),
+            };
+            self.slot = Slot::Unavailable {
+                last_identity,
+                generation,
+            };
+            return Ok(generation);
         };
-        let observed = native::root_identity(&handle);
-        self.serve_observed(handle, observed);
-    }
-    /// Records an observation at `epoch` that could not open the path: a lease
-    /// published at or before it holds a directory the path did not open, and
-    /// its mutations are refused until an observation reads the path's identity
-    /// again. A release or another failed open that moved the slot since does
-    /// not discard that evidence; an identity read after `epoch` does. The slot
-    /// drops the descriptor it holds only while it is still where this
-    /// observation found it.
-    fn unopened(&mut self, epoch: u64) {
-        if self.verified.is_none_or(|verified| verified <= epoch) {
-            self.unavailable = self.unavailable.max(Some(epoch));
-        }
-        if self.epoch == epoch {
-            self.handle = None;
-            self.epoch += 1;
-        }
-    }
-    /// Serves `handle`, a directory opened at the root's path, with the identity
-    /// the platform read as `observed`. A comparison that cannot read an
-    /// identity replaces the descriptor, records no directory and starts no
-    /// generation: the storage cannot tell that the path names another
-    /// directory, and the next readable identity starts one because the root
-    /// recorded none. Only a transition changes what later opens must observe.
-    /// A readable identity also verifies the path again, so the mutations of
-    /// leases an observation that could not open the path refused are admitted
-    /// again.
-    fn serve_observed(&mut self, handle: File, observed: io::Result<native::RootIdentity>) {
-        if observed.is_ok() {
-            self.verified = Some(self.epoch);
-            self.unavailable = None;
-        }
-        let same = same_directory(self.served, &observed);
-        if same && self.handle.is_some() {
-            return;
-        }
-        let another = reaches_another_directory(self.served, &observed);
-        if another {
-            self.revision += 1;
-        }
-        self.served = observed.ok();
-        self.handle = Some(handle);
-        self.epoch += 1;
-    }
-    /// Serves `opened`, an observation of the root's path made at `epoch`. A
-    /// slot that moved since then, by a registration or a release, does not
-    /// serve the observation: the caller's observation is not the newest one
-    /// and is not published. It still answers the revision the root serves when
-    /// `opened` reaches that same directory, so an open a transition overtook
-    /// binds what it reaches, and none when the root serves another directory or
-    /// recorded none.
-    fn served_at(&mut self, epoch: u64, opened: Result<File>) -> Option<u64> {
-        if self.epoch == epoch {
-            self.serve(opened);
-            return Some(self.revision);
-        }
-        let opened = opened.ok()?;
-        let observed = native::root_identity(&opened);
-        (!reaches_another_directory(self.served, &observed)).then_some(self.revision)
+        let observed = native::root_identity(handle).ok();
+        let generation = match &self.slot {
+            Slot::Open {
+                identity,
+                generation,
+                ..
+            } => match (*identity, observed) {
+                (Some(served), Some(read)) if served == read => *generation,
+                (_, None) => *generation,
+                _ => generation + 1,
+            },
+            Slot::Unavailable {
+                last_identity,
+                generation,
+            } => match (*last_identity, observed) {
+                (Some(served), Some(read)) if served == read => *generation,
+                _ => generation + 1,
+            },
+        };
+        self.slot = Slot::Open {
+            handle: (self.releases == releases)
+                .then(|| handle.try_clone())
+                .transpose()?,
+            identity: observed,
+            generation,
+        };
+        Ok(generation)
     }
 }
 
@@ -304,22 +329,14 @@ struct LeaseResources {
     parent: File,
     name: OsString,
 }
-/// What a lease locked: the generation of the directory its open reached, when
-/// the root serves it, and the slot epoch the root published then.
-#[derive(Clone, Copy)]
-struct Locked {
-    revision: Option<u64>,
-    epoch: u64,
-}
 struct Lease {
     id: Uuid,
     owner: Weak<FileStorage>,
     path: FilePath,
-    /// What the lease locked. A mutation reaches only the directory served then:
-    /// no revision when the root serves another directory than the one its open
-    /// reached, and no admission once an observation could not open the root's
-    /// path after the lease was published.
-    locked: Locked,
+    /// The generation of the directory the lease locked. A mutation reaches
+    /// only the directory the root serves at that generation: none once the
+    /// path names another one, and none while the path did not open.
+    generation: u64,
     resources: Mutex<Option<LeaseResources>>,
 }
 impl Drop for Lease {
@@ -449,9 +466,8 @@ impl FileStorage {
     /// names the same path, and an operation reaches the directory the root
     /// holds: a directory another process replaces at the path is reached when
     /// that path is registered again or after a release, not by every operation.
-    /// A registration publishes only while the root is where it was when the
-    /// registration opened the path, so it cannot serve an observation older
-    /// than one published meanwhile.
+    /// Observations of one root are serialized, so a registration publishes what
+    /// its open reached without overtaking or being overtaken by another.
     pub async fn register_root(
         self: &Arc<Self>,
         root: PathBuf,
@@ -473,100 +489,84 @@ impl FileStorage {
         .await?
     }
 
-    /// Registers `root` until its path is served: the observation is read before
-    /// the path is opened, and one a refresh or release overtook is answered with
-    /// the root's index when it reaches the directory the root serves, and read
-    /// again when it reaches another one.
+    /// Registers `root` until its path is served: the registration opens the
+    /// path under the root's gate and publishes what it reached, and answers
+    /// the root's index either way.
     fn register_observed(&self, root: &Path, cancel: &CancellationToken) -> Result<usize> {
         loop {
             self.check(cancel)?;
-            let observed = self.observe(root);
-            let opened = native::open_root(root);
-            self.check(cancel)?;
-            if let Some(index) = self.publish(root, observed, opened)? {
-                return Ok(index);
-            }
-        }
-    }
-
-    /// The index and slot epoch `root` is registered at, when it is.
-    fn observe(&self, root: &Path) -> Option<(usize, u64)> {
-        let state = self.state.lock().unwrap();
-        let paths = self.roots.lock().unwrap();
-        paths
-            .iter()
-            .position(|path| path == root)
-            .map(|index| (index, state.roots[index].epoch))
-    }
-
-    /// Publishes the descriptor `opened` for `root` at the state `observed`
-    /// names, appending the path when it was not registered. A slot that moved
-    /// since the observation publishes nothing: it answers the index anyway when
-    /// the open reached the directory the root serves, and `None` for the caller
-    /// to observe again when it reached another one.
-    fn publish(
-        &self,
-        root: &Path,
-        observed: Option<(usize, u64)>,
-        opened: Result<File>,
-    ) -> Result<Option<usize>> {
-        let mut state = self.state.lock().unwrap();
-        let mut paths = self.roots.lock().unwrap();
-        match observed {
-            Some((index, epoch)) => {
-                let Some(slot) = state.roots.get_mut(index) else {
-                    return Err(FileStorageError::InvalidPath("unknown authorized root"));
-                };
-                if slot.served_at(epoch, opened).is_none() {
-                    return Ok(None);
-                }
-                Ok(Some(index))
-            }
-            None => {
+            let Some((index, gate, releases)) = self.observe(root) else {
+                let opened = native::open_root(root);
+                self.check(cancel)?;
+                let mut state = self.state.lock().unwrap();
+                let mut paths = self.roots.lock().unwrap();
                 if paths.iter().any(|path| path == root) {
-                    return Ok(None);
+                    continue;
                 }
                 let index = paths.len();
                 state.roots.push(Root::held(opened?));
                 paths.push(root.to_path_buf());
-                Ok(Some(index))
-            }
+                return Ok(index);
+            };
+            let _gate = gate.lock().unwrap();
+            self.check(cancel)?;
+            let opened = native::open_root(root);
+            self.check(cancel)?;
+            let mut state = self.state.lock().unwrap();
+            let Some(slot) = state.roots.get_mut(index) else {
+                return Err(FileStorageError::InvalidPath("unknown authorized root"));
+            };
+            slot.observes(&opened, releases)?;
+            return Ok(index);
         }
+    }
+
+    /// The index, gate and release count of the root registered at `root`, when
+    /// it is.
+    fn observe(&self, root: &Path) -> Option<(usize, Arc<Mutex<()>>, u64)> {
+        let state = self.state.lock().unwrap();
+        let paths = self.roots.lock().unwrap();
+        paths.iter().position(|path| path == root).map(|index| {
+            let slot = &state.roots[index];
+            (index, slot.io_gate.clone(), slot.releases)
+        })
     }
 
     /// Releases the descriptor held for `root`. The index, its path and every
     /// `FilePath` naming it stay valid: the next operation opens the directory
     /// the path names then. An index this generation does not hold is unchanged.
-    /// A released root serves the same directory, so leases locked since its
-    /// last registration stay valid; an open that began before the release does
-    /// not put its descriptor back.
+    /// A released root serves the same directory, so leases locked before it
+    /// stay valid; an open that began before it installs no descriptor. A root
+    /// an observation could not open stays unavailable: a release reads no path.
     pub fn release_root(&self, root: usize) {
         let mut state = self.state.lock().unwrap();
         if let Some(slot) = state.roots.get_mut(root) {
-            slot.handle = None;
-            slot.epoch += 1;
+            slot.releases += 1;
+            if let Slot::Open { handle, .. } = &mut slot.slot {
+                *handle = None;
+            }
         }
     }
 
-    /// The descriptor for `root` and what a lease locking through it binds: the
-    /// revision of the directory it serves, and the epoch of that publication. An
-    /// open that a release or a registration overtook is not published, and
-    /// still answers that revision when the directory it opened is the one the
-    /// root serves; it answers no revision when the root serves another
-    /// directory. A released root keeps its index and path, so a reopened
-    /// descriptor is the same authorization as the one released.
-    fn root_handle(&self, root: usize) -> Result<(File, Locked)> {
-        let (path, epoch) = {
+    /// The descriptor for `root` and the generation of the directory it serves.
+    /// An operation that finds no descriptor opens the root's path under its
+    /// gate and publishes what it reached; a descriptor a release overtook
+    /// serves this operation alone, and the release keeps holding none. A
+    /// released root keeps its index and path, so a reopened descriptor is the
+    /// same authorization as the one released.
+    fn root_handle(&self, root: usize) -> Result<(File, u64)> {
+        let (path, gate, releases) = {
             let state = self.state.lock().unwrap();
             let Some(slot) = state.roots.get(root) else {
                 return Err(FileStorageError::InvalidPath("unknown authorized root"));
             };
-            if let Some(handle) = &slot.handle {
-                let locked = Locked {
-                    revision: Some(slot.revision),
-                    epoch: slot.epoch,
-                };
-                return Ok((handle.try_clone()?, locked));
+            if let Slot::Open {
+                handle: Some(handle),
+                generation,
+                ..
+            } = &slot.slot
+            {
+                return Ok((handle.try_clone()?, *generation));
             }
             let path = self
                 .roots
@@ -575,27 +575,16 @@ impl FileStorage {
                 .get(root)
                 .cloned()
                 .ok_or(FileStorageError::InvalidPath("unknown authorized root"))?;
-            (path, slot.epoch)
+            (path, slot.io_gate.clone(), slot.releases)
         };
-        let handle = match native::open_root(&path) {
-            Ok(handle) => handle,
-            Err(error) => {
-                if let Some(slot) = self.state.lock().unwrap().roots.get_mut(root) {
-                    slot.unopened(epoch);
-                }
-                return Err(error);
-            }
-        };
+        let _gate = gate.lock().unwrap();
+        let opened = native::open_root(&path);
         let mut state = self.state.lock().unwrap();
         let Some(slot) = state.roots.get_mut(root) else {
             return Err(FileStorageError::InvalidPath("unknown authorized root"));
         };
-        let revision = slot.served_at(epoch, Ok(handle.try_clone()?));
-        let locked = Locked {
-            revision,
-            epoch: slot.epoch,
-        };
-        Ok((handle, locked))
+        let generation = slot.observes(&opened, releases)?;
+        opened.map(|handle| (handle, generation))
     }
 
     pub fn root_path(&self, root: usize) -> Result<PathBuf> {
@@ -721,15 +710,11 @@ impl FileStorage {
 
     /// Admission for a mutation through a lease: the root must still serve the
     /// directory the lease locked, or the descriptor it holds reaches one the
-    /// path no longer names. A lease whose lock overlapped a refresh or release
-    /// binds the generation of the directory it reaches when the root serves
-    /// it; it is bound to no revision, and its mutations are refused, only when
-    /// the root serves another directory. A path an observation could not open
-    /// refuses the mutations of every lease published at or before it, until an
-    /// observation reads the path's identity again: the root cannot tell that
-    /// those leases still hold a directory the path names. A release reads no
-    /// path and leaves that state as it was. A read keeps the file it pinned and
-    /// passes [`admit`](Self::admit).
+    /// path no longer names. Only an Open root at the lease's generation admits
+    /// it: a root released since still serves the same directory, while one
+    /// that named another directory, or an observation that could not open the
+    /// path, refuses. A read keeps the file it pinned and passes
+    /// [`admit`](Self::admit).
     fn admit_locked(
         self: &Arc<Self>,
         lease: &Lease,
@@ -741,18 +726,18 @@ impl FileStorage {
         let Some(slot) = state.roots.get(path.root) else {
             return Err(FileStorageError::InvalidPath("unknown authorized root"));
         };
-        if slot
-            .unavailable
-            .is_some_and(|epoch| lease.locked.epoch <= epoch)
-        {
-            return Err(FileStorageError::InvalidPath(
-                "the root's path did not open after the lease was locked",
-            ));
-        }
-        if Some(slot.revision) != lease.locked.revision {
-            return Err(FileStorageError::InvalidPath(
-                "the root serves another directory",
-            ));
+        match &slot.slot {
+            Slot::Open { generation, .. } if *generation == lease.generation => {}
+            Slot::Open { .. } => {
+                return Err(FileStorageError::InvalidPath(
+                    "the root serves another directory",
+                ));
+            }
+            Slot::Unavailable { .. } => {
+                return Err(FileStorageError::InvalidPath(
+                    "the root's path did not open after the lease was locked",
+                ));
+            }
         }
         self.admitted(&mut state, path, cancel)
     }
@@ -781,7 +766,7 @@ impl FileStorage {
     ) -> Result<T>
     where
         T: Send + 'static,
-        A: FnOnce(File, Locked, Arc<Self>, CancellationToken) -> Result<T> + Send + 'static,
+        A: FnOnce(File, u64, Arc<Self>, CancellationToken) -> Result<T> + Send + 'static,
     {
         let operation = self.admit(path, cancel)?;
         let root = path.root;
@@ -790,8 +775,8 @@ impl FileStorage {
         tokio::task::spawn_blocking(move || {
             let _operation = operation;
             owner.check(&cancel)?;
-            let (root, locked) = owner.root_handle(root)?;
-            action(root, locked, owner, cancel)
+            let (root, generation) = owner.root_handle(root)?;
+            action(root, generation, owner, cancel)
         })
         .await?
     }
@@ -827,33 +812,37 @@ impl FileStorage {
         cancel: &CancellationToken,
     ) -> Result<FileLease> {
         let path = path.clone();
-        self.run(&path.clone(), cancel, move |root, locked, owner, cancel| {
-            let (parent, name) = native::parent(root, &path.relative)?;
-            let (name, lock) = physical_lock(&parent, &name, &owner)?;
-            let lease = Arc::new(Lease {
-                id: Uuid::new_v4(),
-                owner: Arc::downgrade(&owner),
-                path,
-                locked,
-                resources: Mutex::new(Some(LeaseResources {
-                    _lock: lock,
-                    parent,
-                    name,
-                })),
-            });
-            {
-                let mut state = owner.state.lock().unwrap();
-                owner.check(&cancel)?;
-                state.leases.insert(
-                    lease.id,
-                    LeaseEntry {
-                        lease: Arc::downgrade(&lease),
-                        binding: None,
-                    },
-                );
-            }
-            Ok(FileLease(Some(lease)))
-        })
+        self.run(
+            &path.clone(),
+            cancel,
+            move |root, generation, owner, cancel| {
+                let (parent, name) = native::parent(root, &path.relative)?;
+                let (name, lock) = physical_lock(&parent, &name, &owner)?;
+                let lease = Arc::new(Lease {
+                    id: Uuid::new_v4(),
+                    owner: Arc::downgrade(&owner),
+                    path,
+                    generation,
+                    resources: Mutex::new(Some(LeaseResources {
+                        _lock: lock,
+                        parent,
+                        name,
+                    })),
+                });
+                {
+                    let mut state = owner.state.lock().unwrap();
+                    owner.check(&cancel)?;
+                    state.leases.insert(
+                        lease.id,
+                        LeaseEntry {
+                            lease: Arc::downgrade(&lease),
+                            binding: None,
+                        },
+                    );
+                }
+                Ok(FileLease(Some(lease)))
+            },
+        )
         .await
     }
 
@@ -1069,71 +1058,9 @@ impl FileStorage {
     }
 }
 
-/// Whether a directory observation starts a generation: it names another
-/// directory than the root serves, or the root recorded none and cannot show
-/// that it already serves this one. An identity that cannot be read leaves the
-/// question open: the volume reports none, or a deletion is pending, so the
-/// storage cannot tell, and a lease that reached this directory keeps its
-/// generation.
-fn reaches_another_directory(
-    served: Option<native::RootIdentity>,
-    observed: &io::Result<native::RootIdentity>,
-) -> bool {
-    match (served, observed) {
-        (None, Ok(_)) => true,
-        (Some(served), Ok(observed)) => served != *observed,
-        _ => false,
-    }
-}
-/// Whether a directory observation names the directory a root serves. Reading
-/// the identity can fail where the volume does not report one, such as FAT or
-/// exFAT, or while a deletion is still pending. An identity that cannot be read
-/// is not a match: registration uses the descriptor it opened, whose
-/// component-wise path walk already rejected links.
-fn same_directory(
-    served: Option<native::RootIdentity>,
-    observed: &io::Result<native::RootIdentity>,
-) -> bool {
-    served.is_some()
-        && observed
-            .as_ref()
-            .is_ok_and(|observed| served == Some(*observed))
-}
-#[cfg(test)]
-#[test]
-fn a_root_identity_that_cannot_be_read_is_not_the_held_directory() {
-    assert!(!same_directory(
-        Some(Default::default()),
-        &Err(io::Error::from(io::ErrorKind::Unsupported))
-    ));
-    assert!(!same_directory(None, &Ok(Default::default())));
-}
-/// A comparison that cannot read an identity starts no directory generation
-/// either: the storage cannot tell that the path names another directory, so a
-/// lease taken before keeps writing into the directory it locked.
-#[cfg(test)]
-#[test]
-fn a_root_identity_that_cannot_be_read_keeps_the_generation() {
-    assert!(
-        !reaches_another_directory(
-            Some(Default::default()),
-            &Err(io::Error::from(io::ErrorKind::Unsupported))
-        ),
-        "the storage cannot tell whether the path names another directory"
-    );
-}
-/// A root that recorded no directory starts a generation with the identity it
-/// reads next: it cannot show that the directory is one it already served.
-#[cfg(test)]
-#[test]
-fn a_root_that_recorded_no_directory_starts_a_generation() {
-    assert!(reaches_another_directory(None, &Ok(Default::default())));
-}
-
 #[cfg(all(test, any(unix, windows)))]
-mod root_publication {
+mod roots {
     use super::*;
-    use std::io::Read;
 
     fn storage() -> (std::path::PathBuf, Arc<FileStorage>) {
         let directory =
@@ -1145,262 +1072,89 @@ mod root_publication {
         (directory.canonicalize().unwrap(), storage)
     }
 
-    /// Replaces the directory at `path` with one holding `contents`.
-    fn replace(path: &Path, contents: &[u8]) {
-        std::fs::remove_dir_all(path).unwrap();
-        std::fs::create_dir(path).unwrap();
-        std::fs::write(path.join("state.json"), contents).unwrap();
-    }
-
-    /// The bytes of the root's `state.json`, as an operation reaches them.
-    fn served(storage: &FileStorage, root: usize) -> Vec<u8> {
-        let (handle, _) = storage.root_handle(root).unwrap();
-        let (parent, name) = native::parent(handle, Path::new("state.json")).unwrap();
-        let mut bytes = Vec::new();
-        native::read_user_file(&parent, &name)
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
-        bytes
-    }
-
-    /// A registration that opened the path before a newer one publishes nothing
-    /// after it: the newest observation is the one the root serves.
+    /// The generation follows the directory an observation reads: the one the
+    /// root serves keeps it, another starts one, and an observation that could
+    /// not open the path keeps it until one reads the directory it served.
     #[test]
-    fn a_registration_that_opened_before_a_refresh_does_not_publish_after_it() {
+    fn a_generation_follows_the_directory_an_observation_reads() {
         let (directory, storage) = storage();
         let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
-        let observed = storage.observe(&path);
-        let older = native::open_root(&path).unwrap();
-        replace(&path, b"second");
-        assert_eq!(storage.register_observed(&path, &cancel).unwrap(), index);
-        assert_eq!(
-            storage.publish(&path, observed, Ok(older)).unwrap(),
-            None,
-            "the older registration does not replace the newer directory"
-        );
-        assert_eq!(served(&storage, index), b"second");
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// An open that could not read the path reports it even when a release
-    /// moved the slot meanwhile: the release read no path, so it is no evidence
-    /// that the path reaches the directory the lease holds. Reading the path's
-    /// identity again is, and admits the lease locked before the failed open.
-    #[tokio::test]
-    async fn an_unavailable_path_outlives_a_release() {
-        let (directory, storage) = storage();
-        let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
-        let file = storage.path(index, "state.json").unwrap();
-        let mut lease = storage.lock(&file, &cancel).await.unwrap();
-        let (_, failed) = storage.observe(&path).expect("a registered root");
-        storage.release_root(index);
-        let (_, observed) = storage.observe(&path).expect("a registered root");
-        storage.release_root(index);
-        let moved = directory.join("moved");
-        std::fs::rename(&path, &moved).unwrap();
-        let released = {
-            let mut state = storage.state.lock().unwrap();
-            let slot = &mut state.roots[index];
-            let released = slot.epoch;
-            slot.unopened(observed);
-            released
-        };
-        assert!(
-            matches!(
-                lease.replace(b"second".to_vec(), None, &cancel).await,
-                Err(FileStorageError::InvalidPath(_))
-            ),
-            "a lease locked before the path could not be opened does not write into the directory the path no longer names"
-        );
-        assert!(
-            matches!(
-                lease.backup("bak", None, &cancel).await,
-                Err(FileStorageError::InvalidPath(_))
-            ),
-            "a backup through it is refused too"
-        );
-        {
-            let state = storage.state.lock().unwrap();
-            let slot = &state.roots[index];
-            assert_eq!(slot.epoch, released, "the failed open published nothing");
-            assert_eq!(
-                slot.unavailable,
-                Some(observed),
-                "the failed open still reports the path"
-            );
-        }
-        {
-            let mut state = storage.state.lock().unwrap();
-            let slot = &mut state.roots[index];
-            slot.unopened(failed);
-            assert_eq!(
-                slot.unavailable,
-                Some(observed),
-                "an older failed open does not weaken the evidence"
-            );
-        }
-        assert_eq!(std::fs::read(moved.join("state.json")).unwrap(), b"first");
-        std::fs::rename(&moved, &path).unwrap();
-        assert_eq!(storage.register_observed(&path, &cancel).unwrap(), index);
-        lease
-            .replace(b"second".to_vec(), None, &cancel)
-            .await
-            .unwrap();
-        assert_eq!(std::fs::read(path.join("state.json")).unwrap(), b"second");
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// An observation that read the path's identity keeps a failed open it
-    /// overtook from reporting the path: the root verified the path after that
-    /// observation, so the lease locked before it is not refused.
-    #[test]
-    fn an_identity_read_after_a_failed_open_supersedes_it() {
-        let (directory, storage) = storage();
-        let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
-        let (_, failed) = storage.observe(&path).expect("a registered root");
-        storage.release_root(index);
-        let (_, read) = storage.observe(&path).expect("a registered root");
-        assert!(read > failed, "the release moved the slot");
-        let opened = native::open_root(&path).unwrap();
-        let mut state = storage.state.lock().unwrap();
-        let slot = &mut state.roots[index];
-        slot.serve(Ok(opened));
-        slot.unopened(failed);
-        assert!(
-            slot.unavailable.is_none(),
-            "an identity read after the failed open verified the path"
-        );
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// An open that began before a release publishes nothing, so a released root
-    /// holds no descriptor until an operation opens its path again.
-    #[test]
-    fn an_open_that_overlaps_a_release_does_not_hold_the_root_again() {
-        let (directory, storage) = storage();
-        let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
-        storage.release_root(index);
-        let (_, epoch) = storage.observe(&path).expect("a registered root");
-        let opened = native::open_root(&path).unwrap();
-        storage.release_root(index);
-        let mut state = storage.state.lock().unwrap();
-        let revision = state.roots[index].revision;
-        assert_eq!(
-            state.roots[index].served_at(epoch, Ok(opened)),
-            Some(revision),
-            "the release names the directory the open reaches, and publishes nothing"
-        );
-        assert!(state.roots[index].handle.is_none());
-        drop(state);
-        assert_eq!(served(&storage, index), b"first");
-        assert!(
-            storage.state.lock().unwrap().roots[index].handle.is_some(),
-            "the next operation opens the directory its path names"
-        );
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// An open that a registration overtook still reaches the directory the root
-    /// serves, so it binds that directory's generation instead of none: two opens
-    /// of one directory do not invalidate each other's leases.
-    #[test]
-    fn an_open_that_a_registration_overtook_binds_the_directory_it_reaches() {
-        let (directory, storage) = storage();
-        let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
-        storage.release_root(index);
-        let (_, epoch) = storage.observe(&path).expect("a registered root");
-        let opened = native::open_root(&path).unwrap();
-        assert_eq!(storage.register_observed(&path, &cancel).unwrap(), index);
-        let mut state = storage.state.lock().unwrap();
-        assert_ne!(
-            state.roots[index].epoch, epoch,
-            "the registration published while the open was in flight"
-        );
-        assert_eq!(
-            state.roots[index].served_at(epoch, Ok(opened)),
-            Some(state.roots[index].revision),
-            "the same directory keeps the generation the lease locked"
-        );
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// A generation starts only for a readable identity of another directory.
-    #[test]
-    fn a_generation_starts_only_for_another_readable_directory() {
-        let (directory, storage) = storage();
-        let path = directory.join("project");
-        let cancel = CancellationToken::new();
-        let index = storage.register_observed(&path, &cancel).unwrap();
         let other = directory.join("other");
         std::fs::create_dir(&other).unwrap();
-        let held = native::open_root(&path).unwrap();
-        let another = native::open_root(&other).unwrap();
+        let other_identity = native::root_identity(&native::open_root(&other).unwrap()).unwrap();
+        let cancel = CancellationToken::new();
+        let index = storage.register_observed(&path, &cancel).unwrap();
         let mut state = storage.state.lock().unwrap();
         let slot = &mut state.roots[index];
-        let revision = slot.revision;
-        slot.serve(Ok(held));
+        let releases = slot.releases;
         assert_eq!(
-            slot.revision, revision,
-            "the directory the root serves starts no generation"
+            slot.observes(&native::open_root(&path), releases).unwrap(),
+            0,
+            "the directory the root serves keeps its generation"
         );
-        slot.serve(Ok(another));
         assert_eq!(
-            slot.revision,
-            revision + 1,
+            slot.observes(&native::open_root(&other), releases).unwrap(),
+            1,
             "another directory starts a generation"
         );
+        slot.observes(
+            &Err(FileStorageError::Io(io::Error::from(
+                io::ErrorKind::NotFound,
+            ))),
+            releases,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                &slot.slot,
+                Slot::Unavailable {
+                    last_identity: Some(served),
+                    generation: 1,
+                } if *served == other_identity
+            ),
+            "an observation that could not open the path refuses every lease and names the directory it served"
+        );
+        assert_eq!(
+            slot.observes(&native::open_root(&other), releases).unwrap(),
+            1,
+            "reading the directory the root served again admits its leases"
+        );
+        assert_eq!(
+            slot.observes(&native::open_root(&path), releases).unwrap(),
+            2,
+            "a directory the root did not serve before starts a generation"
+        );
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// An observation whose identity cannot be read replaces the descriptor but
-    /// records no directory, so a later observation of the path names a
-    /// directory the root did not record and is served rather than skipped.
+    /// An observation a release overtook installs no descriptor of its own:
+    /// the release dropped the root's, and the observation serves this
+    /// operation alone. The next observation, after the release, holds the
+    /// root again.
     #[test]
-    fn an_identity_that_cannot_be_read_leaves_the_next_readable_one_a_generation() {
+    fn an_observation_a_release_overtook_installs_no_descriptor() {
         let (directory, storage) = storage();
         let path = directory.join("project");
-        let other = directory.join("other");
-        std::fs::create_dir(&other).unwrap();
         let cancel = CancellationToken::new();
         let index = storage.register_observed(&path, &cancel).unwrap();
-        let held = native::open_root(&path).unwrap();
-        let served = native::root_identity(&held).unwrap();
-        let another = native::open_root(&other).unwrap();
+        let (_, _, releases) = storage.observe(&path).expect("a registered root");
+        storage.release_root(index);
+        let opened = native::open_root(&path);
         let mut state = storage.state.lock().unwrap();
         let slot = &mut state.roots[index];
-        let revision = slot.revision;
-        slot.serve_observed(another, Err(io::Error::from(io::ErrorKind::Unsupported)));
-        assert!(
-            slot.served.is_none(),
-            "an identity that cannot be read is not recorded"
-        );
         assert_eq!(
-            slot.revision, revision,
-            "an identity that cannot be read starts no generation"
+            slot.observes(&opened, releases).unwrap(),
+            0,
+            "the release keeps the generation it served"
         );
-        let reopened = native::open_root(&path).unwrap();
-        slot.serve_observed(reopened, Ok(served));
-        assert_eq!(
-            slot.revision,
-            revision + 1,
-            "the first identity read after none starts a generation"
-        );
-        assert_eq!(
-            native::root_identity(slot.handle.as_ref().expect("a served descriptor")).unwrap(),
-            served,
-            "the root serves the directory its path names"
-        );
+        assert!(!slot.holds(), "the release keeps holding no descriptor");
+        drop(state);
+        let (_, _, releases) = storage.observe(&path).expect("a registered root");
+        let opened = native::open_root(&path);
+        let mut state = storage.state.lock().unwrap();
+        let slot = &mut state.roots[index];
+        slot.observes(&opened, releases).unwrap();
+        assert!(slot.holds(), "an observation after the release holds it");
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }

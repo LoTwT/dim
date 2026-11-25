@@ -638,9 +638,10 @@ async fn a_closing_session_does_not_release_the_root_a_restore_owns() {
     let restored = restoring.await.unwrap().unwrap();
     assert!(testing::root_held(&files, root));
     drop(restored);
+    let released = testing::root_releases(&files, root);
     index.close_session(&second).await.unwrap();
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the last Session's close released the project's descriptor"
     );
     server.shutdown();
@@ -696,6 +697,7 @@ async fn a_refused_restore_settles_the_ownership_of_its_cancelled_caller() {
         Err(error) => assert!(error.is_cancelled(), "the caller stopped waiting"),
         Ok(_) => panic!("the cancelled caller returned a Session use"),
     }
+    let released = testing::root_releases(&files, root);
     held.release();
     let gate = index.slot(&stored.session).gate.clone().lock_owned().await;
     drop(gate);
@@ -710,7 +712,7 @@ async fn a_refused_restore_settles_the_ownership_of_its_cancelled_caller() {
         "a refused restore ends the ownership it registered, whether or not a caller awaits it"
     );
     assert!(
-        !testing::root_held(&files, root),
+        testing::root_releases(&files, root) == released + 1,
         "the last owner's refusal released the project's root"
     );
     assert!(

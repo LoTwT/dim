@@ -31,22 +31,22 @@ folding names would break case-sensitive directories and their aliases.
 A root is its index and its path. Both are append-only: an index always names
 the same path, and a `FilePath` names its root for its generation's lifetime. A
 descriptor is not part of that identity. Registering an already registered path
-opens the directory the path names now and keeps the index: the held descriptor
-stays when the path still names it, is replaced when the path names another, and
-is dropped when the path cannot be opened. Reading the directory's identity can
-fail, on a volume that does not report file IDs or while a deletion is pending;
-that comparison failing is not a registration failure, and the newly opened
-descriptor, whose component-wise walk already rejected links, serves the path.
+opens the directory the path names now and keeps the index: the root keeps
+serving the same directory when the path still names it, serves the new one when
+the path names another, and holds none when the path cannot be opened. Reading
+the directory's identity can fail, on a volume that does not report file IDs or
+while a deletion is pending; that comparison failing is not a registration
+failure, and the newly opened descriptor, whose component-wise walk already
+rejected links, serves the path.
 The root records no directory for that observation, so a later registration
 cannot mistake the path for one the root served before the failed read.
 
-A registration publishes only while the root is where it was when the
-registration opened the path, so an observation made earlier never replaces a
-newer one; one a refresh or release overtook publishes nothing and answers the
-index when it reached the directory the root serves. A normal operation uses the
-descriptor the root last held; it does not check the path's current identity. A
-directory another process replaces at the path is therefore reached when that
-path is registered again or after a release, not by every operation on the root.
+Every observation of one root is serialized with the slot transition it
+publishes, so an observation never overtakes or is overtaken by another. A
+normal operation uses the descriptor the root last held; it does not check the
+path's current identity. A directory another process replaces at the path is
+therefore reached when that path is registered again or after a release, not by
+every operation on the root.
 
 `release_root(index)` drops the descriptor and keeps the index, its path and
 every `FilePath` naming it. The next operation opens the directory the path
@@ -54,24 +54,23 @@ names then, so a release withdraws no authorization and changes no index. A
 released root costs no descriptor until then, and an open that began before a
 release does not put its descriptor back.
 
-A lease is bound to the directory generation it locked: `replace` and `backup`
-through it fail with `invalid` once the path names another directory, rather than
-writing into the directory the path no longer names. That generation advances
-when a registration reads an identity for the path that differs from the one the
-root serves, and when it reads one after none was recorded: the root cannot show
-that the directory is one it already served. A release, which names the same
-directory, leaves the lease valid; an identity that cannot be read leaves the
-generation where it was, because the storage cannot tell whether the path names
-another directory. An observation that cannot open the path leaves it where it
-was too, and additionally refuses the mutations of the leases published at or
-before it until an observation reads the path's identity again: the root cannot
-tell that those leases still hold a directory the path names. A release does not
-clear that state, because it reads no path. Their reads keep the files they
-pinned, and dropping them releases their locks. An open that a release or
-another registration overtook binds the generation of the directory it reaches
-when the root serves it, so two opens of one directory do not invalidate each
-other. A lease's read keeps the file it pinned, and dropping the lease releases
-its physical lock either way.
+A root's slot is Open or Unavailable, at a generation. A lease is bound to the
+generation it locked: `replace` and `backup` through it fail with `invalid`
+unless the slot is Open at that generation, so a lease never writes into a
+directory the path no longer names. The generation advances when an observation
+reads an identity for the path that differs from the one the root serves, and
+when it reads one after none was recorded: the root cannot show that the
+directory is one it already served. A release, which names the same directory,
+leaves the lease valid, and so does an identity that cannot be read while the
+slot is Open: the storage cannot tell whether the path names another directory.
+A slot an observation could not open refuses its leases' mutations. An
+observation that opens the path and reads the directory the root served before
+it restores them; one that opens another directory, or cannot read one, starts a
+generation, so only leases locked through that open are admitted. A release does
+not clear that state because it reads no path. Their reads keep the files they
+pinned, and dropping them releases their locks. An open that a release overtook
+keeps no descriptor for the root, because the release dropped it, and the
+observation serves that operation alone.
 
 The App Server releases a project's root once the last Session loaded from its
 cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
@@ -79,15 +78,19 @@ an idle unload and `agent.close` each end one Session's ownership; a load
 records it before the Session appears in an Agent's Session list, so a Session
 still restoring owns the root. A restore that loaded no Session ends the
 ownership it registered itself, before its caller can be told either way, so a
-caller that stopped waiting leaves none behind. A `session.detach` ends no
-ownership: the Session stays loaded and may still use the project, and its later
-close or unload releases the root. An authorization no Session used, from
-`hooks.catalog` or MCP management, owns nothing and keeps its descriptor until
-the next settlement on the same cwd or the process closes. A Session the
-runtime's fault supervisor closes reports no settlement of its own; its
-ownership stays until the process closes. FileStorage close still releases every
-descriptor. A reopened descriptor is not revalidated against an earlier one,
-because the path is the authorization and the authorization did not change.
+caller that stopped waiting leaves none behind. A loaded Session's ownership
+ends with its close, which the process observes even when it did not start the
+close, so a Session the runtime's fault supervisor stops releases its project
+too. `agent.close` ends every ownership the Agent registered, including a
+Session whose build reached the runtime after the close began, and an Agent
+scope that unloads ends the ownerships of the Sessions its own close ended. A
+`session.detach` ends no ownership: the Session stays loaded and may still use
+the project, and its later close or unload releases the root. An authorization
+no Session used, from `hooks.catalog` or MCP management, owns nothing and keeps
+its descriptor until the next settlement on the same cwd or the process closes.
+FileStorage close still releases every descriptor. A reopened descriptor is not
+revalidated against an earlier one, because the path is the authorization and
+the authorization did not change.
 
 ## Bounded reads
 
