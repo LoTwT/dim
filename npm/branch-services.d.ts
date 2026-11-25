@@ -1914,3 +1914,20 @@ export type SessionCall = Call<SessionFaces, {}>
 export type SessionsCall =
   | Call<LineFaces, { sessionId: string; lineId: string }>
   | Call<SessionFaces, { sessionId: string }>
+
+/** The reply of one call: the target method's own return type. */
+export type ReplyOf<C> = C extends { service: infer S; method: infer M }
+  ? S extends keyof (LineFaces & SessionFaces)
+    ? M extends keyof (LineFaces & SessionFaces)[S]
+      ? Awaited<
+          (LineFaces & SessionFaces)[S][M] extends (...args: never[]) => infer R ? R : never
+        >
+      : never
+    : never
+  : never
+
+/** A Session's own faces, typed per operation: `service` and `method` choose the reply. */
+export interface SessionScope {
+  call<C extends SessionCall>(call: C): Promise<ReplyOf<C>>
+  lineCall<C extends LineCall>(call: C): Promise<ReplyOf<C>>
+}

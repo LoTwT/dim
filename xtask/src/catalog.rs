@@ -83,6 +83,7 @@ pub(super) async fn collect() -> Result<Table> {
         let ctx = probe.0.lock().unwrap().take();
         let ctx = ctx.ok_or("the catalog probe did not load")?;
         let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?;
+        reach(&root_of(), agent.catalog(), agent.faces(), &table)?;
         session.close().await?;
         Ok::<_, Box<dyn std::error::Error>>(table)
     }
@@ -91,6 +92,78 @@ pub(super) async fn collect() -> Result<Table> {
     server.join().await?;
     let _ = std::fs::remove_dir_all(&dir);
     table
+}
+
+/// The workspace root, from this crate's manifest directory.
+fn root_of() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Checks the generated authoring types against what the runtime resolves: every
+/// name `npm/branch-services.d.ts` offers for a scope is a data face the route
+/// accepts there. A name the route refuses, or a face of the other scope, must
+/// not be offered, so this compares the two lists with the runtime's own rule
+/// ([`dim_agent_runtime::route::resolves`]).
+fn reach(
+    root: &std::path::Path,
+    catalog: &ServiceCatalog,
+    faces: &Faces,
+    table: &Table,
+) -> Result<()> {
+    let text = std::fs::read_to_string(root.join("npm/branch-services.d.ts"))?;
+    let mut offered: Vec<(&str, &str)> = Vec::new();
+    for (section, group) in [
+        ("export type SessionFaces = {", "session"),
+        ("export type LineFaces = {", "branch"),
+    ] {
+        let Some(start) = text.find(section) else {
+            return Err(format!("npm/branch-services.d.ts: no {section}").into());
+        };
+        for line in text[start + section.len()..].lines() {
+            let line = line.trim();
+            if line == "}" {
+                break;
+            }
+            let Some(name) = line.split(':').next().map(str::trim) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            offered.push((name, group));
+        }
+    }
+    let mut refused = Vec::new();
+    for (name, group) in &offered {
+        if !dim_agent_runtime::route::resolves(catalog, faces, name, group) {
+            refused.push(format!("{name} ({group})"));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the route refuses: {}",
+            refused.join(", ")
+        )
+        .into());
+    }
+    let groups = ["session", "branch"];
+    let unknown: Vec<&str> = offered
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !table.services.contains_key(*name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the assembly does not provide: {}",
+            unknown.join(", ")
+        )
+        .into());
+    }
+    let _ = groups;
+    Ok(())
 }
 
 /// The face of one catalog name (#1289).

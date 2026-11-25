@@ -260,6 +260,18 @@ impl SessionScope {
     }
 }
 
+/// Whether a route resolves `service` as a data face of `group` (module docs).
+/// The generated authoring types and the runtime's own answer must agree, and
+/// this is the predicate a check compares them with.
+pub fn resolves(
+    catalog: &names::ServiceCatalog,
+    faces: &Faces,
+    service: &str,
+    group: &str,
+) -> bool {
+    face(catalog, faces, service, group).is_ok()
+}
+
 /// Fails unless a route may resolve `service` as a data face of `group`
 /// (module docs).
 pub(crate) fn face(

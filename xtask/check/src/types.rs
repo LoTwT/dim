@@ -68,6 +68,8 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     text += "\n/** A call to one of the caller's own Session's lines. */\nexport type LineCall = Call<LineFaces, { lineId: string }>\n";
     text += "\n/** A call to one of the caller's own Session's data faces. */\nexport type SessionCall = Call<SessionFaces, {}>\n";
     text += "\n/** A call through Agents: a Session's face, or one of its lines' faces. */\nexport type SessionsCall =\n  | Call<LineFaces, { sessionId: string; lineId: string }>\n  | Call<SessionFaces, { sessionId: string }>\n";
+    text += "\n/** The reply of one call: the target method's own return type. */\nexport type ReplyOf<C> = C extends { service: infer S; method: infer M }\n  ? S extends keyof (LineFaces & SessionFaces)\n    ? M extends keyof (LineFaces & SessionFaces)[S]\n      ? Awaited<\n          (LineFaces & SessionFaces)[S][M] extends (...args: never[]) => infer R ? R : never\n        >\n      : never\n    : never\n  : never\n";
+    text += "\n/** A Session's own faces, typed per operation: `service` and `method` choose the reply. */\nexport interface SessionScope {\n  call<C extends SessionCall>(call: C): Promise<ReplyOf<C>>\n  lineCall<C extends LineCall>(call: C): Promise<ReplyOf<C>>\n}\n";
     Ok(text)
 }
 

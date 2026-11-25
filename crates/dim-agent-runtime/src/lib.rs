@@ -12,7 +12,7 @@ mod memory_timeline_store;
 pub mod names;
 mod parts;
 mod registrations;
-mod route;
+pub mod route;
 mod scope;
 mod state;
 #[cfg(feature = "testing")]

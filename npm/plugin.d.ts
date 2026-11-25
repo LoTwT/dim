@@ -307,7 +307,9 @@ export interface Sessions {
    * `session_reloading` (retry later), `session_unavailable` (report the
    * reason) or `no_line`; the target owner's own failure is `routed` with its
    * name and message. */
-  call(request: import('./branch-services.js').SessionsCall): Promise<SessionsResult<unknown>>;
+  call<C extends import('./branch-services.js').SessionsCall>(
+    request: C,
+  ): Promise<SessionsResult<import('./branch-services.js').ReplyOf<C>>>;
 }
 
 /** One type an `eventHub` source declares (design A.1). */

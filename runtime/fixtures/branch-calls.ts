@@ -10,14 +10,24 @@ export async function readByCalls(
   sessionId: string,
   inputId: string,
 ): Promise<void> {
-  await scope.lineCall({
+  // Each reply is the target method's own type.
+  const withdrawn = await scope.lineCall({
     lineId: 'main',
     service: 'inputQueue',
     method: 'withdraw',
     args: [{ input_id: inputId }],
   })
-  await scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] })
-  await scope.call({ service: 'sessionConfig', method: 'get', args: [] })
+  const status: string = withdrawn.status
+  const sequence = await scope.lineCall({
+    lineId: 'main',
+    service: 'timeline',
+    method: 'sequence',
+    args: [],
+  })
+  const committed: number | bigint = sequence
+  const config = await scope.call({ service: 'sessionConfig', method: 'get', args: [] })
+  const cwd: string = config.cwd
+  void [status, committed, cwd]
   await sessions.call({
     sessionId,
     lineId: 'main',
@@ -36,5 +46,7 @@ void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'submitX', 
 void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: ['wrong'] })
 // @ts-expect-error a Session call reaches a Session face, not a line's.
 void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
+// @ts-expect-error a reply keeps the target method's own type.
+void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
 // @ts-expect-error a line call takes no Session id.
 void sessions.call({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] })
