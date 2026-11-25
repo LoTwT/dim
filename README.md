@@ -27,7 +27,7 @@ npm install -g dimcode-alpha@alpha
 dima
 ```
 
-For the independent nightly build on macOS or GNU/Linux, use the [curl installer](docs/release/README.md#nightly-curl-channel) and run `dim-nightly`. Rerun the installer to upgrade without changing your npm alpha installation.
+For the independent nightly build on macOS or GNU/Linux, use the [curl installer](docs/release/README.md#nightly-curl-channel) and run `dimn` or `dim-nightly`. Rerun the installer to upgrade without changing your npm alpha installation.
 
 Add a provider with `/connect` (or `/provider`), sign in to DimAgent with `/login`, or select a configured model with `/models`. Type `ls` in the chat and press Enter. In this session Dim asks to run `ls -la` in `runtime/plugins`. Choosing **Allow once** lets it list the three plugin directories.
 

@@ -44,7 +44,7 @@ Install or upgrade the standalone `dim-nightly` on macOS or GNU/Linux (arm64 or 
 curl -fsSL https://raw.githubusercontent.com/arcships/dim/main/scripts/install-nightly.sh | sh
 ```
 
-The entry point is `~/.local/bin/dim-nightly`. The installer leaves npm installations alone and keeps each payload under `${XDG_DATA_HOME:-~/.local/share}/dim-nightly`. The CLI defaults to `~/.dimcode-nightly`. The release environment needs the same build-time account settings as the alpha native builds. Restrict nightly tag creation and manual publication to trusted maintainers. If deployment filters are enabled, allow both `main` and the nightly tag pattern in `release-build`. Rolling assets require a mutable GitHub prerelease.
+Run `dimn` or `dim-nightly` from `~/.local/bin`. Installation and upgrades add `dimn` as a shortcut to `dim-nightly` without replacing anything already at `~/.local/bin/dimn`. The installer leaves npm installations alone and keeps each payload under `${XDG_DATA_HOME:-~/.local/share}/dim-nightly`. The CLI defaults to `~/.dimcode-nightly`. The release environment needs the same build-time account settings as the alpha native builds. Restrict nightly tag creation and manual publication to trusted maintainers. If deployment filters are enabled, allow both `main` and the nightly tag pattern in `release-build`. Rolling assets require a mutable GitHub prerelease.
 
 Nightly (`X.Y.Z-nightly.N`) and npm alpha (`X.Y.Z-alpha.N`) number releases independently. Start a nightly without a version PR in either of two ways:
 
