@@ -1251,6 +1251,9 @@ export type SessionFault =
   | { invalidInput: string }
   | { closed: string }
   | { unknownBranch: string }
+  | { noSession: string }
+  | { sessionClosing: string }
+  | { noLine: { session: string; line: string } }
   | { branchEnded: string }
   | { branchRefused: { refusal: BranchRefusal; message: string } }
   | { storage: string }
@@ -1401,6 +1404,49 @@ export interface PartRegistry {
    * unloads, rutis ends every copy first; the registration then goes.
    */
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
+}
+
+/** The call routing makes to a Session-scope data face. */
+export type SessionFaceCall = {
+  sessionId: string
+  service: string
+  method: string
+  /** The method's arguments, in order, as the calling language writes them. */
+  args?: import('./plugin.js').BridgeJsonValue[]
+}
+
+/** The call routing makes to a line-scope data face. */
+export type LineFaceCall = {
+  sessionId: string
+  lineId: string
+  service: string
+  method: string
+  /** The method's arguments, in order, as the calling language writes them. */
+  args?: import('./plugin.js').BridgeJsonValue[]
+}
+
+/**
+ * Calls by id to the scope a live instance owns (module docs).
+ *
+ * One `Route` serves every Agent of one host: each Agent registers the
+ * Sessions it publishes, so a process part reaches a Session of any Agent.
+ * Rust parts read it as the process name `route` and call the owner's face
+ * directly; a language runtime or a UI leaf calls [`Self::session`] or
+ * [`Self::line`] by that name instead.
+ */
+export interface Route {
+  /**
+   * Calls a Session-scope data face: [`Route::session_owner`] for a
+   * language that names the face instead of holding it.
+   * @throws {AgentErrorThrown}
+   */
+  session(call: SessionFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
+  /**
+   * Calls a line-scope data face: [`Route::line_owner`] for a language that
+   * names the face instead of holding it.
+   * @throws {AgentErrorThrown}
+   */
+  line(call: LineFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
 }
 
 export type SessionInstanceDefinition = {
@@ -1740,7 +1786,7 @@ export interface UiResources {
 }
 
 /** What a method returning `Err(AgentError)` throws. */
-export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "BranchRefused" | "Storage" | "PublicationUnknown" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "NoSession" | "SessionClosing" | "NoLine" | "BranchEnded" | "BranchRefused" | "Storage" | "PublicationUnknown" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
 /** What a method returning `Err(ApprovalRespondError)` throws. */
 export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
@@ -1820,6 +1866,7 @@ export interface Services {
   dispatcher: Dispatcher
   timeline: Timeline
   partRegistry: PartRegistry
+  route: Route
   sessionLoader: SessionLoader
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig

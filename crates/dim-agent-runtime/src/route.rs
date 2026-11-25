@@ -30,13 +30,12 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-/// Names routing does not resolve: the mechanism's registration points, whose
-/// entries belong to the part that registered them and are reachable only
-/// inside that generation ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md)
-/// D3), and the scope lifecycle services the runtime provides.
-const REGISTRATION_POINTS: [&str; 7] = [
-    "partRegistry",
-    "managementMethods",
+/// Names routing does not resolve: the mechanism's registration points in the
+/// groups it resolves, whose entries belong to the part that registered them
+/// and are reachable only inside that generation
+/// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md)), and the
+/// scope lifecycle services the runtime provides.
+const REGISTRATION_POINTS: [&str; 5] = [
     "sessionMethods",
     "toolRegistry",
     "promptRegistry",
@@ -113,24 +112,9 @@ impl LineFaceCall {
 /// Rust parts read it as the process name `route` and call the owner's face
 /// directly; a language runtime or a UI leaf calls [`Self::session`] or
 /// [`Self::line`] by that name instead.
+#[derive(Default)]
 pub struct Route {
     sessions: Mutex<BTreeMap<String, Weak<crate::assembly::SessionAssembly>>>,
-}
-
-impl Default for Route {
-    fn default() -> Self {
-        Self {
-            sessions: Mutex::new(BTreeMap::new()),
-        }
-    }
-}
-
-impl std::fmt::Debug for Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let sessions = self.sessions.lock().unwrap();
-        let ids: Vec<&String> = sessions.keys().collect();
-        f.debug_struct("Route").field("sessions", &ids).finish()
-    }
 }
 
 impl Route {
@@ -185,9 +169,10 @@ impl Route {
 
     fn resolve_line(&self, session_id: &str, line_id: &str) -> Result<Arc<TimelineContext>> {
         let session = self.resolve_session(session_id)?;
-        session
-            .line(line_id)
-            .ok_or_else(|| AgentError::NoLine(format!("{session_id}/{line_id}")))
+        session.line(line_id).ok_or_else(|| AgentError::NoLine {
+            session: session_id.to_owned(),
+            line: line_id.to_owned(),
+        })
     }
 }
 

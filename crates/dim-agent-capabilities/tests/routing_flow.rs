@@ -113,7 +113,7 @@ async fn a_call_by_id_reaches_the_live_session_and_line() {
     ));
     assert!(matches!(
         route.line_owner::<dyn LoopState>(&id, "absent"),
-        Err(AgentError::NoLine(line)) if line == format!("{id}/absent")
+        Err(AgentError::NoLine { line, .. }) if line == "absent"
     ));
 
     let named = route
@@ -252,7 +252,7 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
     let deadline = Instant::now() + Duration::from_secs(30);
     while !matches!(
         route.line_owner::<dyn LoopState>(&id, &line),
-        Err(AgentError::NoLine(_))
+        Err(AgentError::NoLine { .. })
     ) {
         assert!(Instant::now() < deadline, "the ended line closes");
         tokio::time::sleep(Duration::from_millis(10)).await;

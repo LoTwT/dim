@@ -1,0 +1,580 @@
+{
+  "allow": [
+    {
+      "kind": "branch-type",
+      "file": "crates/dim-agent-runtime/src/branch.rs",
+      "item": "Branch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/auxiliary_model.rs",
+      "item": "AuxiliaryModel"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/execution_settings.rs",
+      "item": "ExecutionSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/file_storage/face.rs",
+      "item": "FsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "ModelSelectionHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "PromptHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/host.rs",
+      "item": "SelectableModelsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/input_queue/face.rs",
+      "item": "SubmitChecks"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/methods.rs",
+      "item": "ForeignMethods"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "CommandRules"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_guide.rs",
+      "item": "ForeignGuideEntries"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_registry.rs",
+      "item": "PromptRegistry"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_sources.rs",
+      "item": "BasePromptSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/prompt_suggestion.rs",
+      "item": "PromptSuggestionSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/session_files.rs",
+      "item": "SessionFiles"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/face.rs",
+      "item": "SkillsCatalog"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/mod.rs",
+      "item": "SkillsInstructionsSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/skills/session.rs",
+      "item": "SkillsBranch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/summary_strategy.rs",
+      "item": "SummaryPromptSettingsHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/tool_registry.rs",
+      "item": "ForeignRegistry"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/tool_registry.rs",
+      "item": "ToolSourcesView"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-capabilities/src/toolchain.rs",
+      "item": "ToolchainSourceHost"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-runtime/src/timeline_store_face.rs",
+      "item": "TimelineStoreBinding"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/loops.rs",
+      "item": "LoopsFace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/methods.rs",
+      "item": "ScheduleJobsFace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-agent-scheduler/src/wakeups.rs",
+      "item": "WakeupsFace"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/agents/sessions.rs",
+      "item": "SessionsService"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/collaboration/approvals.rs",
+      "item": "CollaborationSession"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/connection.rs",
+      "item": "ForeignCallChannel"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/hooks_settings.rs",
+      "item": "HooksService"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/lib.rs",
+      "item": "LocalIdDispatch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/managed_provider.rs",
+      "item": "ManagedSearch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/mcp/face.rs",
+      "item": "McpService"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/plugin_files.rs",
+      "item": "PluginFiles"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/settings/declared.rs",
+      "item": "Settings"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/face.rs",
+      "item": "Store"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/metadata.rs",
+      "item": "SessionMetadata"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-app-server/src/storage/sqlite.rs",
+      "item": "SqliteDispatch"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-event-hub/src/bridge.rs",
+      "item": "ForeignEventHub"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-event-hub/src/bridge.rs",
+      "item": "ForeignEventSubscriptions"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-modality/src/targets.rs",
+      "item": "ModalityTargets"
+    },
+    {
+      "kind": "host-dispatch",
+      "file": "crates/dim-oauth/src/session_title.rs",
+      "item": "DimOAuth"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::admit"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::replay"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/approval.rs",
+      "item": "Approval::respond"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/input_queue.rs",
+      "item": "InputQueue::pending"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/input_queue.rs",
+      "item": "InputQueue::withdraw_checked"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::admit_decision"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::decide"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::register_advice"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/permission.rs",
+      "item": "Permission::update"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/prompt.rs",
+      "item": "InitialPromptConfiguration::fixed"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/prompt.rs",
+      "item": "InitialPromptConfiguration::read"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::activity_after"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::batch_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::branch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::default_from"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::default_moves"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::end_with_final"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::get"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::head"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::inputs"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::next_move"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::page_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "item": "TreeCommands::turn_ends"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/background.rs",
+      "item": "BackgroundExec::start"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::phase"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "BranchLifecycle::watch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::phase"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/config.rs",
+      "item": "SessionLifecycle::take_hold"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::fail"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::failure"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::subscribe"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::subscribe_all"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/dispatcher.rs",
+      "item": "Dispatcher::watch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_batch_registered"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_registered"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::append_with_create_at"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::batch_end"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::batch_end_at"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::before"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::bound"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::checkpoint"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::failure"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::restore"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::resume_position"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::save_snapshot"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::segments"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-runtime/src/core/timeline.rs",
+      "item": "Timeline::watch"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/control.rs",
+      "item": "ProcessActivity::pause"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/control.rs",
+      "item": "ProcessActivity::take_hold"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-app-server/src/mcp/session.rs",
+      "item": "McpSession::subscribe"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::batch_end"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::branch_diagnostics"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::configure"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::dispatch_watch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::end_branch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::ended_head"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::get"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::idle"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::input"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::input_commit"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::inputs"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::interrupt"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::lookup"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::on"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::publication"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::query"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::sequence"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::service"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::set_default_branch"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::state"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::stop"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::submit"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::watch"
+    }
+  ],
+  "removed": []
+}

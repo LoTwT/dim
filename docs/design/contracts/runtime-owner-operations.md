@@ -32,14 +32,13 @@
 
 ### Calls from a Session to a selected branch
 
-Within a branch, inject its owner face directly. For Session callers the existing
-`timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
-TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
-Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
-Ended and unknown branches retain their original errors. Calls admitted before close stay
-with that generation. Tree history, directory and batch input continue to use the tree's
-own methods.
+Within a branch, inject its owner face directly. A Session caller names the line and the
+owner's face, and the runtime routes the call to that line's live instance
+([#2127](https://github.com/arcships/dim/issues/2127),
+[ADR 027](../../adr/027-cross-scope-access-by-id.md)): the owner's arguments, reply and
+error reach the caller unchanged, and a line that is closing, closed or not this
+Session's answers `NoLine`, which is final for that line. Tree history, directory and
+batch input continue to use the tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |

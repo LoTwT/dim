@@ -92,9 +92,10 @@ fn crossing_instance_names() -> [(String, &'static str); 17] {
 /// The names a host of foreign parts shares across languages beyond those
 /// the catalog already shares: the marked Session and branch services, the
 /// tool, method and guide-entry registries, with which a part of any
-/// language registers its contributions, and the part registry, with which a
-/// plugin registers its parts. The generated catalog (`xtask graph`) shares
-/// them the same way.
+/// language registers its contributions, the part registry, with which a
+/// plugin registers its parts, and the route, which names a live Session or
+/// line by id ([`Route`](dim_agent_runtime::Route)). The generated catalog
+/// (`xtask graph`) shares them the same way.
 pub fn share_names(catalog: &mut ServiceCatalog) {
     for (name, group) in crossing_instance_names() {
         catalog.register_shared_instance(name, group);
@@ -105,7 +106,8 @@ pub fn share_names(catalog: &mut ServiceCatalog) {
         .register_shared_instance(name_of::<SessionMethods>(), SESSION_GROUP)
         .register_shared_instance(name_of::<GuideEntries>(), SESSION_GROUP)
         .register_shared(name_of::<ManagementMethods>())
-        .register_shared(name_of::<PartRegistry>());
+        .register_shared(name_of::<PartRegistry>())
+        .register_shared(name_of::<dim_agent_runtime::Route>());
 }
 
 /// The runtimes of other languages and their loader rows, each with a

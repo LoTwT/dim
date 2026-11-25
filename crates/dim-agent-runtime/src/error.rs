@@ -23,8 +23,8 @@ pub enum AgentError {
     SessionClosing(String),
     /// Routing by id: the Session is live but the line is closing, closed, or
     /// not one of its lines. Final for that line: no hold, no retry.
-    #[error("no line {0}")]
-    NoLine(String),
+    #[error("no line {line} in Session {session}")]
+    NoLine { session: String, line: String },
     /// The line has ended: it accepts no input and no new operation.
     #[error("branch has ended: {0}")]
     BranchEnded(String),
@@ -73,7 +73,10 @@ pub enum SessionFault {
     UnknownBranch(String),
     NoSession(String),
     SessionClosing(String),
-    NoLine(String),
+    NoLine {
+        session: String,
+        line: String,
+    },
     BranchEnded(String),
     BranchRefused {
         refusal: BranchRefusal,
@@ -101,7 +104,7 @@ impl From<AgentError> for SessionFault {
             AgentError::UnknownBranch(value) => Self::UnknownBranch(value),
             AgentError::NoSession(value) => Self::NoSession(value),
             AgentError::SessionClosing(value) => Self::SessionClosing(value),
-            AgentError::NoLine(value) => Self::NoLine(value),
+            AgentError::NoLine { session, line } => Self::NoLine { session, line },
             AgentError::BranchEnded(value) => Self::BranchEnded(value),
             AgentError::BranchRefused { refusal, message } => {
                 Self::BranchRefused { refusal, message }
@@ -129,7 +132,7 @@ impl From<SessionFault> for AgentError {
             SessionFault::UnknownBranch(value) => Self::UnknownBranch(value),
             SessionFault::NoSession(value) => Self::NoSession(value),
             SessionFault::SessionClosing(value) => Self::SessionClosing(value),
-            SessionFault::NoLine(value) => Self::NoLine(value),
+            SessionFault::NoLine { session, line } => Self::NoLine { session, line },
             SessionFault::BranchEnded(value) => Self::BranchEnded(value),
             SessionFault::BranchRefused { refusal, message } => {
                 Self::BranchRefused { refusal, message }
