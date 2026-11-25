@@ -404,35 +404,41 @@ directories, a marker whose release failed) and
 `removal_scales_with_directory_size` (a directory that used 300 names and a
 1,000-level tree, removed under a 64-descriptor limit on a 256 KiB worker
 stack, where recursion overflowed at a few hundred levels). The unit
-tests `a_root_identity_that_cannot_be_read_is_not_the_held_directory` (a
-comparison that cannot read an identity does not count as the held directory),
-`a_root_identity_that_cannot_be_read_keeps_the_generation` (nor does it start a
-generation), `a_registration_that_opened_before_a_refresh_does_not_publish_after_it`,
-`an_open_that_overlaps_a_release_does_not_hold_the_root_again` and
-`an_open_that_a_registration_overtook_binds_the_directory_it_reaches` (the
-publication of a root slot, and the generation an overtaken open binds),
-`a_generation_starts_only_for_another_readable_directory`, and
+tests `a_generation_follows_the_directory_an_observation_reads` (the directory a
+root serves keeps its generation, another directory starts one, an observation
+that cannot open the path keeps it, and reading the served directory again
+admits that generation's leases),
+`an_observation_a_release_overtook_installs_no_descriptor` (a release keeps the
+generation and holds no descriptor, and the open it overtook serves that
+operation alone) and
 `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
-module cover the comparison fallback, the publication order and generation,
-and the lock, removal and temporary-file interleavings that the public API
-cannot produce reliably. The App Server flows
+module cover the slot transitions, the generation and the lock, removal and
+temporary-file interleavings that the public API cannot produce reliably. The
+App Server flows
 `an_unloaded_session_releases_its_project_root`,
 `a_closed_session_releases_its_project_root`,
 `a_deleted_session_releases_its_project_root`,
+`a_runtime_close_releases_the_project_root_a_load_registers`,
 `an_agent_close_releases_its_sessions_project_roots`,
 `one_of_two_sessions_in_a_project_keeps_its_root_in_use` and
 `a_replaced_project_directory_is_served_after_a_session_is_created`
 ([idle_unload.rs](../../../../crates/dim-app-server/tests/transport_flow/idle_unload.rs))
 check that a Session ending its use of a project releases the descriptor once no
-Session uses it, that a replacement is served once the path is registered again,
-and that the authorization keeps its index. The unit test
-`a_closing_session_does_not_release_the_root_a_restore_owns`
+Session uses it, that a Session the runtime closes without an App Server call
+releases the root its load registered, that a replacement is served once the
+path is registered again, and that the authorization keeps its index. The unit
+test `a_closing_session_does_not_release_the_root_a_restore_owns`
 ([slots.rs](../../../../crates/dim-app-server/src/agents/tests/slots.rs)) holds a
 restore inside its Session part and closes another Session on the same cwd, which
 the loaded Sessions alone would read as the last use, and
-`a_settlement_answers_only_the_last_owner_of_a_cwd`
-([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) checks that a
-settlement answers its project only when it removed the last owner.
+`a_refused_restore_settles_the_ownership_of_its_cancelled_caller` ends the
+ownership a restore registered when its caller stopped waiting. The unit tests
+`settlements_end_only_the_ownership_they_name` and
+`a_runtime_close_ends_the_project_ownership_it_did_not_start`
+([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) check that a
+settlement answers its project only when it removed the last owner, that an
+Agent close ends every ownership it registered, and that a guard a Session hands
+to its close settles an ownership this process did not close.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
