@@ -24,6 +24,21 @@ use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
 use tokio_util::sync::CancellationToken;
 
+/// A call by id to a data face of a Session, or of one of its lines.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallRequest {
+    pub session_id: String,
+    /// The line whose faces this call reaches; absent: the Session's own.
+    #[serde(default)]
+    pub line_id: Option<String>,
+    pub service: String,
+    pub method: String,
+    /// The method's arguments, in order.
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
+}
+
 /// A branch of a Session.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -819,7 +834,7 @@ impl HostDispatch for SessionsService {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "defaultBranchId": "async",
+            "delete": "async", "defaultBranchId": "async", "call": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -897,6 +912,14 @@ async fn call(
             index.delete(&session_id).await?;
             reply(json!({}))
         }
+        // The routing answer names itself in the message until the Agents
+        // contract gives this face routing codes of its own.
+        "call" => index
+            .call(request(args)?)
+            .await
+            .map_err(|error| SessionsError::Rejected {
+                message: format!("{}: {error}", error.code()),
+            }),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

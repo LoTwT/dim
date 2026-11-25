@@ -93,7 +93,6 @@ pub fn register<T: ?Sized + Send + Sync + 'static>(
 pub fn catalog() -> ServiceCatalog {
     let mut catalog = ServiceCatalog::new();
     register::<crate::PartRegistry>(&mut catalog, None);
-    register::<crate::Route>(&mut catalog, None);
     let session = Some(SESSION_GROUP);
     register::<SessionConfig>(&mut catalog, session);
     catalog.register_shared_instance(name_of::<AgentConfig>(), SESSION_GROUP);
@@ -103,7 +102,7 @@ pub fn catalog() -> ServiceCatalog {
     catalog.register_shared_instance("timelineStore", SESSION_GROUP);
     register::<dyn TimelineTreeControl>(&mut catalog, session);
     register::<SessionLoader>(&mut catalog, session);
-    register::<crate::LineRoute>(&mut catalog, session);
+    register::<crate::SessionScope>(&mut catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<Timeline>(&mut catalog, branch);
     register::<Dispatcher>(&mut catalog, branch);

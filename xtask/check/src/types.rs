@@ -41,9 +41,10 @@ fn unroutable(root: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// The addresses over the two routable scopes: each member is a data face a
-/// route resolves there, named as its catalog name, typed by the interface
-/// this file already declares for it.
+/// The addresses a plugin authors against: a Session part reaches its own
+/// line and faces through `sessionScope`, a process part through `sessions`.
+/// Each member is a data face a route resolves there, named as its catalog
+/// name and typed by the interface this file already declares for it.
 fn addresses(root: &Path, declarations: &str) -> Result<String> {
     let catalog =
         std::fs::read_to_string(root.join("docs/architecture/rust-agent/generated/catalog.md"))?;
@@ -70,7 +71,7 @@ fn addresses(root: &Path, declarations: &str) -> Result<String> {
             (Some(group), Some(face)) => (*group, *face),
             _ => continue,
         };
-        if face != "data" || name == "route" || name == "lineRoute" {
+        if face != "data" || name == "sessionScope" || name == "sessions" {
             continue;
         }
         if unroutable.iter().any(|refused| refused == name) {
@@ -86,7 +87,7 @@ fn addresses(root: &Path, declarations: &str) -> Result<String> {
         }
     }
     let mut text = String::from(
-        "\n/**\n * A Session's data faces, addressed by id: nothing is looked up until a method of\n * one is called, and each call looks the target up again.\n */\nexport interface SessionAddress {\n  /** This Session's line `lineId`. */\n  line(lineId: string): LineAddress\n",
+        "\n/** A Session's own faces, addressed by id: nothing is looked up until a method of\n * one is called, and each call looks the target up again. */\nexport interface SessionScopeAddress {\n  /** This Session's line `lineId`. */\n  line(lineId: string): LineAddress\n",
     );
     for (name, ty) in &session {
         text += &format!("  {name}: {ty}\n");
@@ -95,7 +96,7 @@ fn addresses(root: &Path, declarations: &str) -> Result<String> {
     for (name, ty) in &line {
         text += &format!("  {name}: {ty}\n");
     }
-    text += "}\n\n/** Addresses Session `sessionId`; every call looks it up again. */\nexport declare function session(sessionId: string): SessionAddress\n\n/** Addresses line `lineId` of this Session; every call looks it up again. */\nexport declare function line(lineId: string): LineAddress\n";
+    text += "}\n\n/** One Session reached through Agents' `sessions`. */\nexport interface SessionAddress {\n  /** The Session's scope, whose own faces this reaches. */\n  sessionScope: SessionScopeAddress\n  /** One of the Session's lines. */\n  line(lineId: string): LineAddress\n}\n\nexport interface Sessions {\n  /** The live Session `sessionId`; a call on it looks the Session up again. */\n  session(sessionId: string): SessionAddress\n}\n";
     Ok(text)
 }
 

@@ -1251,9 +1251,6 @@ export type SessionFault =
   | { invalidInput: string }
   | { closed: string }
   | { unknownBranch: string }
-  | { noSession: string }
-  | { sessionClosing: string }
-  | { noLine: { session: string; line: string } }
   | { branchEnded: string }
   | { branchRefused: { refusal: BranchRefusal; message: string } }
   | { storage: string }
@@ -1406,18 +1403,16 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
-/** A call to a Session-scope data face. */
-export type SessionFaceCall = {
-  sessionId: string
+/** A call to one of the caller's own Session's data faces. */
+export type SessionCall = {
   service: string
   method: string
   /** The method's arguments, in order. */
   args?: import('./plugin.js').BridgeJsonValue[]
 }
 
-/** A call from the process to a line-scope data face. */
-export type LineFaceCall = {
-  sessionId: string
+/** A call to one of the caller's own Session's lines. */
+export type LineCall = {
   lineId: string
   service: string
   method: string
@@ -1426,49 +1421,23 @@ export type LineFaceCall = {
 }
 
 /**
- * Calls by id to a live Session or line (process scope), provided as the
- * process name `route`.
+ * One Session's own lines and data faces, provided to the Session's parts and
+ * their runtimes as the Session name `sessionScope`.
  *
- * One route serves every Agent of one host: each Agent registers the Sessions
- * it publishes, so a process part reaches a Session of any of them.
+ * It holds its Session and no other: a part of a Session reaches its own
+ * Session's lines only. `describe` joins it with base-3.
  */
-export interface Route {
+export interface SessionScope {
   /**
-   * Calls a Session-scope data face of the live Session `call.session_id`.
+   * Calls one of this Session's own data faces.
    * @throws {RouteErrorThrown}
    */
-  session(call: SessionFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
+  call(call: SessionCall): Promise<import('./plugin.js').BridgeJsonValue>
   /**
-   * Calls a line-scope data face of the line `call.line_id` in the live
-   * Session `call.session_id`.
+   * Calls one of this Session's lines' data faces.
    * @throws {RouteErrorThrown}
    */
-  line(call: LineFaceCall): Promise<import('./plugin.js').BridgeJsonValue>
-}
-
-/** A call from a Session part to one of its own lines. */
-export type OwnLineCall = {
-  lineId: string
-  service: string
-  method: string
-  /** The method's arguments, in order. */
-  args?: import('./plugin.js').BridgeJsonValue[]
-}
-
-/**
- * Calls by id to one of this Session's lines, provided to the Session's parts
- * and their runtimes as the Session name `lineRoute`.
- *
- * A Session part reaches its own Session's lines only: the route holds no
- * Session id, so a caller cannot name another Session, and a line of another
- * Session is [`RouteError::NoLine`].
- */
-export interface LineRoute {
-  /**
-   * Calls a line-scope data face of this Session's line `call.line_id`.
-   * @throws {RouteErrorThrown}
-   */
-  line(call: OwnLineCall): Promise<import('./plugin.js').BridgeJsonValue>
+  lineCall(call: LineCall): Promise<import('./plugin.js').BridgeJsonValue>
 }
 
 export type SessionInstanceDefinition = {
@@ -1808,7 +1777,7 @@ export interface UiResources {
 }
 
 /** What a method returning `Err(AgentError)` throws. */
-export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "NoSession" | "SessionClosing" | "NoLine" | "BranchEnded" | "BranchRefused" | "Storage" | "PublicationUnknown" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "BranchRefused" | "Storage" | "PublicationUnknown" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
 /** What a method returning `Err(ApprovalRespondError)` throws. */
 export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
@@ -1891,8 +1860,7 @@ export interface Services {
   dispatcher: Dispatcher
   timeline: Timeline
   partRegistry: PartRegistry
-  route: Route
-  lineRoute: LineRoute
+  sessionScope: SessionScope
   sessionLoader: SessionLoader
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
@@ -1904,11 +1872,9 @@ export interface Services {
   uiResources: UiResources
 }
 
-/**
- * A Session's data faces, addressed by id: nothing is looked up until a method of
- * one is called, and each call looks the target up again.
- */
-export interface SessionAddress {
+/** A Session's own faces, addressed by id: nothing is looked up until a method of
+ * one is called, and each call looks the target up again. */
+export interface SessionScopeAddress {
   /** This Session's line `lineId`. */
   line(lineId: string): LineAddress
   agentConfig: AgentConfig
@@ -1938,8 +1904,15 @@ export interface LineAddress {
   wait: Wait
 }
 
-/** Addresses Session `sessionId`; every call looks it up again. */
-export declare function session(sessionId: string): SessionAddress
+/** One Session reached through Agents' `sessions`. */
+export interface SessionAddress {
+  /** The Session's scope, whose own faces this reaches. */
+  sessionScope: SessionScopeAddress
+  /** One of the Session's lines. */
+  line(lineId: string): LineAddress
+}
 
-/** Addresses line `lineId` of this Session; every call looks it up again. */
-export declare function line(lineId: string): LineAddress
+export interface Sessions {
+  /** The live Session `sessionId`; a call on it looks the Session up again. */
+  session(sessionId: string): SessionAddress
+}

@@ -93,10 +93,9 @@ fn crossing_instance_names() -> [(String, &'static str); 17] {
 /// the catalog already shares: the marked Session and branch services, the
 /// tool, method and guide-entry registries, with which a part of any
 /// language registers its contributions, the part registry, with which a
-/// plugin registers its parts, and the routes, which name a live Session or
-/// line by id ([`Route`](dim_agent_runtime::Route),
-/// [`LineRoute`](dim_agent_runtime::LineRoute)). The generated catalog
-/// (`xtask graph`) shares them the same way.
+/// plugin registers its parts, and the Session scope, which names a line and
+/// the Session's own faces by id ([`SessionScope`](dim_agent_runtime::SessionScope)).
+/// The generated catalog (`xtask graph`) shares them the same way.
 pub fn share_names(catalog: &mut ServiceCatalog) {
     for (name, group) in crossing_instance_names() {
         catalog.register_shared_instance(name, group);
@@ -106,10 +105,9 @@ pub fn share_names(catalog: &mut ServiceCatalog) {
         .register_shared_instance(name_of::<ToolRegistry>(), SESSION_GROUP)
         .register_shared_instance(name_of::<SessionMethods>(), SESSION_GROUP)
         .register_shared_instance(name_of::<GuideEntries>(), SESSION_GROUP)
-        .register_shared_instance(name_of::<dim_agent_runtime::LineRoute>(), SESSION_GROUP)
+        .register_shared_instance(name_of::<dim_agent_runtime::SessionScope>(), SESSION_GROUP)
         .register_shared(name_of::<ManagementMethods>())
-        .register_shared(name_of::<PartRegistry>())
-        .register_shared(name_of::<dim_agent_runtime::Route>());
+        .register_shared(name_of::<PartRegistry>());
 }
 
 /// The runtimes of other languages and their loader rows, each with a

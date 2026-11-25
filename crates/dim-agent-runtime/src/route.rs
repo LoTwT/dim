@@ -1,29 +1,33 @@
 //! Calls by id to a live owner's data face
 //! ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1–D4, [#2127](https://github.com/arcships/dim/issues/2127)).
 //!
-//! A caller outside a scope holds no instance key, so it names what it wants.
-//! The runtime keeps the Sessions its Agents publish and the lines each
-//! Session created, and hands the call to the instance that is live now:
+//! A caller outside a scope holds no instance key, so it names what it wants,
+//! and the owner of the target holds the index and does the lookup:
 //!
-//! - a process caller names the Session, or the Session and a line
-//!   ([`Route`]);
-//! - a Session part names one of its own lines only ([`LineRoute`]); it cannot
-//!   name another Session.
+//! - a Session's [`SessionScope`] resolves one of its own lines, for the
+//!   Session's parts and their runtimes; it holds no Session id, so a caller
+//!   cannot name another Session;
+//! - Agents' `sessions` resolves a Session, and a line of it, for the process
+//!   (`dim-app-server`): it finds the Session and then calls
+//!   [`SessionScope::line_call`] in that instance.
 //!
-//! A Rust caller calls the target owner's operations directly: [`line_owner`]
-//! is the binding of [`LineRoute::line`] for a caller that wants the owner's
-//! face. Everything else in this module is data: Rust, another language's
-//! runtime and a UI leaf call the same operation with the same arguments and
-//! read the same reply. Neither route takes a target's instance key, and a
-//! resolution is never kept across calls.
+//! Two data operations carry every routed call, with the same arguments in
+//! every language:
 //!
-//! What a route resolves is the target scope's data face in the catalog. A
-//! name the assembly marks `internal(reason)`, a mechanism registration point
+//! - [`SessionScope::line_call`] — `{lineId, service, method, args}`;
+//! - `sessions.call` — `{sessionId, lineId?, service, method, args}`.
+//!
+//! An address records ids and resolves nothing; each call looks the target up
+//! again, so a caller never keeps a live target (D4). Rust reads the owner's
+//! face through [`line`] and [`LineHandle::get`] at the call.
+//!
+//! What a call resolves is the target scope's data face in the catalog. A name
+//! the assembly marks `internal(reason)`, a mechanism registration point
 //! (whose entries belong to the registering generation) and a scope lifecycle
-//! service are refused as [`RouteError::NotDataFace`]; a name of another
-//! scope is [`RouteError::WrongScope`]. Everything else about the call belongs
-//! to the owner: the route passes the method and its arguments through and
-//! returns the owner's reply, or the owner's own failure as it wrote it.
+//! service are refused as [`RouteError::NotDataFace`]; a data face of the
+//! other scope is [`RouteError::WrongScope`]. Everything else about the call
+//! belongs to the owner: the route passes the method and its arguments through
+//! and returns the owner's reply, or the owner's own failure as it wrote it.
 //!
 //! A Session that has no live instance — idle-unloaded, closed or never
 //! created — answers [`RouteError::NoSession`]. A Session that is closing
@@ -39,26 +43,10 @@ use rutis_bridge::session::{
     Error as BridgeError, HostDispatch, Value as BridgeValue, decode_value, host_key_in, settle,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, Weak},
-};
+use std::sync::{Arc, Weak};
 
 /// What a route answers: the target's reply, or why it did not reach one.
-type Routed<T> = std::result::Result<T, RouteError>;
-
-/// Names routing does not resolve: the mechanism's registration points, whose
-/// entries belong to the part that registered them and are reachable only
-/// inside that generation
-/// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D3), and the
-/// scope lifecycle services the runtime provides.
-const REGISTRATION_POINTS: [&str; 5] = [
-    "sessionMethods",
-    "toolRegistry",
-    "promptRegistry",
-    "guideEntries",
-    "submitChecks",
-];
+pub type Routed<T> = std::result::Result<T, RouteError>;
 
 /// Why a routed call did not reach a reply.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -92,40 +80,24 @@ pub enum RouteError {
     Owner { name: String, message: String },
 }
 
-/// A call to a Session-scope data face.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SessionFaceCall {
-    pub session_id: String,
-    pub service: String,
-    pub method: String,
-    /// The method's arguments, in order.
-    #[serde(default)]
-    pub args: Vec<serde_json::Value>,
-}
-
-impl SessionFaceCall {
-    /// The call to `service.method(args...)` in the live Session `session_id`.
-    pub fn new(
-        session_id: impl Into<String>,
-        service: impl Into<String>,
-        method: impl Into<String>,
-        args: Vec<serde_json::Value>,
-    ) -> Self {
-        Self {
-            session_id: session_id.into(),
-            service: service.into(),
-            method: method.into(),
-            args,
+impl RouteError {
+    /// The code a caller matches on, as the `sessions` envelope carries it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NoSession(_) => "no_session",
+            Self::SessionClosing(_) => "session_closing",
+            Self::NoLine { .. } => "no_line",
+            Self::NotDataFace { .. } => "not_data_face",
+            Self::WrongScope { .. } => "wrong_scope",
+            Self::Owner { .. } => "owner",
         }
     }
 }
 
-/// A call from the process to a line-scope data face.
+/// A call to one of the caller's own Session's lines.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LineFaceCall {
-    pub session_id: String,
+pub struct LineCall {
     pub line_id: String,
     pub service: String,
     pub method: String,
@@ -134,40 +106,8 @@ pub struct LineFaceCall {
     pub args: Vec<serde_json::Value>,
 }
 
-impl LineFaceCall {
-    /// The call to `service.method(args...)` in the line `line_id` of the live
-    /// Session `session_id`.
-    pub fn new(
-        session_id: impl Into<String>,
-        line_id: impl Into<String>,
-        service: impl Into<String>,
-        method: impl Into<String>,
-        args: Vec<serde_json::Value>,
-    ) -> Self {
-        Self {
-            session_id: session_id.into(),
-            line_id: line_id.into(),
-            service: service.into(),
-            method: method.into(),
-            args,
-        }
-    }
-}
-
-/// A call from a Session part to one of its own lines.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OwnLineCall {
-    pub line_id: String,
-    pub service: String,
-    pub method: String,
-    /// The method's arguments, in order.
-    #[serde(default)]
-    pub args: Vec<serde_json::Value>,
-}
-
-impl OwnLineCall {
-    /// The call to `service.method(args...)` in this Session's line `line_id`.
+impl LineCall {
+    /// The call to `service.method(args...)` in the line `line_id`.
     pub fn new(
         line_id: impl Into<String>,
         service: impl Into<String>,
@@ -183,118 +123,57 @@ impl OwnLineCall {
     }
 }
 
-/// The Sessions this host's Agents published, by id, and the lines each
-/// Session created. Runtime state, not a service: the routes read it, and a
-/// Session registers itself as it publishes.
-#[derive(Default)]
-pub(crate) struct Index {
-    sessions: Mutex<BTreeMap<String, Weak<crate::assembly::SessionAssembly>>>,
+/// A call to one of the caller's own Session's data faces.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCall {
+    pub service: String,
+    pub method: String,
+    /// The method's arguments, in order.
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
 }
 
-impl Index {
-    /// Records the Session publishing as `id`.
-    pub(crate) fn register(&self, id: &str, session: Weak<crate::assembly::SessionAssembly>) {
-        self.sessions.lock().unwrap().insert(id.to_owned(), session);
-    }
-
-    /// Forgets `session`'s registration of `id`, unless a later Session took
-    /// the id over.
-    pub(crate) fn forget(&self, id: &str, session: &Arc<crate::assembly::SessionAssembly>) {
-        let mut sessions = self.sessions.lock().unwrap();
-        let registered = sessions
-            .get(id)
-            .is_some_and(|registered| Weak::ptr_eq(registered, &Arc::downgrade(session)));
-        if registered {
-            sessions.remove(id);
+impl SessionCall {
+    /// The call to `service.method(args...)` in this Session.
+    pub fn new(
+        service: impl Into<String>,
+        method: impl Into<String>,
+        args: Vec<serde_json::Value>,
+    ) -> Self {
+        Self {
+            service: service.into(),
+            method: method.into(),
+            args,
         }
     }
-
-    fn session(&self, id: &str) -> Routed<Arc<crate::assembly::SessionAssembly>> {
-        let session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| RouteError::NoSession(id.into()))?;
-        if session.closing.is_cancelled() {
-            return Err(RouteError::SessionClosing(id.into()));
-        }
-        Ok(session)
-    }
-
-    fn line(&self, session_id: &str, line_id: &str) -> Routed<Arc<TimelineContext>> {
-        let session = self.session(session_id)?;
-        session.line(line_id).ok_or_else(|| RouteError::NoLine {
-            session: session_id.to_owned(),
-            line: line_id.to_owned(),
-        })
-    }
 }
 
-/// Calls by id to a live Session or line (process scope), provided as the
-/// process name `route`.
+/// Names routing does not resolve: the mechanism's registration points, whose
+/// entries belong to the part that registered them and are reachable only
+/// inside that generation
+/// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D3), and the
+/// scope lifecycle services the runtime provides.
+const REGISTRATION_POINTS: [&str; 5] = [
+    "sessionMethods",
+    "toolRegistry",
+    "promptRegistry",
+    "guideEntries",
+    "submitChecks",
+];
+
+/// One Session's own lines and data faces, provided to the Session's parts and
+/// their runtimes as the Session name `sessionScope`.
 ///
-/// One route serves every Agent of one host: each Agent registers the Sessions
-/// it publishes, so a process part reaches a Session of any of them.
-pub struct Route {
-    index: Arc<Index>,
-}
-
-impl Route {
-    /// The route over `index`.
-    pub(crate) fn new(index: Arc<Index>) -> Self {
-        Self { index }
-    }
-}
-
-#[rutis::service]
-impl Route {
-    /// Calls a Session-scope data face of the live Session `call.session_id`.
-    pub async fn session(&self, call: SessionFaceCall) -> Routed<serde_json::Value> {
-        let session = self.index.session(&call.session_id)?;
-        let (catalog, faces) = session.reach();
-        face(catalog, faces, &call.service, SESSION_GROUP)?;
-        let loaded = session.loaded().map_err(owner)?;
-        call_face(
-            &loaded.ctx,
-            loaded.scope.instance,
-            &call.service,
-            &call.method,
-            &call.args,
-        )
-        .await
-    }
-
-    /// Calls a line-scope data face of the line `call.line_id` in the live
-    /// Session `call.session_id`.
-    pub async fn line(&self, call: LineFaceCall) -> Routed<serde_json::Value> {
-        let line = self.index.line(&call.session_id, &call.line_id)?;
-        face(line.catalog(), line.faces(), &call.service, BRANCH_GROUP)?;
-        call_face(
-            line.ctx(),
-            line.scope_instance(),
-            &call.service,
-            &call.method,
-            &call.args,
-        )
-        .await
-    }
-}
-
-/// Calls by id to one of this Session's lines, provided to the Session's parts
-/// and their runtimes as the Session name `lineRoute`.
-///
-/// A Session part reaches its own Session's lines only: the route holds no
-/// Session id, so a caller cannot name another Session, and a line of another
-/// Session is [`RouteError::NoLine`].
-pub struct LineRoute {
+/// It holds its Session and no other: a part of a Session reaches its own
+/// Session's lines only. `describe` joins it with base-3.
+pub struct SessionScope {
     session: Weak<crate::assembly::SessionAssembly>,
     session_id: String,
 }
 
-impl LineRoute {
-    /// The route over the Session `session` is publishing.
+impl SessionScope {
+    /// The scope of the Session `session` is publishing.
     pub(crate) fn new(session: &Arc<crate::assembly::SessionAssembly>) -> Self {
         Self {
             session: Arc::downgrade(session),
@@ -311,7 +190,8 @@ impl LineRoute {
         Ok(session)
     }
 
-    fn live_line(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
+    /// The live line `line_id` of this Session.
+    fn line_context(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
         self.live()?
             .line(line_id)
             .ok_or_else(|| RouteError::NoLine {
@@ -322,10 +202,26 @@ impl LineRoute {
 }
 
 #[rutis::service]
-impl LineRoute {
-    /// Calls a line-scope data face of this Session's line `call.line_id`.
-    pub async fn line(&self, call: OwnLineCall) -> Routed<serde_json::Value> {
-        let line = self.live_line(&call.line_id)?;
+impl SessionScope {
+    /// Calls one of this Session's own data faces.
+    pub async fn call(&self, call: SessionCall) -> Routed<serde_json::Value> {
+        let session = self.live()?;
+        let (catalog, faces) = session.reach();
+        face(catalog, faces, &call.service, SESSION_GROUP)?;
+        let loaded = session.loaded().map_err(owner)?;
+        call_face(
+            &loaded.ctx,
+            loaded.scope.instance,
+            &call.service,
+            &call.method,
+            &call.args,
+        )
+        .await
+    }
+
+    /// Calls one of this Session's lines' data faces.
+    pub async fn line_call(&self, call: LineCall) -> Routed<serde_json::Value> {
+        let line = self.line_context(&call.line_id)?;
         face(line.catalog(), line.faces(), &call.service, BRANCH_GROUP)?;
         call_face(
             line.ctx(),
@@ -338,39 +234,18 @@ impl LineRoute {
     }
 }
 
-/// An address a caller may keep: ids only, looked up at every call
-/// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D4). Rust
-/// writes the authoring shape this way: `session(&route, id).line(id)`, then
-/// the owner's own operations through [`LineAddress::owner`].
-pub struct SessionAddress {
-    index: Arc<Index>,
-    session_id: String,
-}
-
-/// The address of one line, of [`SessionAddress::line`] or of [`LineRoute`]'s
-/// own Session.
-pub struct LineAddress {
-    scope: Scope,
+/// The address of one of a Session's own lines: ids only, looked up at the
+/// call ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D4).
+pub struct LineHandle {
+    scope: Arc<SessionScope>,
     line_id: String,
 }
 
-enum Scope {
-    /// A Session of the process route, named by its id.
-    Named {
-        index: Arc<Index>,
-        session_id: String,
-    },
-    /// The caller's own Session, which names no Session.
-    Own(Arc<LineRoute>),
-}
-
-impl LineAddress {
-    /// The line-scope data face `T`, resolved now.
-    pub fn owner<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
-        let line = match &self.scope {
-            Scope::Named { index, session_id } => index.line(session_id, &self.line_id)?,
-            Scope::Own(route) => route.live_line(&self.line_id)?,
-        };
+impl LineHandle {
+    /// The line-scope data face `T`, resolved now; the caller uses it for this
+    /// call and does not keep it.
+    pub fn get<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
+        let line = self.scope.line_context(&self.line_id)?;
         face(
             line.catalog(),
             line.faces(),
@@ -381,55 +256,32 @@ impl LineAddress {
     }
 }
 
-impl SessionAddress {
-    /// The line `line_id` of this Session, addressed and not looked up.
-    pub fn line(&self, line_id: &str) -> LineAddress {
-        LineAddress {
-            scope: Scope::Named {
-                index: self.index.clone(),
-                session_id: self.session_id.clone(),
-            },
-            line_id: line_id.to_owned(),
-        }
-    }
-
-    /// The Session-scope data face `T`, resolved now.
-    pub fn owner<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
-        let session = self.index.session(&self.session_id)?;
-        session.session_face::<T>().map_err(owner)
-    }
-}
-
-/// Addresses Session `session_id` of the process [`Route`]: nothing is looked
-/// up until a method is called.
-pub fn session(route: &Arc<Route>, session_id: &str) -> SessionAddress {
-    SessionAddress {
-        index: route.index.clone(),
-        session_id: session_id.to_owned(),
-    }
+/// The Session-scope data face `T` of the caller's own Session, resolved now;
+/// the caller uses it for this call and does not keep it.
+pub fn session_face<T: ?Sized + PublicService>(scope: &SessionScope) -> Routed<Arc<T>> {
+    let session = scope.live()?;
+    let (catalog, faces) = session.reach();
+    face(catalog, faces, &names::name_of::<T>(), SESSION_GROUP)?;
+    session.session_face::<T>().map_err(owner)
 }
 
 /// Addresses line `line_id` of the caller's own Session: nothing is looked up
-/// until a method is called.
-pub fn line(route: &Arc<LineRoute>, line_id: &str) -> LineAddress {
-    LineAddress {
-        scope: Scope::Own(route.clone()),
+/// until a method of [`LineHandle`] is called.
+pub fn line(scope: &Arc<SessionScope>, line_id: &str) -> LineHandle {
+    LineHandle {
+        scope: scope.clone(),
         line_id: line_id.to_owned(),
     }
 }
 
-/// The line-scope data face `T` of this Session's line `line_id`: [`line`] and
-/// [`LineAddress::owner`] in one call.
-pub fn line_owner<T: ?Sized + PublicService>(
-    route: &Arc<LineRoute>,
-    line_id: &str,
-) -> Routed<Arc<T>> {
-    line(route, line_id).owner::<T>()
-}
-
 /// Fails unless a route may resolve `service` as a data face of `group`
 /// (module docs).
-fn face(catalog: &names::ServiceCatalog, faces: &Faces, service: &str, group: &str) -> Routed<()> {
+pub(crate) fn face(
+    catalog: &names::ServiceCatalog,
+    faces: &Faces,
+    service: &str,
+    group: &str,
+) -> Routed<()> {
     let lifecycle = [
         names::name_of::<SessionLifecycle>(),
         names::name_of::<BranchLifecycle>(),
@@ -451,7 +303,7 @@ fn face(catalog: &names::ServiceCatalog, faces: &Faces, service: &str, group: &s
 /// Calls `method` of the data face `service` in `instance`, as another
 /// language would: the arguments travel as data and the reply comes back as
 /// data.
-async fn call_face(
+pub(crate) async fn call_face(
     ctx: &Ctx,
     instance: rutis::host::InstanceId,
     service: &str,
@@ -475,7 +327,7 @@ async fn call_face(
 }
 
 /// The owner's failure as the target wrote it, under the name it carries.
-fn owner(error: impl Into<Failure>) -> RouteError {
+pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
     let failure = error.into();
     RouteError::Owner {
         name: failure.name,
@@ -512,22 +364,5 @@ impl From<BridgeError> for Failure {
                 message: other.to_string(),
             },
         }
-    }
-}
-
-/// Provides the host's [`Route`] at the process name `route`.
-pub(crate) struct RoutePlugin {
-    pub index: Arc<Index>,
-    pub key: rutis::host::Key<Route>,
-}
-
-impl rutis::Plugin for RoutePlugin {
-    type Deps = ();
-    fn name(&self) -> &str {
-        "Route"
-    }
-    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
-        ctx.provide_at(self.key.clone(), Arc::new(Route::new(self.index.clone())))?;
-        Ok(())
     }
 }

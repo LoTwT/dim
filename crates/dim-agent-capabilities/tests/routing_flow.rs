@@ -1,13 +1,13 @@
-//! Flow: a call by id reaches the data face of a live Session or line, and
-//! answers `NoSession`, `SessionClosing`, `NoLine` or a reach refusal
-//! otherwise ([#2127](https://github.com/arcships/dim/issues/2127)).
+//! Flow: a Session's parts and their runtimes reach its own lines and faces by
+//! id, and answer `SessionClosing`, `NoLine` or a reach refusal otherwise
+//! ([#2127](https://github.com/arcships/dim/issues/2127)).
 
 use dim_agent_capabilities::{defaults, timeline_tree::BranchLine};
 use dim_agent_runtime::testing::{MinimalHost, hold_close};
 use dim_agent_runtime::*;
 use dim_agent_types::BranchSource;
 use rutis::Ctx;
-use rutis::host::{CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
+use rutis::host::{CtxHost, DynPlugin, Effect, InstanceId, TypeKey};
 use rutis_bridge::session::{
     Connection, Dispatch, Endpoint, Error as BridgeError, HostDispatch, Reply, Value, host_key,
     host_key_in,
@@ -36,8 +36,7 @@ impl DynPlugin for HandsSession {
 
 struct Rig {
     host: MinimalHost,
-    route: Arc<Route>,
-    /// The context of the last Session's part, once that Session opened.
+    /// The context of the last Session's probe part, once that Session opened.
     session_ctx: Arc<Mutex<Option<Ctx>>>,
 }
 
@@ -60,15 +59,7 @@ impl Rig {
             }),
         );
         let host = MinimalHost::start(&builder).await.unwrap();
-        let route = host
-            .root()
-            .get_at::<Route>(&Key::<Route>::of())
-            .expect("the host serves the route");
-        Self {
-            host,
-            route,
-            session_ctx,
-        }
+        Self { host, session_ctx }
     }
 
     async fn open(&self) -> Session {
@@ -86,25 +77,21 @@ impl Rig {
             .expect("the Session's part loaded")
     }
 
-    fn line_route(&self, session: &Session) -> Arc<LineRoute> {
+    fn scope(&self, session: &Session) -> Arc<SessionScope> {
         session
-            .session_service::<LineRoute>()
-            .expect("the Session serves its line route")
+            .session_service::<SessionScope>()
+            .expect("the Session serves its scope")
     }
 }
 
-/// A language runtime's side of a rutis session: it names a service in `ctx`'s
-/// subtree, and the host serves it.
+/// A language runtime's side of a rutis session: it names a service in the
+/// instance the runtime lives in, then at the process.
 struct Names {
     ctx: Ctx,
-    /// The instance the runtime lives in: its names are served there first,
-    /// then at the process.
     instance: InstanceId,
 }
 
 impl Names {
-    /// The dispatch `target` names for this runtime, as a row of another
-    /// language resolves one.
     fn dispatch(&self, target: &str) -> Arc<dyn HostDispatch> {
         self.ctx
             .get_at::<dyn HostDispatch>(&host_key_in(target, self.instance))
@@ -119,7 +106,6 @@ impl Dispatch for Names {
     }
 }
 
-/// Both ends of a rutis session with the tree of `ctx`.
 struct Language {
     _host: Connection,
     client: Connection,
@@ -133,8 +119,8 @@ impl Language {
             ctx: ctx.clone(),
             instance,
         };
-        let host = Connection::open(host, Arc::new(names()), peer("route-host")).unwrap();
-        let client = Connection::open(far, Arc::new(names()), peer("route-client")).unwrap();
+        let host = Connection::open(host, Arc::new(names()), peer("scope-host")).unwrap();
+        let client = Connection::open(far, Arc::new(names()), peer("scope-client")).unwrap();
         Self {
             _host: host,
             client,
@@ -157,83 +143,16 @@ impl Language {
             .expect("the far end answers")?
             .json()
     }
-
-    async fn refused(&self, face: &str, method: &str, call: impl serde::Serialize) -> String {
-        self.call(face, method, call)
-            .await
-            .expect_err("the route refuses the call")
-            .to_string()
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_process_call_reaches_the_live_session_and_line() {
+async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
     let rig = Rig::start().await;
     let session = rig.open().await;
-    let id = session.id().to_owned();
+    let scope = rig.scope(&session);
 
-    let served = rig
-        .route
-        .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
-        .await
-        .unwrap();
-    assert_eq!(served, serde_json::to_value(session.config()).unwrap());
-    let sequence = rig
-        .route
-        .line(LineFaceCall::new(
-            &id,
-            "main",
-            "timeline",
-            "sequence",
-            vec![],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        sequence,
-        serde_json::json!(session.sequence("main").unwrap())
-    );
-
-    assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(
-                "absent",
-                "sessionConfig",
-                "get",
-                vec![]
-            ))
-            .await
-            .unwrap_err(),
-        RouteError::NoSession("absent".into())
-    );
-    assert_eq!(
-        rig.route
-            .line(LineFaceCall::new(
-                &id,
-                "absent",
-                "timeline",
-                "sequence",
-                vec![]
-            ))
-            .await
-            .unwrap_err(),
-        RouteError::NoLine {
-            session: id.clone(),
-            line: "absent".into()
-        }
-    );
-    rig.host.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_session_part_reaches_its_own_line_by_id_only() {
-    let rig = Rig::start().await;
-    let session = rig.open().await;
-    let id = session.id().to_owned();
-    let route = rig.line_route(&session);
-
-    let sequence = route
-        .line(OwnLineCall::new("main", "timeline", "sequence", vec![]))
+    let sequence = scope
+        .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
         .await
         .unwrap();
     assert_eq!(
@@ -241,60 +160,38 @@ async fn a_session_part_reaches_its_own_line_by_id_only() {
         serde_json::json!(session.sequence("main").unwrap())
     );
     assert_eq!(
-        route
-            .line(OwnLineCall::new("absent", "timeline", "sequence", vec![]))
+        scope
+            .line_call(LineCall::new("absent", "timeline", "sequence", vec![]))
             .await
             .unwrap_err(),
         RouteError::NoLine {
-            session: id.clone(),
+            session: session.id().into(),
             line: "absent".into()
         }
     );
-    assert!(line_owner::<BranchLine>(&route, "main").is_ok());
-    assert!(
-        dim_agent_runtime::line(&route, "main")
-            .owner::<BranchLine>()
-            .is_ok(),
-        "the address form resolves at the call"
-    );
+
+    let config = scope
+        .call(SessionCall::new("sessionConfig", "get", vec![]))
+        .await
+        .unwrap();
+    assert_eq!(config, serde_json::to_value(session.config()).unwrap());
+
+    assert!(line(&scope, "main").get::<BranchLine>().is_ok());
     assert_eq!(
-        line_owner::<dyn LoopState>(&route, "main").err(),
+        line(&scope, "main").get::<dyn LoopState>().err(),
         Some(RouteError::NotDataFace {
             service: "loopState".into()
         }),
-        "the Rust binding resolves data faces only"
+        "the line's typed read resolves data faces only"
     );
-    rig.host.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_language_call_reaches_a_line_face_through_the_route() {
-    let rig = Rig::start().await;
-    let session = rig.open().await;
-    let id = session.id().to_owned();
-    let language = Language::open(rig.host.root(), rig.host.root().instance());
-    language.client.ready().await.unwrap();
-
-    let sequence = language
-        .call(
-            "route",
-            "line",
-            LineFaceCall::new(&id, "main", "timeline", "sequence", vec![]),
-        )
-        .await
-        .unwrap();
+    assert!(session_face::<SessionConfig>(&scope).is_ok());
     assert_eq!(
-        sequence,
-        serde_json::json!(session.sequence("main").unwrap())
+        session_face::<dim_agent_capabilities::methods::SessionMethods>(&scope).err(),
+        Some(RouteError::NotDataFace {
+            service: "sessionMethods".into()
+        }),
+        "the Session's typed read refuses a registration point too"
     );
-    let error = language
-        .refused(
-            "route",
-            "line",
-            LineFaceCall::new(&id, "absent", "timeline", "sequence", vec![]),
-        )
-        .await;
-    assert!(error.contains("no line"), "{error}");
     rig.host.close().await.unwrap();
 }
 
@@ -302,15 +199,15 @@ async fn a_language_call_reaches_a_line_face_through_the_route() {
 async fn a_session_language_call_reaches_its_own_line_and_names_no_session() {
     let rig = Rig::start().await;
     let session = rig.open().await;
-    let id = session.id().to_owned();
-    let language = Language::open(&rig.session_ctx(), session.instance().unwrap());
+    let ctx = rig.session_ctx();
+    let language = Language::open(&ctx, session.instance().unwrap());
     language.client.ready().await.unwrap();
 
     let sequence = language
         .call(
-            "lineRoute",
-            "line",
-            OwnLineCall::new("main", "timeline", "sequence", vec![]),
+            "sessionScope",
+            "lineCall",
+            LineCall::new("main", "timeline", "sequence", vec![]),
         )
         .await
         .unwrap();
@@ -325,78 +222,11 @@ async fn a_session_language_call_reaches_its_own_line_and_names_no_session() {
         "method": "sequence",
         "args": [],
     });
-    let error = language.refused("lineRoute", "line", carried).await;
-    assert!(
-        error.contains("unknown field") && error.contains("sessionId"),
-        "a Session route names no Session: {error}"
-    );
-    assert!(
-        language
-            .call(
-                "lineRoute",
-                "line",
-                OwnLineCall::new("main", "timeline", "sequence", vec![])
-            )
-            .await
-            .is_ok(),
-        "the Session's own line still answers {id}"
-    );
-    rig.host.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_idle_unloaded_session_answers_no_session_until_it_loads_again() {
-    let rig = Rig::start().await;
-    let session = rig.open().await;
-    let id = session.id().to_owned();
-
-    assert!(
-        session.unload_if_idle().await.unwrap(),
-        "an idle Session unloads"
-    );
-    assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
-            .await
-            .unwrap_err(),
-        RouteError::NoSession(id.clone())
-    );
-
-    let restored = rig.host.restore_session(id.clone()).await.unwrap();
-    assert!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
-            .await
-            .is_ok()
-    );
-    assert!(
-        rig.line_route(&restored)
-            .line(OwnLineCall::new("main", "timeline", "sequence", vec![]))
-            .await
-            .is_ok()
-    );
-    restored.close().await.unwrap();
-    rig.host.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_session_closed_by_business_answers_no_session_and_keeps_no_instance_to_hold() {
-    let rig = Rig::start().await;
-    let session = rig.open().await;
-    let id = session.id().to_owned();
-
-    session.close().await.unwrap();
-    assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
-            .await
-            .unwrap_err(),
-        RouteError::NoSession(id.clone())
-    );
-    assert!(
-        rig.host.get_session(&id).is_none(),
-        "a closed Session has no live instance for a hold to keep"
-    );
+    let failed = language
+        .call("sessionScope", "lineCall", carried)
+        .await
+        .expect_err("a Session call names no Session");
+    assert!(failed.to_string().contains("unknown field"), "{failed}");
     rig.host.close().await.unwrap();
 }
 
@@ -405,7 +235,7 @@ async fn a_closing_session_answers_session_closing_for_its_lines_too() {
     let rig = Rig::start().await;
     let session = rig.open().await;
     let id = session.id().to_owned();
-    let line_route = rig.line_route(&session);
+    let scope = rig.scope(&session);
     let mut held = hold_close(&id, "main");
     let closing = {
         let session = session.clone();
@@ -414,41 +244,21 @@ async fn a_closing_session_answers_session_closing_for_its_lines_too() {
     held.arrived().await;
 
     assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
+        scope
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
             .await
             .unwrap_err(),
         RouteError::SessionClosing(id.clone())
     );
     assert_eq!(
-        rig.route
-            .line(LineFaceCall::new(
-                &id,
-                "main",
-                "timeline",
-                "sequence",
-                vec![]
-            ))
-            .await
-            .unwrap_err(),
-        RouteError::SessionClosing(id.clone())
-    );
-    assert_eq!(
-        line_route
-            .line(OwnLineCall::new("main", "timeline", "sequence", vec![]))
+        scope
+            .call(SessionCall::new("sessionConfig", "get", vec![]))
             .await
             .unwrap_err(),
         RouteError::SessionClosing(id.clone())
     );
     held.release();
     closing.await.unwrap().unwrap();
-    assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
-            .await
-            .unwrap_err(),
-        RouteError::NoSession(id.clone())
-    );
     rig.host.close().await.unwrap();
 }
 
@@ -457,10 +267,11 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
     let rig = Rig::start().await;
     let session = rig.open().await;
     let id = session.id().to_owned();
+    let scope = rig.scope(&session);
     let source = || BranchSource::Host {
         operation_id: "routing".into(),
     };
-    let line = session
+    let line_id = session
         .branch(
             "main".into(),
             0,
@@ -472,30 +283,17 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
         .await
         .unwrap();
     assert!(
-        rig.route
-            .line(LineFaceCall::new(
-                &id,
-                &line,
-                "timeline",
-                "sequence",
-                vec![]
-            ))
+        scope
+            .line_call(LineCall::new(&line_id, "timeline", "sequence", vec![]))
             .await
             .is_ok()
     );
 
-    session.end_branch(&line, source()).await.unwrap();
+    session.end_branch(&line_id, source()).await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let answer = rig
-            .route
-            .line(LineFaceCall::new(
-                &id,
-                &line,
-                "timeline",
-                "sequence",
-                vec![],
-            ))
+        let answer = scope
+            .line_call(LineCall::new(&line_id, "timeline", "sequence", vec![]))
             .await;
         if matches!(answer, Err(RouteError::NoLine { .. })) {
             break;
@@ -507,23 +305,18 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "sessionConfig", "get", vec![]))
+        scope
+            .call(SessionCall::new("sessionConfig", "get", vec![]))
             .await
             .is_ok(),
         "one line's end does not affect the Session's other calls"
     );
     assert!(
-        rig.route
-            .line(LineFaceCall::new(
-                &id,
-                "main",
-                "timeline",
-                "sequence",
-                vec![]
-            ))
+        scope
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
             .await
-            .is_ok()
+            .is_ok(),
+        "the Session's own main line still answers {id}"
     );
     rig.host.close().await.unwrap();
 }
@@ -532,13 +325,12 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
 async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     let rig = Rig::start().await;
     let session = rig.open().await;
-    let id = session.id().to_owned();
-    let route = rig.line_route(&session);
+    let scope = rig.scope(&session);
 
     for service in ["sessionMethods", "toolRegistry", "guideEntries"] {
         assert_eq!(
-            rig.route
-                .session(SessionFaceCall::new(&id, service, "register", vec![]))
+            scope
+                .call(SessionCall::new(service, "register", vec![]))
                 .await
                 .unwrap_err(),
             RouteError::NotDataFace {
@@ -549,8 +341,8 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     }
     for service in ["sessionLifecycle", "branchLifecycle"] {
         assert_eq!(
-            rig.route
-                .session(SessionFaceCall::new(&id, service, "closing", vec![]))
+            scope
+                .call(SessionCall::new(service, "closing", vec![]))
                 .await
                 .unwrap_err(),
             RouteError::NotDataFace {
@@ -560,8 +352,8 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         );
     }
     assert_eq!(
-        rig.route
-            .line(LineFaceCall::new(&id, "main", "loopState", "state", vec![]))
+        scope
+            .line_call(LineCall::new("main", "loopState", "state", vec![]))
             .await
             .unwrap_err(),
         RouteError::NotDataFace {
@@ -570,8 +362,8 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         "an internal face is not a data face"
     );
     assert_eq!(
-        rig.route
-            .session(SessionFaceCall::new(&id, "timeline", "sequence", vec![]))
+        scope
+            .call(SessionCall::new("timeline", "sequence", vec![]))
             .await
             .unwrap_err(),
         RouteError::WrongScope {
@@ -581,8 +373,8 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         "a line face is not a Session face"
     );
     assert_eq!(
-        route
-            .line(OwnLineCall::new("main", "sessionConfig", "get", vec![]))
+        scope
+            .line_call(LineCall::new("main", "sessionConfig", "get", vec![]))
             .await
             .unwrap_err(),
         RouteError::WrongScope {
@@ -591,9 +383,8 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         },
         "a Session face is not a line face"
     );
-    let error = rig
-        .route
-        .line(LineFaceCall::new(&id, "main", "timeline", "absent", vec![]))
+    let error = scope
+        .line_call(LineCall::new("main", "timeline", "absent", vec![]))
         .await
         .unwrap_err();
     let RouteError::Owner { name, message } = error else {

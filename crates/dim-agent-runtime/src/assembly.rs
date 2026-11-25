@@ -250,7 +250,7 @@ type ExtensionMake = Arc<
 >;
 /// Builds one plugin of an extension copy.
 type ExtensionPart = Box<dyn Fn() -> std::result::Result<Box<dyn DynPlugin>, Error> + Send + Sync>;
-type Provide = Arc<dyn Fn(&Ctx, &SessionScope) -> std::result::Result<(), Error> + Send + Sync>;
+type Provide = Arc<dyn Fn(&Ctx, &SessionScopeId) -> std::result::Result<(), Error> + Send + Sync>;
 /// A value registered with [`AgentBuilder::process_value`]: its name, and
 /// how a copy provides it at the key the name has there.
 #[derive(Clone)]
@@ -290,9 +290,6 @@ pub(crate) struct Assembly {
     /// The parts plugins register: the builder's, for the host that builds
     /// its Agents ([`AgentBuilder::build`]); the minimal host takes a fresh one.
     pub parts: Arc<crate::parts::PartRegistry>,
-    /// The Sessions this builder's Agents publish, for calls by id
-    /// ([`Route`]).
-    pub route: Arc<crate::route::Index>,
     /// Registered parts the profile requires, by name.
     required_parts: Arc<HashSet<String>>,
     /// The rows a Session and a branch need Active, as [`AgentBuilder::install`]
@@ -367,7 +364,6 @@ impl AgentBuilder {
                 features: Default::default(),
                 optional_plugins: Default::default(),
                 parts: Arc::default(),
-                route: Arc::default(),
                 required_parts: Arc::default(),
                 required_rows: Arc::default(),
                 extensions: vec![],
@@ -499,21 +495,13 @@ impl AgentBuilder {
                 key: names.key()?,
             }))
         });
-        let route = self.assembly.route.clone();
-        let route: PartMake = Arc::new(move |names| {
-            Ok(Box::new(crate::route::RoutePlugin {
-                index: route.clone(),
-                key: names.key()?,
-            }))
-        });
         let mut rows = vec![];
         let mut optional_rows = vec![];
-        let optional = std::iter::once(false).chain(std::iter::once(false)).chain(
+        let optional = std::iter::once(false).chain(
             (0..self.assembly.plugins.len())
                 .map(|index| self.assembly.optional_plugins.contains(&index)),
         );
         for (make, optional) in std::iter::once(&registry)
-            .chain(std::iter::once(&route))
             .chain(&self.assembly.plugins)
             .zip(optional)
         {
@@ -1088,8 +1076,8 @@ pub(crate) fn row(module: &str) -> Value {
 fn group(id: &str, config: Vec<Value>) -> Value {
     json!({ "id": id, "group": true, "instanced": true, "config": config })
 }
-fn session_scope(build: &Build) -> std::result::Result<SessionScope, Error> {
-    Ok(SessionScope {
+fn session_scope(build: &Build) -> std::result::Result<SessionScopeId, Error> {
+    Ok(SessionScopeId {
         instance: build.instance(SESSION_GROUP)?,
     })
 }
@@ -1146,7 +1134,7 @@ pub(crate) struct SessionAssembly {
     pub unloading: CancellationToken,
     pub closing: CancellationToken,
     pub lifecycle: SessionLifecycle,
-    pub loaded: Mutex<Option<Arc<Loaded<SessionScope>>>>,
+    pub loaded: Mutex<Option<Arc<Loaded<SessionScopeId>>>>,
     /// The parts the Session's mounters mounted when it opened, until its
     /// creation ends.
     pub(crate) mounted: Arc<Mutex<crate::parts::Opened>>,
@@ -1158,7 +1146,7 @@ pub(crate) struct SessionAssembly {
     lines: Mutex<HashMap<String, Weak<TimelineContext>>>,
 }
 impl SessionAssembly {
-    pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScope>>> {
+    pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScopeId>>> {
         self.loaded
             .lock()
             .unwrap()
@@ -1204,7 +1192,7 @@ impl SessionAssembly {
 
 struct SessionScopePlugin {
     owner: Arc<SessionAssembly>,
-    scope: SessionScope,
+    scope: SessionScopeId,
     /// The names of this copy's instances, for the mounters it builds.
     build: Build,
     required: Arc<[String]>,
@@ -1259,8 +1247,8 @@ impl DynPlugin for SessionScopePlugin {
                 provide(ctx, &scope)?;
             }
             ctx.provide_at(
-                scope.key::<crate::LineRoute>(),
-                Arc::new(crate::LineRoute::new(owner)),
+                scope.key::<crate::SessionScope>(),
+                Arc::new(crate::SessionScope::new(owner)),
             )?;
             {
                 let mut loaded = owner.loaded.lock().unwrap();

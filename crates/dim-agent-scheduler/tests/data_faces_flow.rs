@@ -17,6 +17,7 @@ impl DynPlugin for Probe {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            host_key("sessions").erase(),
             host_key("scheduleJobs").erase(),
             host_key("wakeups").erase(),
             host_key("loops").erase(),
@@ -784,5 +785,89 @@ async fn loop_face_cancellation_stops_reads_and_keeps_committed_starts() {
         .json()
         .unwrap();
     assert!(reply["loopId"].is_string(), "{reply}");
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_cannot() {
+    let rig = Rig::start().await;
+    let session = rig
+        .server
+        .agent()
+        .expect("the product profile has an Agent")
+        .create_session(dim_agent_runtime::SessionConfig {
+            cwd: rig._home.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    let face = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(
+        face["ok"], true,
+        "a Session-scope face answers through Agents: {face}"
+    );
+    let line = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "lineId": "main", "service": "timeline", "method": "sequence"}),
+        )
+        .await;
+    assert_eq!(
+        line["value"],
+        json!(session.sequence("main").unwrap()),
+        "{line}"
+    );
+    let unknown = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": "absent", "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert!(
+        unknown["error"]["code"] == "rejected"
+            && unknown["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no_session"),
+        "{unknown}"
+    );
+    let missing = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "lineId": "absent", "service": "timeline", "method": "sequence"}),
+        )
+        .await;
+    assert!(
+        missing["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no_line"),
+        "{missing}"
+    );
+    session.close().await.unwrap();
+    let closed = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert!(
+        closed["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no_session"),
+        "{closed}"
+    );
     rig.close().await;
 }

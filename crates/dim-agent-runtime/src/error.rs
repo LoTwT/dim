@@ -10,21 +10,6 @@ pub enum AgentError {
     Closed(String),
     #[error("unknown branch: {0}")]
     UnknownBranch(String),
-    /// Routing by id ([`Route`](crate::Route)): the Session has no live
-    /// instance, because it was idle-unloaded, closed or never existed. Only a
-    /// process caller receives it; a caller that must continue asks Agents for
-    /// a hold, and calls again once that loads the Session.
-    #[error("no live Session {0}")]
-    NoSession(String),
-    /// Routing by id: the Session instance is closing, and so is any call to a
-    /// line of it. A Session-scoped caller ends its work; a process caller
-    /// treats it as [`Self::NoSession`].
-    #[error("Session {0} is closing")]
-    SessionClosing(String),
-    /// Routing by id: the Session is live but the line is closing, closed, or
-    /// not one of its lines. Final for that line: no hold, no retry.
-    #[error("no line {line} in Session {session}")]
-    NoLine { session: String, line: String },
     /// The line has ended: it accepts no input and no new operation.
     #[error("branch has ended: {0}")]
     BranchEnded(String),
@@ -71,12 +56,6 @@ pub enum SessionFault {
     InvalidInput(String),
     Closed(String),
     UnknownBranch(String),
-    NoSession(String),
-    SessionClosing(String),
-    NoLine {
-        session: String,
-        line: String,
-    },
     BranchEnded(String),
     BranchRefused {
         refusal: BranchRefusal,
@@ -102,9 +81,6 @@ impl From<AgentError> for SessionFault {
             AgentError::InvalidInput(value) => Self::InvalidInput(value),
             AgentError::Closed(value) => Self::Closed(value),
             AgentError::UnknownBranch(value) => Self::UnknownBranch(value),
-            AgentError::NoSession(value) => Self::NoSession(value),
-            AgentError::SessionClosing(value) => Self::SessionClosing(value),
-            AgentError::NoLine { session, line } => Self::NoLine { session, line },
             AgentError::BranchEnded(value) => Self::BranchEnded(value),
             AgentError::BranchRefused { refusal, message } => {
                 Self::BranchRefused { refusal, message }
@@ -130,9 +106,6 @@ impl From<SessionFault> for AgentError {
             SessionFault::InvalidInput(value) => Self::InvalidInput(value),
             SessionFault::Closed(value) => Self::Closed(value),
             SessionFault::UnknownBranch(value) => Self::UnknownBranch(value),
-            SessionFault::NoSession(value) => Self::NoSession(value),
-            SessionFault::SessionClosing(value) => Self::SessionClosing(value),
-            SessionFault::NoLine { session, line } => Self::NoLine { session, line },
             SessionFault::BranchEnded(value) => Self::BranchEnded(value),
             SessionFault::BranchRefused { refusal, message } => {
                 Self::BranchRefused { refusal, message }

@@ -499,11 +499,6 @@ impl Session {
     /// begin the background work they deferred during assembly.
     fn activate(&self) {
         self.0.owner.lifecycle.advance(SessionPhase::Active);
-        self.0
-            .owner
-            .assembly
-            .route
-            .register(self.id(), Arc::downgrade(&self.0.owner));
         let weak = Arc::downgrade(&self.0);
         let mut faults = self.0.owner.lifecycle.faults.watch();
         let stop = self.0.owner.closing.clone();
@@ -924,7 +919,6 @@ impl Session {
                     store.remove_session(this.id());
                 }
             }
-            this.0.owner.assembly.route.forget(this.id(), &this.0.owner);
             *this.0.owner.loaded.lock().unwrap() = None;
             span.record(
                 "outcome",

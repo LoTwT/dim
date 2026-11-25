@@ -9,8 +9,9 @@ use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
     Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
-    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, Session, SessionConfig,
-    TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope, TimelineReadSegment,
+    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, RouteError, Session,
+    SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope,
+    TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
@@ -1650,6 +1651,59 @@ impl AgentIndex {
     /// rows, or, in a daemon without a native store, a loaded Session. A
     /// Session in use is closed and removed as before;
     /// [`Self::delete_if_inactive`] is the delete that refuses it.
+    /// Calls a data face of the live Session `id`, or of one of its lines
+    /// ([#2127](https://github.com/arcships/dim/issues/2127),
+    /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1): the
+    /// Session's own scope resolves the line, so the caller names no instance
+    /// key and keeps no object. A Session with no live instance answers
+    /// `NoSession`, one that is closing `SessionClosing`, and a line that is
+    /// closing, closed or not its own `NoLine`.
+    pub(crate) async fn call(
+        &self,
+        request: crate::agents::sessions::CallRequest,
+    ) -> std::result::Result<serde_json::Value, RouteError> {
+        let id = request.session_id.clone();
+        let session = self
+            .live(&id)
+            .ok_or_else(|| RouteError::NoSession(id.clone()))?;
+        if session.is_closing() {
+            return Err(RouteError::SessionClosing(id));
+        }
+        let scope = session
+            .session_service::<dim_agent_runtime::SessionScope>()
+            .map_err(|error| RouteError::Owner {
+                name: "AgentError".into(),
+                message: error.to_string(),
+            })?;
+        match request.line_id {
+            Some(line_id) => {
+                scope
+                    .line_call(dim_agent_runtime::LineCall::new(
+                        line_id,
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+            None => {
+                scope
+                    .call(dim_agent_runtime::SessionCall::new(
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+        }
+    }
+    /// The live Session `id`, whichever Agent publishes it. A single call needs
+    /// no hold: the Session is either live now or it is not (ADR 027 D5).
+    fn live(&self, id: &str) -> Option<Session> {
+        let inner = self.directory.inner.lock().expect("agent index");
+        let host = inner.owner(id)?;
+        host.agent.get_session(id)
+    }
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
         let _activity = self
             .activity
