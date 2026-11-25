@@ -1141,9 +1141,6 @@ pub(crate) struct SessionAssembly {
     /// The views its scope mounted when it opened, until its creation ends.
     pub(crate) handed: Mutex<Handed>,
     pub(crate) copies: crate::parts::Copies,
-    /// The line instances this Session's tree created, by id. An entry whose
-    /// context is gone, closing or closed resolves to no line.
-    lines: Mutex<HashMap<String, Weak<TimelineContext>>>,
 }
 impl SessionAssembly {
     pub(crate) fn loaded(&self) -> Result<Arc<Loaded<SessionScopeId>>> {
@@ -1164,22 +1161,16 @@ impl SessionAssembly {
             .ok_or_else(|| AgentError::Reloading(std::any::type_name::<T>().into()))
     }
 
-    /// Records the line instance `id` only while it is live.
-    pub(crate) fn register_line(&self, id: &str, line: Weak<TimelineContext>) {
-        self.lines.lock().unwrap().insert(id.to_owned(), line);
-    }
-
-    /// The live line instance `id`, or `None` when this Session never created
-    /// it, it is gone, or it is closing. An entry whose instance is gone is
-    /// dropped here.
+    /// The published line `id` of this Session, or `None` when it is not
+    /// published, has ended, or is already closing. The tree's own view decides
+    /// publication, so the process path and a Session part see the same state
+    /// (ADR 027 D2).
     pub(crate) fn line(&self, id: &str) -> Option<Arc<TimelineContext>> {
-        let mut lines = self.lines.lock().unwrap();
-        let line = lines.get(id)?.upgrade();
-        let Some(line) = line else {
-            lines.remove(id);
-            return None;
-        };
-        drop(lines);
+        let loaded = self.loaded().ok()?;
+        let tree = loaded
+            .ctx
+            .get_at::<dyn TimelineTreeControl>(&loaded.scope.key::<dyn TimelineTreeControl>())?;
+        let line = tree.published(id).ok()?.0;
         (!line.is_closing()).then_some(line)
     }
 
@@ -1564,7 +1555,6 @@ impl TimelineFactory {
                     parent.assembly.catalog.clone(),
                     parent.assembly.faces.clone(),
                 );
-                parent.register_line(&id, Arc::downgrade(&context));
                 Ok(context)
             })
             .catch_unwind()
@@ -1931,7 +1921,6 @@ pub(crate) async fn build_session(
         mounted: Arc::default(),
         handed: Mutex::default(),
         copies: Arc::default(),
-        lines: Mutex::default(),
     });
     let instance = |owner: &Arc<SessionAssembly>| {
         let owner = owner.clone();

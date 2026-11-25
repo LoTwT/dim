@@ -832,14 +832,7 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
             json!({"sessionId": "absent", "service": "sessionConfig", "method": "get"}),
         )
         .await;
-    assert!(
-        unknown["error"]["code"] == "rejected"
-            && unknown["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("no_session"),
-        "{unknown}"
-    );
+    assert_eq!(unknown["error"]["code"], "no_session", "{unknown}");
     let missing = rig
         .call(
             "sessions",
@@ -847,13 +840,7 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
             json!({"sessionId": id, "lineId": "absent", "service": "timeline", "method": "sequence"}),
         )
         .await;
-    assert!(
-        missing["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no_line"),
-        "{missing}"
-    );
+    assert_eq!(missing["error"]["code"], "no_line", "{missing}");
     session.close().await.unwrap();
     let closed = rig
         .call(
@@ -862,12 +849,6 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
             json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
         )
         .await;
-    assert!(
-        closed["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no_session"),
-        "{closed}"
-    );
+    assert_eq!(closed["error"]["code"], "no_session", "{closed}");
     rig.close().await;
 }

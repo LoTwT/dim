@@ -51,6 +51,146 @@
       "item": "ToolHost::0"
     },
     {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::arch"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::build_process_spec"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::child_path_process"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::command_shutdown"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::command_workers"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::commands"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::configured"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::env"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::execution"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::home"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::installed_toolchains"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::os"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::platform_roots"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::prepare_isolated_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::remove_exec_directory"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::retained_output_page"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_pty"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_tree"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::spawn_with_stdin_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::start_shell"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::timezone"
+    },
+    {
+      "kind": "rust-only-field",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::toolchain"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::with_execution_settings"
+    },
+    {
+      "kind": "service-skip",
+      "file": "crates/dim-agent-capabilities/src/host_platform.rs",
+      "item": "HostPlatform::with_toolchain_source"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/confined.rs",
+      "item": "HostPlatform::spawn_confined_process"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/exec_shell_settings.rs",
+      "item": "HostPlatform::read_exec_shell_settings"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/exec_shell_settings.rs",
+      "item": "HostPlatform::update_exec_shell_settings"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/host_platform/isolation.rs",
+      "item": "HostPlatform::prepare_isolated_process"
+    },
+    {
       "kind": "service-skip",
       "file": "crates/dim-agent-capabilities/src/input_queue.rs",
       "item": "InputQueue::pending"
@@ -271,6 +411,26 @@
       "item": "BackgroundExec::start"
     },
     {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::command_task"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::retain_output_by_id"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::start_command"
+    },
+    {
+      "kind": "rust-only-method",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "item": "HostPlatform::tail_by_id"
+    },
+    {
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::batch_end"
@@ -359,6 +519,11 @@
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::service"
+    },
+    {
+      "kind": "session-forwarding",
+      "file": "crates/dim-agent-runtime/src/agent.rs",
+      "item": "Session::service_opt"
     },
     {
       "kind": "session-forwarding",

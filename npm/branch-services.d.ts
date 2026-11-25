@@ -1461,7 +1461,12 @@ export type PermissionState = {
 /** A Session service failure; generated exports throw this serde value. */
 export type SessionsError =
   | { code: "rejected"; message: string }
-  | /** A routed call's own failure: the routing kind (`routing`), the name the owner wrote when the owner failed, and the message. */ { code: "routed"; routing: string; name: string; message: string }
+  | /** A routed call could not select its target: `no_session`, `session_closing`, `session_reloading`, `session_unavailable` or `no_line`. Only `session_reloading` is retryable. */ { code: "no_session"; message: string }
+  | { code: "session_closing"; message: string }
+  | { code: "session_reloading"; message: string }
+  | { code: "session_unavailable"; message: string }
+  | { code: "no_line"; message: string }
+  | /** The target owner's own failure, with the name and message it wrote. */ { code: "routed"; name: string; message: string }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }
@@ -1796,13 +1801,13 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
 /** What a method returning `Err(RouteError)` throws. */
-export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "NoLine" | "NotDataFace" | "WrongScope" | "Owner", undefined>
+export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "SessionReloading" | "SessionUnavailable" | "NoLine" | "NotDataFace" | "WrongScope" | "Owner", undefined>
 
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
@@ -1862,7 +1867,6 @@ export interface Services {
 export type LineFaces = {
   approval: Approval
   backgroundExec: BackgroundExec
-  branchLine: BranchLine
   dispatcher: Dispatcher
   inputQueue: InputQueue
   permission: Permission
@@ -1873,15 +1877,11 @@ export type LineFaces = {
 
 /** The data faces a Session reaches. */
 export type SessionFaces = {
-  agentConfig: AgentConfig
-  collaborationConfig: CollaborationConfig
-  initialPromptConfiguration: InitialPromptConfiguration
   mcpSession: McpSession
   sessionConfig: SessionConfig
   sessionIdentity: SessionIdentity
-  sessionLanguage: SessionLanguage
   sessionLoader: SessionLoader
-  skillsConfig: SkillsConfig
+  sessionScope: SessionScope
   toolHost: ToolHost
   treeCommands: TreeCommands
   uiResources: UiResources

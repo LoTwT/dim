@@ -37,10 +37,12 @@ owner's face, and the owner of the line's index resolves it
 ([#2127](https://github.com/arcships/dim/issues/2127),
 [ADR 027](../../adr/027-cross-scope-access-by-id.md)): `sessionScope.lineCall` reaches a
 line of the caller's own Session, `sessions.call` a Session and a line of it for the
-process, and both pass the owner's arguments, reply and error through. A line that is
-closing, closed or not this Session's answers `no_line`, which is final for it; a calling
-Session that is closing answers `session_closing`. Tree history, directory and batch input
-continue to use the tree's own methods.
+process, and both pass the owner's arguments, reply and error through. Agents loads the
+Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
+selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
+`session_unavailable` (report the reason) or `no_line` (final for that line), before the
+target's operation runs. Tree history, directory and batch input continue to use the
+tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |

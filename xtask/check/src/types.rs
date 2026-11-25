@@ -17,8 +17,6 @@ fn file(root: &Path) -> PathBuf {
 /// and `args` the method's parameters, so a typo fails `tsc`
 /// ([#2127](https://github.com/arcships/dim/issues/2127)).
 fn calls(root: &Path, services: &str) -> Result<String> {
-    let catalog =
-        std::fs::read_to_string(root.join("docs/architecture/rust-agent/generated/catalog.md"))?;
     let unroutable = unroutable(root)?;
     let declared: Vec<&str> = services
         .lines()
@@ -30,37 +28,27 @@ fn calls(root: &Path, services: &str) -> Result<String> {
         .collect();
     let mut session = Vec::new();
     let mut line = Vec::new();
-    for row in catalog.lines().filter(|line| line.starts_with("| `")) {
-        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
-        let Some(name) = cells.get(1).and_then(|name| name.strip_prefix('`')) else {
-            continue;
-        };
-        let Some(name) = name.strip_suffix('`') else {
-            continue;
-        };
-        let (group, face) = match (cells.get(2), cells.get(4)) {
-            (Some(group), Some(face)) => (*group, *face),
-            _ => continue,
-        };
-        if face != "data" || name == "sessionScope" || name == "sessions" {
-            continue;
-        }
-        if unroutable.iter().any(|refused| refused == name) {
+    for (name, group) in registered(root)? {
+        if unroutable.contains(&name) {
             continue;
         }
         let Some(ty) = declared.iter().find(|ty| catalog_name(ty) == name).copied() else {
             continue;
         };
-        match group {
-            "session" => session.push((name.to_owned(), ty.to_owned())),
-            "branch" => line.push((name.to_owned(), ty.to_owned())),
+        match group.as_str() {
+            "session" => session.push((name, ty.to_owned())),
+            "branch" => line.push((name, ty.to_owned())),
             _ => {}
         }
     }
+    session.sort();
+    session.dedup();
+    line.sort();
+    line.dedup();
     let faces = |items: &[(String, String)], name: &str| {
         let mut text = format!("export type {name} = {{\n");
-        for (name, ty) in items {
-            text += &format!("  {name}: {ty}\n");
+        for (member, ty) in items {
+            text += &format!("  {member}: {ty}\n");
         }
         text + "}\n"
     };
@@ -73,6 +61,182 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     text += "\n/** A call to one of the caller's own Session's data faces. */\nexport type SessionCall = Call<SessionFaces, {}>\n";
     text += "\n/** A call through Agents: a Session's face, or one of its lines' faces. */\nexport type SessionsCall =\n  | Call<LineFaces, { sessionId: string; lineId: string }>\n  | Call<SessionFaces, { sessionId: string }>\n";
     Ok(text)
+}
+
+/// The catalog name and group of every service the workspaces' crates
+/// register, read from the registration calls themselves: a name is in a group
+/// because some `register`/`register_shared_instance` call puts it there.
+fn registered(root: &Path) -> Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates"))? {
+        let directory = entry?.path().join("src");
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        sources(&mut files, &directory)?;
+        for file in files {
+            let text = std::fs::read_to_string(&file)?;
+            let ast = syn::parse_file(&text)?;
+            registrations(&ast.items, &mut found);
+        }
+    }
+    Ok(found)
+}
+
+fn sources(files: &mut Vec<PathBuf>, directory: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            sources(files, &path)?;
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn registrations(items: &[syn::Item], found: &mut Vec<(String, String)>) {
+    for item in items {
+        match item {
+            syn::Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    registrations(items, found);
+                }
+            }
+            syn::Item::Impl(block) => {
+                for item in &block.items {
+                    if let syn::ImplItem::Fn(function) = item {
+                        expressions(&function.block, found);
+                    }
+                }
+            }
+            syn::Item::Fn(function) => expressions(&function.block, found),
+            _ => {}
+        }
+    }
+}
+
+fn expressions(block: &syn::Block, found: &mut Vec<(String, String)>) {
+    for statement in &block.stmts {
+        match statement {
+            syn::Stmt::Expr(expression, _) => call(expression, found),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    call(&init.expr, found);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One `register`/`register_shared_instance` call, with the group its
+/// arguments name.
+fn call(expression: &syn::Expr, found: &mut Vec<(String, String)>) {
+    let syn::Expr::Call(call) = expression else {
+        return;
+    };
+    let syn::Expr::Path(path) = &*call.func else {
+        return;
+    };
+    let Some(last) = path.path.segments.last() else {
+        return;
+    };
+    match last.ident.to_string().as_str() {
+        "register" | "register_instance" | "register_keyed" => {
+            let Some(group) = call.args.iter().find_map(group_of) else {
+                return;
+            };
+            if let Some(ty) = type_argument(&last.arguments) {
+                found.push((catalog_name(&ty), group.to_owned()));
+            }
+        }
+        "register_shared_instance" => {
+            let mut args = call.args.iter();
+            let Some(name) = args.next().and_then(name_of) else {
+                return;
+            };
+            let Some(group) = args.next().and_then(group_of) else {
+                return;
+            };
+            found.push((name, group.to_owned()));
+        }
+        _ => {}
+    }
+}
+
+/// The role a group argument names: `session`, `branch`, or their constants.
+fn group_of(expression: &syn::Expr) -> Option<&'static str> {
+    match expression {
+        syn::Expr::Path(path) => {
+            let ident = path.path.segments.last()?.ident.to_string();
+            match ident.as_str() {
+                "session" => Some("session"),
+                "branch" => Some("branch"),
+                "SESSION_GROUP" => Some("session"),
+                "BRANCH_GROUP" => Some("branch"),
+                _ => None,
+            }
+        }
+        syn::Expr::Call(call) => call.args.iter().find_map(group_of),
+        syn::Expr::Reference(reference) => group_of(&reference.expr),
+        _ => None,
+    }
+}
+
+/// The Rust type a registration is for: `register::<T>`'s argument, or a
+/// string name.
+fn type_argument(arguments: &syn::PathArguments) -> Option<String> {
+    let syn::PathArguments::AngleBracketed(arguments) = arguments else {
+        return None;
+    };
+    arguments.args.iter().find_map(|argument| {
+        let syn::GenericArgument::Type(ty) = argument else {
+            return None;
+        };
+        Some(match ty {
+            syn::Type::Path(path) => path.path.segments.last()?.ident.to_string(),
+            syn::Type::TraitObject(object) => object.bounds.iter().find_map(|bound| {
+                let syn::TypeParamBound::Trait(bound) = bound else {
+                    return None;
+                };
+                Some(bound.path.segments.last()?.ident.to_string())
+            })?,
+            _ => return None,
+        })
+    })
+}
+
+/// A name argument as written: `"name"` or `name_of::<T>()`.
+fn name_of(expression: &syn::Expr) -> Option<String> {
+    match expression {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(name),
+            ..
+        }) => Some(name.value()),
+        syn::Expr::Call(call) => {
+            let syn::Expr::Path(path) = &*call.func else {
+                return None;
+            };
+            let last = path.path.segments.last()?;
+            (last.ident == "name_of").then(|| type_argument(&last.arguments))?
+        }
+        syn::Expr::Reference(reference) => name_of(&reference.expr),
+        syn::Expr::Macro(mac) => {
+            let tokens = mac.mac.tokens.to_string();
+            tokens.split('<').nth(1).map(|rest| {
+                catalog_name(
+                    rest.trim_end_matches('>')
+                        .trim()
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(""),
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
 /// The names routing does not resolve, read from the runtime that refuses
@@ -113,7 +277,84 @@ fn unroutable(root: &Path) -> Result<Vec<String>> {
     if !found {
         return Err(format!("{}: REGISTRATION_POINTS is missing", path.display()).into());
     }
+    names.extend(internal(root)?);
     Ok(names)
+}
+
+/// The names an assembly marks internal, read from the marks themselves: a
+/// route refuses them, so the generated requests do not offer them.
+fn internal(root: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates"))? {
+        let directory = entry?.path().join("src");
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        sources(&mut files, &directory)?;
+        for file in files {
+            let ast = syn::parse_file(&std::fs::read_to_string(&file)?)?;
+            marks(&ast.items, &mut names);
+        }
+    }
+    Ok(names)
+}
+
+fn marks(items: &[syn::Item], names: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    marks(items, names);
+                }
+            }
+            syn::Item::Fn(function) => marks_in(&function.block, names),
+            syn::Item::Impl(block) => {
+                for item in &block.items {
+                    if let syn::ImplItem::Fn(function) = item {
+                        marks_in(&function.block, names);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn marks_in(block: &syn::Block, names: &mut Vec<String>) {
+    for statement in &block.stmts {
+        let expression = match statement {
+            syn::Stmt::Expr(expression, _) => expression,
+            syn::Stmt::Local(local) => match &local.init {
+                Some(init) => &init.expr,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let syn::Expr::Call(call) = expression else {
+            continue;
+        };
+        let syn::Expr::Path(path) = &*call.func else {
+            continue;
+        };
+        let Some(last) = path.path.segments.last() else {
+            continue;
+        };
+        let mut args = call.args.iter();
+        match last.ident.to_string().as_str() {
+            "internal_name" => {
+                if let Some(name) = args.find_map(name_of) {
+                    names.push(name);
+                }
+            }
+            "internal" => {
+                if let Some(name) = type_argument(&last.arguments) {
+                    names.push(catalog_name(&name));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The catalog name of a Rust type: its type name with the leading word

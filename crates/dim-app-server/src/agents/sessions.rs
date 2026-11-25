@@ -296,14 +296,22 @@ pub struct StopRequest {
 pub enum SessionsError {
     #[error("{message}")]
     Rejected { message: String },
-    /// A routed call's own failure: the routing kind (`routing`), the name the
-    /// owner wrote when the owner failed, and the message.
+    /// A routed call could not select its target: `no_session`,
+    /// `session_closing`, `session_reloading`, `session_unavailable` or
+    /// `no_line`. Only `session_reloading` is retryable.
     #[error("{message}")]
-    Routed {
-        routing: String,
-        name: String,
-        message: String,
-    },
+    NoSession { message: String },
+    #[error("{message}")]
+    SessionClosing { message: String },
+    #[error("{message}")]
+    SessionReloading { message: String },
+    #[error("{message}")]
+    SessionUnavailable { message: String },
+    #[error("{message}")]
+    NoLine { message: String },
+    /// The target owner's own failure, with the name and message it wrote.
+    #[error("{message}")]
+    Routed { name: String, message: String },
     #[error("{message}")]
     AgentUnknown { message: String },
     #[error("{message}")]
@@ -338,7 +346,10 @@ impl SessionsError {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            Self::Reloading { .. } | Self::PublicationUnknown { .. }
+            Self::Reloading { .. }
+                | Self::PublicationUnknown { .. }
+                | Self::SessionReloading { .. }
+                | Self::Routed { .. }
         )
     }
 }
@@ -864,6 +875,24 @@ impl HostDispatch for SessionsService {
     }
 }
 
+/// The routing answer as this face reports it: its own kind for a target that
+/// could not be selected, and the owner's failure as the owner wrote it.
+fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
+    use dim_agent_runtime::RouteError;
+    let message = error.to_string();
+    match error {
+        RouteError::NoSession(_) => SessionsError::NoSession { message },
+        RouteError::SessionClosing(_) => SessionsError::SessionClosing { message },
+        RouteError::SessionReloading(_) => SessionsError::SessionReloading { message },
+        RouteError::SessionUnavailable { .. } => SessionsError::SessionUnavailable { message },
+        RouteError::NoLine { .. } => SessionsError::NoLine { message },
+        RouteError::Owner { name, .. } => SessionsError::Routed { name, message },
+        RouteError::NotDataFace { .. } | RouteError::WrongScope { .. } => {
+            SessionsError::Rejected { message }
+        }
+    }
+}
+
 fn envelope(result: Result<serde_json::Value, SessionsError>) -> Value {
     match result {
         Ok(value) => json!({"ok": true, "value": value}),
@@ -922,12 +951,7 @@ async fn call(
         }
         // The routing answer names itself in the message until the Agents
         // contract gives this face routing codes of its own.
-        "call" => index
-            .call(request(args)?)
-            .await
-            .map_err(|error| SessionsError::Rejected {
-                message: format!("{}: {error}", error.code()),
-            }),
+        "call" => index.call(request(args)?).await.map_err(routed),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

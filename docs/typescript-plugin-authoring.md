@@ -56,7 +56,8 @@ await sessions.call({ sessionId, service: 'sessionConfig', method: 'get', args: 
 
 The request types are generated, so `service`, `method` and `args` are the target's own and
 a typo fails `tsc`. Nothing a call returns may be kept: the next call looks the target up
-again.
+again. Rust calls the same operations: it builds `args` from the target operation's request
+type and reads the reply as that operation's reply type.
 
 ## Available services
 

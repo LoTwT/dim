@@ -1638,29 +1638,44 @@ impl AgentIndex {
     }
     /// Calls a data face of the live Session `id`, or of one of its lines
     /// ([#2127](https://github.com/arcships/dim/issues/2127),
-    /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1): the
-    /// Session's own scope resolves the line, so the caller names no instance
-    /// key and keeps no object. A Session with no live instance answers
-    /// `NoSession`, one that is closing `SessionClosing`, and a line that is
-    /// closing, closed or not its own `NoLine`.
+    /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1, D5):
+    /// the Session is loaded for the call and held while it runs, its own scope
+    /// resolves a line, and the target's reply and error come back unchanged.
+    /// A target that cannot be selected answers `NoSession`,
+    /// `SessionClosing`, `SessionReloading`, `SessionUnavailable` or `NoLine`
+    /// before the target's operation runs.
     pub(crate) async fn call(
         &self,
         request: crate::agents::sessions::CallRequest,
     ) -> std::result::Result<serde_json::Value, RouteError> {
         let id = request.session_id.clone();
-        let session = self
-            .live(&id)
-            .ok_or_else(|| RouteError::NoSession(id.clone()))?;
+        // No owner knows the id: it was closed, deleted, or never existed, so
+        // it cannot be loaded again (#2127).
+        let known = self
+            .directory
+            .inner
+            .lock()
+            .expect("agent index")
+            .owner(&id)
+            .is_some();
+        let used = self.acquire(&id).await.map_err(|error| match error {
+            _ if !known => RouteError::NoSession(id.clone()),
+            AgentError::Reloading(_) => RouteError::SessionReloading(id.clone()),
+            AgentError::Closed(_) => RouteError::NoSession(id.clone()),
+            error => RouteError::SessionUnavailable {
+                session: id.clone(),
+                reason: error.to_string(),
+            },
+        })?;
+        let session = &used.session;
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
-        // A Session that starts closing while the call runs answers that way
-        // too: its lines close with it.
         let scope = session
             .session_service::<dim_agent_runtime::SessionScope>()
-            .map_err(|error| RouteError::Owner {
-                name: "AgentError".into(),
-                message: error.to_string(),
+            .map_err(|error| RouteError::SessionUnavailable {
+                session: id.clone(),
+                reason: error.to_string(),
             })?;
         match request.line_id {
             Some(line_id) => {
@@ -1684,28 +1699,6 @@ impl AgentIndex {
             }
         }
     }
-    /// The live Session `id`, whichever Agent publishes it. A single call needs
-    /// no hold: the Session is either live now or it is not (ADR 027 D5).
-    fn live(&self, id: &str) -> Option<Session> {
-        let inner = self.directory.inner.lock().expect("agent index");
-        let host = inner.owner(id)?;
-        host.agent.get_session(id)
-    }
-    /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
-    /// holds S's admission gate, so nothing loads or builds S meanwhile,
-    /// closes S if it is loaded, has SessionStore remove what it stores of
-    /// S, then forgets S and drops its slot, which stays closed until
-    /// nothing else holds it. A stored S that was neither loaded nor closed
-    /// ends without a close, so the delete announces it with
-    /// [`UnloadedSessionDeleted`]. An unknown id has nothing to remove and
-    /// keeps no slot. A delete that fails before the rows go leaves a
-    /// Session it closed as `session.close` does, closed in this process with
-    /// its rows kept (D5); one it did not close loads again on its next use.
-    ///
-    /// The reply reports whether this call removed the Session: its stored
-    /// rows, or, in a daemon without a native store, a loaded Session. A
-    /// Session in use is closed and removed as before;
-    /// [`Self::delete_if_inactive`] is the delete that refuses it.
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
         let _activity = self
             .activity

@@ -17,9 +17,9 @@
 //! - [`SessionScope::line_call`] — `{lineId, service, method, args}`;
 //! - `sessions.call` — `{sessionId, lineId?, service, method, args}`.
 //!
-//! An address records ids and resolves nothing; each call looks the target up
-//! again, so a caller never keeps a live target (D4). Rust reads the owner's
-//! face through [`line`] and [`LineHandle::get`] at the call.
+//! Each call looks the target up again, so a caller never keeps a live target
+//! (D4). Rust calls the same two operations: it builds `args` from the target
+//! operation's request type and reads the reply as its reply type.
 //!
 //! What a call resolves is the target scope's data face in the catalog. A name
 //! the assembly marks `internal(reason)`, a mechanism registration point
@@ -62,6 +62,15 @@ pub enum RouteError {
     /// [`Self::NoSession`].
     #[error("Session {0} is closing")]
     SessionClosing(String),
+    /// Agents is reloading and cannot take calls yet. A process caller retries
+    /// later.
+    #[error("Agents is reloading: {0}")]
+    SessionReloading(String),
+    /// The Session exists but cannot be loaded now: its restore failed, or the
+    /// Agent that owns it is unavailable. The caller reports the reason and
+    /// does not retry.
+    #[error("Session {session} is unavailable: {reason}")]
+    SessionUnavailable { session: String, reason: String },
     /// The Session is live but the line is closing, closed, or not one of its
     /// lines. Final for that line: no hold and no retry.
     #[error("no line {line} in Session {session}")]
@@ -86,6 +95,8 @@ impl RouteError {
         match self {
             Self::NoSession(_) => "no_session",
             Self::SessionClosing(_) => "session_closing",
+            Self::SessionReloading(_) => "session_reloading",
+            Self::SessionUnavailable { .. } => "session_unavailable",
             Self::NoLine { .. } => "no_line",
             Self::NotDataFace { .. } => "not_data_face",
             Self::WrongScope { .. } => "wrong_scope",
@@ -239,46 +250,6 @@ impl SessionScope {
             &call.args,
         )
         .await
-    }
-}
-
-/// The address of one of a Session's own lines: ids only, looked up at the
-/// call ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D4).
-pub struct LineHandle {
-    scope: Arc<SessionScope>,
-    line_id: String,
-}
-
-impl LineHandle {
-    /// The line-scope data face `T`, resolved now; the caller uses it for this
-    /// call and does not keep it.
-    pub fn get<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
-        let line = self.scope.line_context(&self.line_id)?;
-        face(
-            line.catalog(),
-            line.faces(),
-            &names::name_of::<T>(),
-            BRANCH_GROUP,
-        )?;
-        line.public::<T>().map_err(owner)
-    }
-}
-
-/// The Session-scope data face `T` of the caller's own Session, resolved now;
-/// the caller uses it for this call and does not keep it.
-pub fn session_face<T: ?Sized + PublicService>(scope: &SessionScope) -> Routed<Arc<T>> {
-    let session = scope.live()?;
-    let (catalog, faces) = session.reach();
-    face(catalog, faces, &names::name_of::<T>(), SESSION_GROUP)?;
-    session.session_face::<T>().map_err(owner)
-}
-
-/// Addresses line `line_id` of the caller's own Session: nothing is looked up
-/// until a method of [`LineHandle`] is called.
-pub fn line(scope: &Arc<SessionScope>, line_id: &str) -> LineHandle {
-    LineHandle {
-        scope: scope.clone(),
-        line_id: line_id.to_owned(),
     }
 }
 

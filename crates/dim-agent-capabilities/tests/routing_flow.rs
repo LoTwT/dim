@@ -2,7 +2,7 @@
 //! id, and answer `SessionClosing`, `NoLine` or a reach refusal otherwise
 //! ([#2127](https://github.com/arcships/dim/issues/2127)).
 
-use dim_agent_capabilities::{defaults, timeline_tree::BranchLine};
+use dim_agent_capabilities::defaults;
 use dim_agent_runtime::testing::{MinimalHost, hold_close};
 use dim_agent_runtime::*;
 use dim_agent_types::BranchSource;
@@ -176,22 +176,6 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         .unwrap();
     assert_eq!(config, serde_json::to_value(session.config()).unwrap());
 
-    assert!(line(&scope, "main").get::<BranchLine>().is_ok());
-    assert_eq!(
-        line(&scope, "main").get::<dyn LoopState>().err(),
-        Some(RouteError::NotDataFace {
-            service: "loopState".into()
-        }),
-        "the line's typed read resolves data faces only"
-    );
-    assert!(session_face::<SessionConfig>(&scope).is_ok());
-    assert_eq!(
-        session_face::<dim_agent_capabilities::methods::SessionMethods>(&scope).err(),
-        Some(RouteError::NotDataFace {
-            service: "sessionMethods".into()
-        }),
-        "the Session's typed read refuses a registration point too"
-    );
     rig.host.close().await.unwrap();
 }
 
