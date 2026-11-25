@@ -10,7 +10,7 @@ import QueuedInputs from "./QueuedInputs.vue"
 import QuestionPrompt from "./QuestionPrompt.vue"
 import { WebChatTimeline } from "../../chat-ui/timeline"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
-import { ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
+import { ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type ToolMode, type WithdrawResult } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
 import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
@@ -34,6 +34,7 @@ const forkConfirm = ref<InstanceType<typeof ConfirmDialog>>()
 watch(() => props.sessionId, (id) => chat.open(id), { immediate: true })
 
 const view = computed(() => chat.views[props.sessionId])
+watch(() => view.value?.status, (status) => { if (status === "ready") void chat.loadToolMode(props.sessionId) }, { immediate: true })
 const summary = computed(() => sessions.byId.get(props.sessionId))
 const title = computed(() => summary.value?.title ?? summary.value?.preview ?? t("sidebar.untitled"))
 const parentId = computed(() => summary.value?.parentSessionId)
@@ -54,6 +55,15 @@ watch(() => [view.value?.status, view.value?.methods.includes("session.skills")]
   const found = await chat.sessionSkills(props.sessionId).catch((): Array<{ name: string; description: string; userInvocable: boolean }> => [])
   skills.value = found.filter((skill) => skill.userInvocable).map(({ name, description }) => ({ name, description }))
 }, { immediate: true })
+const toolModeControl = computed(() => {
+  const session = view.value
+  if (session?.status !== "ready" || !connection.supports("session.tool_mode") || !connection.supports("session.tool_mode.update")) return undefined
+  return { state: session.toolMode, select: selectToolMode }
+})
+async function selectToolMode(mode: ToolMode): Promise<void> {
+  localStorage.setItem("dim.toolMode", mode)
+  await chat.setToolMode(props.sessionId, mode)
+}
 const permissionControl = computed(() => {
   const session = view.value
   if (session?.status !== "ready" || !connection.supports("session.permission.get") || !connection.supports("session.permission.update")) return undefined
@@ -416,6 +426,7 @@ async function fork(): Promise<void> {
         :stores-pastes="storesPastes"
         :search-files="searchFiles"
         :permission="permissionControl"
+        :tool-mode="toolModeControl"
         :stop="stop"
         :held="view.queued"
         :withdraw-held="view.methods.includes('session.input.withdraw') ? withdrawHeld : undefined"
