@@ -39,6 +39,14 @@ process. Both carry `{service, method, args}` — the target's own operation —
 ([#2127](https://github.com/arcships/dim/issues/2127), ADR 027).
 
 ```ts
+import type { Sessions } from 'dimcode/plugin';
+import type { SessionScope } from 'dimcode/branch-services.js';
+
+declare const sessionScope: SessionScope;
+declare const sessions: Sessions;
+declare const sessionId: string;
+declare const id: string;
+
 // a Session part
 await sessionScope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: [{ input_id: id }] })
 // a process part

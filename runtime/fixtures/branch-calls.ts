@@ -1,7 +1,8 @@
 // A plugin of any language calls a Session's or a line's data face by id with
 // the two data operations (#2127). The request's `service`, `method` and
 // `args` are the target's own, so a typo fails to compile.
-import type { Sessions, SessionScope } from '../../npm/branch-services.js'
+import type { Sessions } from '../../npm/plugin.js'
+import type { SessionScope } from '../../npm/branch-services.js'
 
 export async function readByCalls(
   scope: SessionScope,

@@ -55,7 +55,8 @@ test('packed plugin service types compile the author guide and enforce the publi
   });
   const routed = path.join(directory, 'branch-calls.mts');
   writeFileSync(routed, readFileSync(path.join(root, 'runtime/fixtures/branch-calls.ts'), 'utf8')
-    .replaceAll("'../../npm/branch-services.js'", "'dimcode/branch-services.js'"));
+    .replaceAll("'../../npm/branch-services.js'", "'dimcode/branch-services.js'")
+    .replaceAll("'../../npm/plugin.js'", "'dimcode/plugin'"));
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
 import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
@@ -136,7 +137,7 @@ const preset: 'read-only' | 'workspace-write' | 'full-access' = defaults.preset;
 const allowed: string[] = livePolicy.allowedTools;
 const disallowed: string[] = defaults.disallowedTools;
 declare const permissionError: SessionsErrorThrown;
-const permissionCode: 'rejected' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed' = permissionError.code;
+const permissionCode: 'rejected' | 'routed' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed' = permissionError.code;
 void permissionVersion; void preset; void allowed; void disallowed; void permissionCode;
 // @ts-expect-error permission reads require a branch identity.
 void permissions.permission({ sessionId: 'session' });
