@@ -102,19 +102,8 @@ impl ToolBinding {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (visible, delegated) = project(mode, tools);
-        let mut bound = HashMap::new();
-        for tool in visible.iter().chain(delegated.iter()) {
-            let handler = sets
-                .iter()
-                .flat_map(|set| set.tools.iter())
-                .find(|candidate| candidate.definition.name == tool.name)
-                .cloned()
-                .or_else(|| self.registry.fixed(&tool.name))
-                .ok_or_else(|| format!("tool {} has no handler", tool.name))?;
-            bound.insert(tool.name.clone(), handler);
-        }
+        self.bind_snapshot(request_id, &visible, &delegated, sets)?;
         let mut state = self.state.lock().unwrap();
-        register(&mut state, request_id, bound, sets, &visible, &delegated)?;
         if let Some(newest) = state
             .pins
             .iter()
@@ -138,7 +127,9 @@ impl ToolBinding {
     ) -> Result<Vec<ToolDefinition>, String> {
         let (definitions, sets) = self.registry.snapshot();
         let tools = declared.unwrap_or(&definitions);
-        self.bind_snapshot(request_id, tools, sets, mode)
+        let (visible, delegated) = project(mode, tools);
+        self.bind_snapshot(request_id, &visible, &delegated, sets)?;
+        Ok(visible)
     }
 
     pub(crate) fn prepare(
@@ -148,9 +139,10 @@ impl ToolBinding {
         prepare: impl FnOnce(&[ToolDefinition]) -> dim_agent_runtime::Result<ModelSettings>,
     ) -> dim_agent_runtime::Result<ModelSettings> {
         let (definitions, sets) = self.registry.snapshot();
-        let visible = project(mode, &definitions).0;
-        let settings = prepare(&visible)?;
-        self.bind_snapshot(request_id, &definitions, sets, mode)
+        let (available, delegated) = project(mode, &definitions);
+        let settings = prepare(&available)?;
+        let visible = settings.tools.as_deref().unwrap_or_default();
+        self.bind_snapshot(request_id, visible, &delegated, sets)
             .map_err(AgentError::InvalidInput)?;
         Ok(settings)
     }
@@ -158,11 +150,10 @@ impl ToolBinding {
     fn bind_snapshot(
         &self,
         request_id: &str,
-        tools: &[ToolDefinition],
+        visible: &[ToolDefinition],
+        delegated: &[ToolDefinition],
         sets: Vec<Arc<ToolSourceSet>>,
-        mode: ToolMode,
-    ) -> Result<Vec<ToolDefinition>, String> {
-        let (visible, delegated) = project(mode, tools);
+    ) -> Result<(), String> {
         let mut bound = HashMap::new();
         for tool in visible.iter().chain(delegated.iter()) {
             let handler = self
@@ -179,8 +170,7 @@ impl ToolBinding {
             bound.insert(tool.name.clone(), handler);
         }
         let mut state = self.state.lock().unwrap();
-        register(&mut state, request_id, bound, sets, &visible, &delegated)?;
-        Ok(visible)
+        register(&mut state, request_id, bound, sets, visible, delegated)
     }
 
     /// The tool a call of `request_id` runs: its definition (for admission)

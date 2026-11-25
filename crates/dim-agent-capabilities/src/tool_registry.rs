@@ -483,6 +483,14 @@ impl ToolRegistry {
         let declared = self.snapshot().0;
         self.effective_of(&declared)
     }
+    /// The effective mode from the current sets, without reading providers:
+    /// for callers on the input or prompt path that must not wait on a
+    /// source read.
+    pub fn effective_tool_mode_now(&self) -> ToolMode {
+        let sources = self.sources.lock().unwrap();
+        let declared = self.declared(&sources);
+        self.effective_of(&declared)
+    }
     fn effective_of(&self, declared: &[ToolDefinition]) -> ToolMode {
         let mode = self.tool_mode();
         match mode.entry_tool() {

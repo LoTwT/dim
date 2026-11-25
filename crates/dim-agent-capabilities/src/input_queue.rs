@@ -284,7 +284,7 @@ impl InputQueue {
         }
         let mut state = self.state.lock().unwrap();
         let decisions = state.step(&event);
-        let mode = self.tools.effective_tool_mode();
+        let mode = self.tools.effective_tool_mode_now();
         let decisions = decisions
             .into_iter()
             .map(|decision| match decision {

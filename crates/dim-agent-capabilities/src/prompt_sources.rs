@@ -529,7 +529,7 @@ impl LoadPrompt for Sources {
                         &self.platform.exec_shell().await,
                         &self.config.cwd,
                         &self.policy,
-                        self.tools.effective_tool_mode() == dim_agent_types::ToolMode::Shell,
+                        self.tools.effective_tool_mode_now() == dim_agent_types::ToolMode::Shell,
                     )),
                     PromptDelivery::State,
                     200,
