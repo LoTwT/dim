@@ -302,9 +302,11 @@ export interface Sessions {
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
   /** Calls a data face of a live Session, or of one of its lines, by id
-   * (#2127). A Session with no live instance answers `no_session`, one that is
-   * closing `session_closing`, and a line that is closing, closed or not its
-   * own `no_line`. */
+   * (#2127). Agents loads and holds the Session for the call. A target that
+   * cannot be selected answers `no_session`, `session_closing`,
+   * `session_reloading` (retry later), `session_unavailable` (report the
+   * reason) or `no_line`; the target owner's own failure is `routed` with its
+   * name and message. */
   call(request: import('./branch-services.js').SessionsCall): Promise<SessionsResult<unknown>>;
 }
 

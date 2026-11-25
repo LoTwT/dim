@@ -309,9 +309,14 @@ pub enum SessionsError {
     SessionUnavailable { message: String },
     #[error("{message}")]
     NoLine { message: String },
-    /// The target owner's own failure, with the name and message it wrote.
+    /// The target owner's own failure, with the name and message it wrote and
+    /// whether the owner says it may be retried.
     #[error("{message}")]
-    Routed { name: String, message: String },
+    Routed {
+        name: String,
+        message: String,
+        retryable: bool,
+    },
     #[error("{message}")]
     AgentUnknown { message: String },
     #[error("{message}")]
@@ -349,7 +354,10 @@ impl SessionsError {
             Self::Reloading { .. }
                 | Self::PublicationUnknown { .. }
                 | Self::SessionReloading { .. }
-                | Self::Routed { .. }
+                | Self::Routed {
+                    retryable: true,
+                    ..
+                }
         )
     }
 }
@@ -886,7 +894,13 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
         RouteError::SessionReloading(_) => SessionsError::SessionReloading { message },
         RouteError::SessionUnavailable { .. } => SessionsError::SessionUnavailable { message },
         RouteError::NoLine { .. } => SessionsError::NoLine { message },
-        RouteError::Owner { name, .. } => SessionsError::Routed { name, message },
+        RouteError::Owner {
+            name, reloading, ..
+        } => SessionsError::Routed {
+            name,
+            message,
+            retryable: reloading,
+        },
         RouteError::NotDataFace { .. } | RouteError::WrongScope { .. } => {
             SessionsError::Rejected { message }
         }

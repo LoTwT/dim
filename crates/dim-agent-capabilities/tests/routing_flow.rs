@@ -403,7 +403,7 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         .line_call(LineCall::new("main", "timeline", "absent", vec![]))
         .await
         .unwrap_err();
-    let RouteError::Owner { name, message } = error else {
+    let RouteError::Owner { name, message, .. } = error else {
         panic!("the owner's failure: {error:?}");
     };
     assert_eq!(name, "no-method", "the owner's own failure keeps its name");

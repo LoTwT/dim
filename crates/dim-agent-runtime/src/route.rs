@@ -51,10 +51,9 @@ pub type Routed<T> = std::result::Result<T, RouteError>;
 /// Why a routed call did not reach a reply.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RouteError {
-    /// The Session has no live instance: it was idle-unloaded, closed, or
-    /// never created. Only a process caller receives it; a caller that must
-    /// continue asks Agents for a hold and calls again once that loads the
-    /// Session.
+    /// The Session is not there, has no owner, or is closed and cannot load
+    /// again. Only a process caller receives it; Agents loads and holds a
+    /// Session that is merely not loaded (ADR 027 D5), so this is final.
     #[error("no live Session {0}")]
     NoSession(String),
     /// The Session instance is closing, and so is a call to one of its lines.
@@ -84,9 +83,15 @@ pub enum RouteError {
     #[error("{service} is not a {group} service")]
     WrongScope { service: String, group: String },
     /// The owner's own failure, with the name and message it wrote; routing
-    /// does not read or restate it.
+    /// does not read or restate it. `reloading` is the owner's own code for
+    /// "try again later", so a caller retries exactly what the owner says it
+    /// may retry.
     #[error("{message}")]
-    Owner { name: String, message: String },
+    Owner {
+        name: String,
+        message: String,
+        reloading: bool,
+    },
 }
 
 impl RouteError {
@@ -207,16 +212,18 @@ impl SessionScope {
     /// `NoLine`: closing the Session closes its lines.
     fn line_context(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
         let session = self.live()?;
-        session
-            .line(line_id)
-            .ok_or_else(|| RouteError::NoLine {
-                session: self.session_id.clone(),
-                line: line_id.to_owned(),
-            })
-            .and_then(|line| match self.live() {
-                Err(closing @ RouteError::SessionClosing(_)) => Err(closing),
-                _ => Ok(line),
-            })
+        let line = session.line(line_id);
+        // A Session that started closing while the line was being selected
+        // answers `SessionClosing`: its lines close with it.
+        self.live()?;
+        line.ok_or_else(|| RouteError::NoLine {
+            session: self.session_id.clone(),
+            line: line_id.to_owned(),
+        })
+        .and_then(|line| match self.live() {
+            Err(closing @ RouteError::SessionClosing(_)) => Err(closing),
+            _ => Ok(line),
+        })
     }
 }
 
@@ -294,6 +301,7 @@ pub(crate) async fn call_face(
         .ok_or_else(|| RouteError::Owner {
             name: service.into(),
             message: format!("{service} is not provided now"),
+            reloading: false,
         })?;
     let args = BridgeValue::List(
         args.iter()
@@ -311,7 +319,22 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
     RouteError::Owner {
         name: failure.name,
         message: failure.message,
+        reloading: failure.reloading,
     }
+}
+
+/// Whether an owner's error graph names a reload: the marked service reports
+/// an `AgentError::Reloading` with that code, and only that is worth retrying.
+fn reloading_code(graph: &Option<serde_json::Value>) -> bool {
+    graph
+        .as_ref()
+        .and_then(|graph| graph.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get("code"))
+        .filter_map(serde_json::Value::as_str)
+        .any(|code| code.to_ascii_lowercase().contains("reload"))
 }
 
 /// A failure's name and message, from either error surface a read answers
@@ -319,12 +342,14 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
 pub(crate) struct Failure {
     name: String,
     message: String,
+    reloading: bool,
 }
 
 impl From<AgentError> for Failure {
     fn from(error: AgentError) -> Self {
         Self {
             name: "AgentError".into(),
+            reloading: matches!(error, AgentError::Reloading(_)),
             message: error.to_string(),
         }
     }
@@ -333,14 +358,24 @@ impl From<AgentError> for Failure {
 impl From<BridgeError> for Failure {
     fn from(error: BridgeError) -> Self {
         match error {
-            BridgeError::Remote { name, message, .. } => Self { name, message },
+            BridgeError::Remote {
+                name,
+                message,
+                graph,
+            } => Self {
+                reloading: reloading_code(&graph),
+                name,
+                message,
+            },
             BridgeError::Binding { code, message, .. } => Self {
+                reloading: code == Some("reloading"),
                 name: code.unwrap_or("BindingError").into(),
                 message,
             },
             other => Self {
                 name: "BridgeError".into(),
                 message: other.to_string(),
+                reloading: false,
             },
         }
     }

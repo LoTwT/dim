@@ -41,6 +41,14 @@ fn calls(root: &Path, services: &str) -> Result<String> {
             _ => {}
         }
     }
+    if std::env::var_os("DIM_TYPES_DEBUG").is_some() {
+        for (name, group) in registered(root)? {
+            let found = declared.iter().any(|ty| catalog_name(ty) == name);
+            if !found {
+                eprintln!("no declaration for {name} ({group})");
+            }
+        }
+    }
     session.sort();
     session.dedup();
     line.sort();
@@ -52,7 +60,7 @@ fn calls(root: &Path, services: &str) -> Result<String> {
         }
         text + "}\n"
     };
-    let mut text = String::from("\n/** The data faces a line reaches. */\n");
+    let mut text = String::from("/** The data faces a line reaches. */\n");
     text += &faces(&line, "LineFaces");
     text += "\n/** The data faces a Session reaches. */\n";
     text += &faces(&session, "SessionFaces");
@@ -134,6 +142,19 @@ fn expressions(block: &syn::Block, found: &mut Vec<(String, String)>) {
 /// One `register`/`register_shared_instance` call, with the group its
 /// arguments name.
 fn call(expression: &syn::Expr, found: &mut Vec<(String, String)>) {
+    if let syn::Expr::MethodCall(method) = expression {
+        if method.method == "register_shared_instance" {
+            let mut args = method.args.iter();
+            let Some(name) = args.next().and_then(name_of) else {
+                return;
+            };
+            let Some(group) = args.next().and_then(group_of) else {
+                return;
+            };
+            found.push((name, group.to_owned()));
+        }
+        return;
+    }
     let syn::Expr::Call(call) = expression else {
         return;
     };
@@ -188,6 +209,11 @@ fn group_of(expression: &syn::Expr) -> Option<&'static str> {
 /// The Rust type a registration is for: `register::<T>`'s argument, or a
 /// string name.
 fn type_argument(arguments: &syn::PathArguments) -> Option<String> {
+    Some(catalog_name(&rust_type_argument(arguments)?))
+}
+
+/// The Rust type a turbofish names, as written.
+fn rust_type_argument(arguments: &syn::PathArguments) -> Option<String> {
     let syn::PathArguments::AngleBracketed(arguments) = arguments else {
         return None;
     };
@@ -220,8 +246,12 @@ fn name_of(expression: &syn::Expr) -> Option<String> {
                 return None;
             };
             let last = path.path.segments.last()?;
-            (last.ident == "name_of").then(|| type_argument(&last.arguments))?
+            if last.ident != "name_of" {
+                return None;
+            }
+            type_argument(&last.arguments)
         }
+        syn::Expr::Path(_) => None,
         syn::Expr::Reference(reference) => name_of(&reference.expr),
         syn::Expr::Macro(mac) => {
             let tokens = mac.mac.tokens.to_string();
@@ -281,8 +311,9 @@ fn unroutable(root: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// The names an assembly marks internal, read from the marks themselves: a
-/// route refuses them, so the generated requests do not offer them.
+/// The names an assembly marks internal, read from the calls that mark them and
+/// from the product's table of `(name, reason)` pairs: a route refuses them, so
+/// the generated requests do not offer them.
 fn internal(root: &Path) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(root.join("crates"))? {
@@ -295,6 +326,7 @@ fn internal(root: &Path) -> Result<Vec<String>> {
         for file in files {
             let ast = syn::parse_file(&std::fs::read_to_string(&file)?)?;
             marks(&ast.items, &mut names);
+            internal_table(&ast.items, &mut names);
         }
     }
     Ok(names)
@@ -317,6 +349,44 @@ fn marks(items: &[syn::Item], names: &mut Vec<String>) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// The product's table of internal names: `for (name, reason) in [("a", "r"), …]`
+/// feeding `internal_name(name, reason)`.
+fn internal_table(items: &[syn::Item], names: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    internal_table(items, names);
+                }
+            }
+            syn::Item::Fn(function) => tables_in(&function.block, names),
+            _ => {}
+        }
+    }
+}
+
+fn tables_in(block: &syn::Block, names: &mut Vec<String>) {
+    for statement in &block.stmts {
+        let syn::Stmt::Expr(expression, _) = statement else {
+            continue;
+        };
+        let syn::Expr::ForLoop(loop_) = expression else {
+            continue;
+        };
+        let syn::Expr::Array(array) = &*loop_.expr else {
+            continue;
+        };
+        for element in &array.elems {
+            let syn::Expr::Tuple(tuple) = element else {
+                continue;
+            };
+            if let Some(name) = tuple.elems.first().and_then(name_of) {
+                names.push(name);
+            }
         }
     }
 }
@@ -434,7 +504,11 @@ fn declarations(root: &Path) -> Result<String> {
         )
         .declarations(root.join("crates/dim-app-server"))?;
     let calls = calls(root, &services)?;
-    Ok(replaced(services) + &calls)
+    let mut text = replaced(services);
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    Ok(text + "\n" + &calls)
 }
 
 /// Drops the generated `LineCall`/`SessionCall` declarations, which the

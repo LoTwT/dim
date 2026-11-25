@@ -1466,7 +1466,7 @@ export type SessionsError =
   | { code: "session_reloading"; message: string }
   | { code: "session_unavailable"; message: string }
   | { code: "no_line"; message: string }
-  | /** The target owner's own failure, with the name and message it wrote. */ { code: "routed"; name: string; message: string }
+  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; message: string; retryable: boolean }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }
@@ -1867,6 +1867,7 @@ export interface Services {
 export type LineFaces = {
   approval: Approval
   backgroundExec: BackgroundExec
+  branchLine: BranchLine
   dispatcher: Dispatcher
   inputQueue: InputQueue
   permission: Permission
@@ -1877,11 +1878,16 @@ export type LineFaces = {
 
 /** The data faces a Session reaches. */
 export type SessionFaces = {
+  agentConfig: AgentConfig
+  collaborationConfig: CollaborationConfig
+  initialPromptConfiguration: InitialPromptConfiguration
   mcpSession: McpSession
   sessionConfig: SessionConfig
   sessionIdentity: SessionIdentity
+  sessionLanguage: SessionLanguage
   sessionLoader: SessionLoader
   sessionScope: SessionScope
+  skillsConfig: SkillsConfig
   toolHost: ToolHost
   treeCommands: TreeCommands
   uiResources: UiResources

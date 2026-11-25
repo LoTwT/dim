@@ -35,7 +35,8 @@ A part of a line calls its own line's services directly. A part outside that lin
 the id instead, and the owner of the index looks it up at the call: `sessionScope.lineCall`
 for a line of its own Session, `sessions.call` for a Session or a line of it, from the
 process. Both carry `{service, method, args}` — the target's own operation — and answer
-`no_session`, `session_closing` or `no_line` when the target is not live
+`no_session`, `session_closing`, `session_reloading`, `session_unavailable` or `no_line` when
+the target cannot be selected; the target owner's own failure arrives unchanged
 ([#2127](https://github.com/arcships/dim/issues/2127), ADR 027).
 
 ```ts
