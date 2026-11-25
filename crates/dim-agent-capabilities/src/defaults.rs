@@ -246,6 +246,7 @@ pub fn install_minimal_execution(
                 )?))
             }),
     );
+    tool_host(builder, Arc::new(NoTools));
     crate::shell_tools::install(builder);
     crate::prompt_sources::install(builder);
     crate::skills::install(builder);
@@ -294,6 +295,14 @@ pub fn install_local_execution_with(
         crate::prompt_sources::DATE_CHECK,
         prompt_sources,
     );
+    builder.require_feature(
+        Feature::new("ShellSession").branch("ShellSession", |names| {
+            Ok(Box::new(crate::shell_session::ShellSessionPlugin::session(
+                names,
+            )?))
+        }),
+    );
+    crate::shell_tools::install(builder);
     crate::skills::install(builder);
 }
 
@@ -324,6 +333,29 @@ pub fn install_compaction(
 }
 
 /// Installs `driver` as the Session `ToolHost`.
+/// A `ToolHost` with no host tools: the minimal profile's only tool is
+/// `execute`, registered by [`crate::shell_tools`].
+pub struct NoTools;
+
+impl ToolDriver for NoTools {
+    fn definitions(&self) -> Vec<dim_agent_types::ToolDefinition> {
+        Vec::new()
+    }
+
+    fn execute(
+        &self,
+        _: dim_agent_types::ToolCall,
+        _: crate::host::ToolExecutionContext,
+        _: tokio_util::sync::CancellationToken,
+    ) -> crate::host::HostFuture<'_, dim_agent_types::ToolResult> {
+        Box::pin(async {
+            Err(crate::host::HostError::failed(
+                "this profile has no host tools",
+            ))
+        })
+    }
+}
+
 pub fn tool_host(builder: &mut AgentBuilder, driver: Arc<dyn ToolDriver>) {
     crate::register_names(builder);
     builder.session_value(Arc::new(ToolHost(driver)));
