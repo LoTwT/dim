@@ -1276,6 +1276,64 @@ async fn a_closed_session_releases_its_project_root() {
     server.join().await.unwrap();
 }
 
+/// A Session only the runtime closes, as the fault supervisor does, ends the
+/// ownership its load registered and releases the project's root, without an
+/// App Server close, delete or unload settling it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_runtime_close_releases_the_project_root_a_load_registers() {
+    let store = Store::new();
+    let project = store.0.canonicalize().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let id = {
+        let Served {
+            server, mut client, ..
+        } = serve_with_project(&store, Duration::from_secs(30)).await;
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd": project.clone(), "tools": ["confirm"], "permissionPolicy": host_policy()}),
+            )
+            .await;
+        assert_ok(&created);
+        let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        server.shutdown();
+        server.join().await.unwrap();
+        id
+    };
+    let Served {
+        server,
+        agent,
+        mut client,
+        ..
+    } = serve_with_project(&store, Duration::from_secs(30)).await;
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    // A stored Session loads through the Agents index on its next use, and that
+    // load is what registers the ownership this test never holds itself.
+    assert_ok(&client.rpc("session.attach", json!({"sessionId": id})).await);
+    let session = agent.get_session(&id).expect("the use loaded the Session");
+    let root = settings
+        .project_root(&project)
+        .expect("the load authorized the project");
+    assert!(
+        testing::root_held(&files, root),
+        "the loaded Session holds the project's directory"
+    );
+    let released = testing::root_releases(&files, root);
+    session.close().await.unwrap();
+    eventually("the runtime close released the project root", || {
+        testing::root_releases(&files, root) > released
+    })
+    .await;
+    assert_eq!(
+        settings.project_root(&project),
+        Some(root),
+        "the runtime close kept the authorization"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A delete ends a loaded Session without going through `session.close`, so it
 /// releases the project's descriptor itself once no Session uses it, and keeps
 /// the authorization.
