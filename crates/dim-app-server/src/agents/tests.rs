@@ -527,6 +527,36 @@ fn settlements_end_only_the_ownership_they_name() {
     );
 }
 
+/// A guard settles only the ownership of the load that registered it. The
+/// runtime's fault supervisor closes a Session without the slot's close flag,
+/// so the same ID can load again before the guard the first load handed to its
+/// close is dropped; that guard must leave the later load's ownership.
+#[test]
+fn a_guard_dropped_after_a_later_load_keeps_that_loads_ownership() {
+    let directory = Arc::new(AgentDirectory {
+        inner: Mutex::new(Inner::default()),
+        settings: Mutex::new(std::sync::Weak::new()),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        default_agent_id: std::sync::OnceLock::new(),
+        server_instance_id: "test".to_owned(),
+    });
+    let first = directory.own("session", "agent-a", "/project");
+    let _second = directory.own("session", "agent-a", "/project");
+    drop(first);
+    let (owned, in_use) = {
+        let inner = directory.inner.lock().unwrap();
+        (inner.owners.contains_key("session"), inner.owns("/project"))
+    };
+    assert!(
+        owned,
+        "the later load's ownership outlives the guard of the load before it"
+    );
+    assert!(
+        in_use,
+        "the later load's ownership keeps the project's root held"
+    );
+}
+
 /// Refuses the announcement of every restored Session, as a listener that
 /// cannot accept the load would.
 struct RefusesSessionRestored;

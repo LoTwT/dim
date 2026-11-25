@@ -438,14 +438,16 @@ the loaded Sessions alone would read as the last use, and
 `a_refused_restore_settles_the_ownership_of_its_cancelled_caller` ends the
 ownership a restore registered when its caller stopped waiting. The unit tests
 `settlements_end_only_the_ownership_they_name`,
+`a_guard_dropped_after_a_later_load_keeps_that_loads_ownership`,
 `a_runtime_close_ends_the_project_ownership_it_did_not_start` and
 `a_delayed_close_watcher_keeps_the_ownership_of_the_load_after_it`
 ([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) check that a
 settlement answers its project only when it removed the last owner, that an
-Agent close ends every ownership it registered, that a guard a Session hands to
-its close settles an ownership this process did not close, and that a first
-load's watcher delayed past the idle pass and a second load of the same Session
-ID leaves the ownership the second load registered.
+Agent close ends every ownership it registered, that a guard dropped after a
+later load of the same Session leaves that load's ownership, that a guard a
+Session hands to its close settles an ownership this process did not close, and
+that a first load's watcher delayed past the idle pass and a second load of the
+same Session ID leaves the ownership the second load registered.
 
 <!-- generated:plugin FileStorage — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
