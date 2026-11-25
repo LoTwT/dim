@@ -249,6 +249,67 @@ struct Offered {
     set: Arc<ToolSourceSet>,
 }
 
+/// Why a tool-mode transition settles: the operator changed the mode, or a
+/// registration made the chosen mode effective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeChangeCause {
+    Update,
+    Registration,
+}
+
+type ModeSettleHandler =
+    Arc<dyn Fn(ToolMode, ModeChangeCause) -> HostFuture<'static, ()> + Send + Sync>;
+
+/// The Session's internal mode-transition service: Goal registers a handler
+/// that settles a transition before the mode changes or is published.
+pub struct ModeTransition {
+    handlers: Mutex<Vec<(u64, ModeSettleHandler)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Default for ModeTransition {
+    fn default() -> Self {
+        Self {
+            handlers: Mutex::new(Vec::new()),
+            next: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
+impl ModeTransition {
+    /// Registers a handler until its returned id is removed.
+    pub fn register(&self, handler: ModeSettleHandler) -> u64 {
+        let id = self
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.handlers.lock().unwrap().push((id, handler));
+        id
+    }
+    pub fn remove(&self, id: u64) {
+        self.handlers.lock().unwrap().retain(|(held, _)| *held != id);
+    }
+    /// Runs every registered handler in registration order.
+    pub async fn settle(
+        &self,
+        mode: ToolMode,
+        cause: ModeChangeCause,
+    ) -> Result<(), HostError> {
+        let handlers: Vec<_> = self
+            .handlers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, handler)| handler.clone())
+            .collect();
+        for handler in handlers {
+            if let Err(error) = handler(mode, cause).await {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct ToolRegistry {
     /// Every host tool, in the host's order; a part cannot register one of
     /// these names.
@@ -268,6 +329,7 @@ pub struct ToolRegistry {
     /// The operator's chosen mode; the effective one may fall back to
     /// `normal` when its entry tool is not mounted.
     mode: Mutex<ToolMode>,
+    transition: Arc<ModeTransition>,
     session_id: String,
     config: Arc<SessionConfig>,
     /// Serializes refreshes from read to commit, so an earlier read never
@@ -404,6 +466,14 @@ impl ToolRegistry {
             .values()
             .cloned()
             .collect()
+    }
+    /// The mode in force if `mode` were chosen now.
+    pub fn effective_of_mode(&self, mode: ToolMode) -> ToolMode {
+        let declared = self.snapshot().0;
+        match mode.entry_tool() {
+            Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
+            _ => ToolMode::Normal,
+        }
     }
     /// The operator's chosen mode.
     pub fn tool_mode(&self) -> ToolMode {
@@ -940,6 +1010,7 @@ pub fn definition(name: &str, description: &str, schema: serde_json::Value) -> T
 pub struct ToolRegistryPlugin {
     session: InstanceId,
     registry: Key<ToolRegistry>,
+    transition: Key<ModeTransition>,
     view: Key<ToolSourcesView>,
     host: Key<ToolHost>,
     config: Key<SessionConfig>,
@@ -951,6 +1022,7 @@ impl ToolRegistryPlugin {
         Ok(Self {
             session: names.instance(dim_agent_runtime::SESSION_GROUP)?,
             registry: names.key()?,
+            transition: names.key()?,
             view: names.key()?,
             host: names.key()?,
             config: names.key()?,
@@ -1006,6 +1078,7 @@ impl DynPlugin for ToolRegistryPlugin {
                 offered: Mutex::default(),
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
+                transition: Arc::new(ModeTransition::default()),
                 session_id: identity.session_id.clone(),
                 config: config.clone(),
                 refreshing: Mutex::default(),
@@ -1064,7 +1137,8 @@ impl DynPlugin for ToolRegistryPlugin {
                 ),
                 Arc::new(ForeignRegistry(registry.clone())),
             )?;
-            ctx.provide_at(self.registry.clone(), registry)?;
+            ctx.provide_at(self.registry.clone(), registry.clone())?;
+            ctx.provide_at(self.transition.clone(), registry.transition.clone())?;
             Ok(Effect::Done)
         })
     }
@@ -1105,6 +1179,7 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(ToolMode::Normal),
+            transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),
@@ -1135,6 +1210,7 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(mode),
+            transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),

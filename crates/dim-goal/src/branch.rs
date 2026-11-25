@@ -5,7 +5,7 @@
 
 use crate::fold::{self, Conclusion, ConclusionAction, Decision, Fold, TurnEnd};
 use crate::text::{self, GoalTexts, Live};
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::{timeline_tree::TreeCommands, tool_registry::ToolRegistry};
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick,
@@ -52,6 +52,7 @@ pub(crate) enum Change {
         objective: String,
     },
     Pause,
+    PauseMode,
     Resume,
     Clear,
     Report {
@@ -68,6 +69,7 @@ impl Change {
             Self::Set { objective, judge } => text::set(branch, objective, *judge),
             Self::Edit { objective } => text::edit(branch, objective),
             Self::Pause => text::pause(branch),
+            Self::PauseMode => text::pause_mode(branch),
             Self::Resume => text::resume(branch),
             Self::Clear => text::clear(branch),
             Self::Report { completed, summary } => text::report(
@@ -180,6 +182,7 @@ pub struct GoalBranch {
     session: Key<SessionLifecycle>,
     texts: Arc<GoalTexts>,
     changes: Changes,
+    tools: Key<ToolRegistry>,
 }
 
 impl GoalBranch {
@@ -194,6 +197,7 @@ impl GoalBranch {
             session: names.key()?,
             texts,
             changes,
+            tools: names.key()?,
         })
     }
 }
@@ -211,6 +215,7 @@ impl DynPlugin for GoalBranch {
             self.identity.erase(),
             self.phase.erase(),
             self.session.erase(),
+            self.tools.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -222,6 +227,7 @@ impl DynPlugin for GoalBranch {
             let identity = ctx.require_at(&self.identity)?;
             let phase = ctx.require_at(&self.phase)?;
             let session = ctx.require_at(&self.session)?;
+            let tools = ctx.require_at(&self.tools)?;
             let stop = CancellationToken::new();
             let (resolved, _) = watch::channel(false);
             let (stepped, _) = watch::channel(0);
@@ -238,6 +244,7 @@ impl DynPlugin for GoalBranch {
                 texts: self.texts.clone(),
                 phase: phase.clone(),
                 session: session.clone(),
+                tools,
                 stop: stop.clone(),
                 tasks: TaskTracker::new(),
                 work: TaskTracker::new(),
@@ -482,6 +489,7 @@ struct Owner {
     texts: Arc<GoalTexts>,
     phase: Arc<BranchLifecycle>,
     session: Arc<SessionLifecycle>,
+    tools: Arc<ToolRegistry>,
     stop: CancellationToken,
     tasks: TaskTracker,
     work: TaskTracker,
@@ -679,7 +687,7 @@ impl Owner {
                 let operation = match &change {
                     Change::Set { .. } => "set",
                     Change::Edit { .. } => "edit",
-                    Change::Pause => "pause",
+                    Change::Pause | Change::PauseMode => "pause",
                     Change::Resume => "resume",
                     Change::Clear => "clear",
                     Change::Report {
@@ -2106,6 +2114,11 @@ impl Owner {
                     let Some(Decision::Continuation { count, idle }) = decision else {
                         return Ok(());
                     };
+                    if self.tools.effective_tool_mode() == dim_agent_types::ToolMode::Shell {
+                        drop(write);
+                        self.change(Change::PauseMode).await?;
+                        return Ok(());
+                    }
                     let input =
                         text::continuation(&self.branch_id, count, limit, idle, after, &self.texts);
                     if self.write_if_head(input, through).await?.is_some() {
