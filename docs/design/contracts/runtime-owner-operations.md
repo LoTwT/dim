@@ -33,12 +33,14 @@
 ### Calls from a Session to a selected branch
 
 Within a branch, inject its owner face directly. A Session caller names the line and the
-owner's face, and the runtime routes the call to that line's live instance
+owner's face, and the owner of the line's index resolves it
 ([#2127](https://github.com/arcships/dim/issues/2127),
-[ADR 027](../../adr/027-cross-scope-access-by-id.md)): the owner's arguments, reply and
-error reach the caller unchanged, and a line that is closing, closed or not this
-Session's answers `NoLine`, which is final for that line. Tree history, directory and
-batch input continue to use the tree's own methods.
+[ADR 027](../../adr/027-cross-scope-access-by-id.md)): `sessionScope.lineCall` reaches a
+line of the caller's own Session, `sessions.call` a Session and a line of it for the
+process, and both pass the owner's arguments, reply and error through. A line that is
+closing, closed or not this Session's answers `no_line`, which is final for it; a calling
+Session that is closing answers `session_closing`. Tree history, directory and batch input
+continue to use the tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |

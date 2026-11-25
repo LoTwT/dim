@@ -322,6 +322,38 @@ async fn a_closed_line_answers_no_line_and_the_sessions_other_calls_still_arrive
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_unloaded_session_answers_session_closing_until_it_loads_again() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let id = session.id().to_owned();
+    let scope = rig.scope(&session);
+
+    assert!(
+        session.unload_if_idle().await.unwrap(),
+        "an idle Session unloads"
+    );
+    assert_eq!(
+        scope
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::SessionClosing(id.clone()),
+        "a scope of a Session that is gone reports its Session as closing"
+    );
+
+    let restored = rig.host.restore_session(id.clone()).await.unwrap();
+    assert!(
+        rig.scope(&restored)
+            .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+            .await
+            .is_ok(),
+        "the Session's new generation answers"
+    );
+    restored.close().await.unwrap();
+    rig.host.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     let rig = Rig::start().await;
     let session = rig.open().await;

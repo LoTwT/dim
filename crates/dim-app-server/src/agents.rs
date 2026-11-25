@@ -1636,21 +1636,6 @@ impl AgentIndex {
         }
         created
     }
-    /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
-    /// holds S's admission gate, so nothing loads or builds S meanwhile,
-    /// closes S if it is loaded, has SessionStore remove what it stores of
-    /// S, then forgets S and drops its slot, which stays closed until
-    /// nothing else holds it. A stored S that was neither loaded nor closed
-    /// ends without a close, so the delete announces it with
-    /// [`UnloadedSessionDeleted`]. An unknown id has nothing to remove and
-    /// keeps no slot. A delete that fails before the rows go leaves a
-    /// Session it closed as `session.close` does, closed in this process with
-    /// its rows kept (D5); one it did not close loads again on its next use.
-    ///
-    /// The reply reports whether this call removed the Session: its stored
-    /// rows, or, in a daemon without a native store, a loaded Session. A
-    /// Session in use is closed and removed as before;
-    /// [`Self::delete_if_inactive`] is the delete that refuses it.
     /// Calls a data face of the live Session `id`, or of one of its lines
     /// ([#2127](https://github.com/arcships/dim/issues/2127),
     /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1): the
@@ -1669,6 +1654,8 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
+        // A Session that starts closing while the call runs answers that way
+        // too: its lines close with it.
         let scope = session
             .session_service::<dim_agent_runtime::SessionScope>()
             .map_err(|error| RouteError::Owner {
@@ -1704,6 +1691,21 @@ impl AgentIndex {
         let host = inner.owner(id)?;
         host.agent.get_session(id)
     }
+    /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
+    /// holds S's admission gate, so nothing loads or builds S meanwhile,
+    /// closes S if it is loaded, has SessionStore remove what it stores of
+    /// S, then forgets S and drops its slot, which stays closed until
+    /// nothing else holds it. A stored S that was neither loaded nor closed
+    /// ends without a close, so the delete announces it with
+    /// [`UnloadedSessionDeleted`]. An unknown id has nothing to remove and
+    /// keeps no slot. A delete that fails before the rows go leaves a
+    /// Session it closed as `session.close` does, closed in this process with
+    /// its rows kept (D5); one it did not close loads again on its next use.
+    ///
+    /// The reply reports whether this call removed the Session: its stored
+    /// rows, or, in a daemon without a native store, a loaded Session. A
+    /// Session in use is closed and removed as before;
+    /// [`Self::delete_if_inactive`] is the delete that refuses it.
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
         let _activity = self
             .activity

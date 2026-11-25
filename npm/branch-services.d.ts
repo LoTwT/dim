@@ -1476,6 +1476,7 @@ export type PermissionState = {
 /** A Session service failure; generated exports throw this serde value. */
 export type SessionsError =
   | { code: "rejected"; message: string }
+  | /** A routed call's own failure: the routing kind (`routing`), the name the owner wrote when the owner failed, and the message. */ { code: "routed"; routing: string; name: string; message: string }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }
@@ -1816,7 +1817,7 @@ export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClo
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
@@ -1870,49 +1871,4 @@ export interface Services {
   workflowFiles: WorkflowFiles
   listenAddresses: ListenAddresses
   uiResources: UiResources
-}
-
-/** A Session's own faces, addressed by id: nothing is looked up until a method of
- * one is called, and each call looks the target up again. */
-export interface SessionScopeAddress {
-  /** This Session's line `lineId`. */
-  line(lineId: string): LineAddress
-  agentConfig: AgentConfig
-  collaborationConfig: CollaborationConfig
-  initialPromptConfiguration: InitialPromptConfiguration
-  mcpSession: McpSession
-  sessionConfig: SessionConfig
-  sessionIdentity: SessionIdentity
-  sessionLanguage: SessionLanguage
-  sessionLoader: SessionLoader
-  skillsConfig: SkillsConfig
-  toolHost: ToolHost
-  treeCommands: TreeCommands
-  uiResources: UiResources
-}
-
-/** A line's data faces, addressed by id. */
-export interface LineAddress {
-  approval: Approval
-  backgroundExec: BackgroundExec
-  branchLine: BranchLine
-  dispatcher: Dispatcher
-  inputQueue: InputQueue
-  permission: Permission
-  timeline: Timeline
-  timelineIdentity: TimelineIdentity
-  wait: Wait
-}
-
-/** One Session reached through Agents' `sessions`. */
-export interface SessionAddress {
-  /** The Session's scope, whose own faces this reaches. */
-  sessionScope: SessionScopeAddress
-  /** One of the Session's lines. */
-  line(lineId: string): LineAddress
-}
-
-export interface Sessions {
-  /** The live Session `sessionId`; a call on it looks the Session up again. */
-  session(sessionId: string): SessionAddress
 }

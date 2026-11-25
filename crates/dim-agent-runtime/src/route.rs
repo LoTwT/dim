@@ -191,12 +191,20 @@ impl SessionScope {
     }
 
     /// The live line `line_id` of this Session.
+    /// The live line `line_id` of this Session. A Session that started closing
+    /// while the line was being resolved answers `SessionClosing`, not
+    /// `NoLine`: closing the Session closes its lines.
     fn line_context(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
-        self.live()?
+        let session = self.live()?;
+        session
             .line(line_id)
             .ok_or_else(|| RouteError::NoLine {
                 session: self.session_id.clone(),
                 line: line_id.to_owned(),
+            })
+            .and_then(|line| match self.live() {
+                Err(closing @ RouteError::SessionClosing(_)) => Err(closing),
+                _ => Ok(line),
             })
     }
 }

@@ -296,6 +296,14 @@ pub struct StopRequest {
 pub enum SessionsError {
     #[error("{message}")]
     Rejected { message: String },
+    /// A routed call's own failure: the routing kind (`routing`), the name the
+    /// owner wrote when the owner failed, and the message.
+    #[error("{message}")]
+    Routed {
+        routing: String,
+        name: String,
+        message: String,
+    },
     #[error("{message}")]
     AgentUnknown { message: String },
     #[error("{message}")]
