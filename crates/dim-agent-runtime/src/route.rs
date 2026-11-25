@@ -338,17 +338,93 @@ impl LineRoute {
     }
 }
 
-/// The line-scope data face `T` of this Session's line `line_id`: the Rust
-/// binding of [`LineRoute::line`].
-pub fn line_owner<T: ?Sized + PublicService>(route: &LineRoute, line_id: &str) -> Routed<Arc<T>> {
-    let line = route.live_line(line_id)?;
-    face(
-        line.catalog(),
-        line.faces(),
-        &names::name_of::<T>(),
-        BRANCH_GROUP,
-    )?;
-    line.public::<T>().map_err(owner)
+/// An address a caller may keep: ids only, looked up at every call
+/// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D4). Rust
+/// writes the authoring shape this way: `session(&route, id).line(id)`, then
+/// the owner's own operations through [`LineAddress::owner`].
+pub struct SessionAddress {
+    index: Arc<Index>,
+    session_id: String,
+}
+
+/// The address of one line, of [`SessionAddress::line`] or of [`LineRoute`]'s
+/// own Session.
+pub struct LineAddress {
+    scope: Scope,
+    line_id: String,
+}
+
+enum Scope {
+    /// A Session of the process route, named by its id.
+    Named {
+        index: Arc<Index>,
+        session_id: String,
+    },
+    /// The caller's own Session, which names no Session.
+    Own(Arc<LineRoute>),
+}
+
+impl LineAddress {
+    /// The line-scope data face `T`, resolved now.
+    pub fn owner<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
+        let line = match &self.scope {
+            Scope::Named { index, session_id } => index.line(session_id, &self.line_id)?,
+            Scope::Own(route) => route.live_line(&self.line_id)?,
+        };
+        face(
+            line.catalog(),
+            line.faces(),
+            &names::name_of::<T>(),
+            BRANCH_GROUP,
+        )?;
+        line.public::<T>().map_err(owner)
+    }
+}
+
+impl SessionAddress {
+    /// The line `line_id` of this Session, addressed and not looked up.
+    pub fn line(&self, line_id: &str) -> LineAddress {
+        LineAddress {
+            scope: Scope::Named {
+                index: self.index.clone(),
+                session_id: self.session_id.clone(),
+            },
+            line_id: line_id.to_owned(),
+        }
+    }
+
+    /// The Session-scope data face `T`, resolved now.
+    pub fn owner<T: ?Sized + PublicService>(&self) -> Routed<Arc<T>> {
+        let session = self.index.session(&self.session_id)?;
+        session.session_face::<T>().map_err(owner)
+    }
+}
+
+/// Addresses Session `session_id` of the process [`Route`]: nothing is looked
+/// up until a method is called.
+pub fn session(route: &Arc<Route>, session_id: &str) -> SessionAddress {
+    SessionAddress {
+        index: route.index.clone(),
+        session_id: session_id.to_owned(),
+    }
+}
+
+/// Addresses line `line_id` of the caller's own Session: nothing is looked up
+/// until a method is called.
+pub fn line(route: &Arc<LineRoute>, line_id: &str) -> LineAddress {
+    LineAddress {
+        scope: Scope::Own(route.clone()),
+        line_id: line_id.to_owned(),
+    }
+}
+
+/// The line-scope data face `T` of this Session's line `line_id`: [`line`] and
+/// [`LineAddress::owner`] in one call.
+pub fn line_owner<T: ?Sized + PublicService>(
+    route: &Arc<LineRoute>,
+    line_id: &str,
+) -> Routed<Arc<T>> {
+    line(route, line_id).owner::<T>()
 }
 
 /// Fails unless a route may resolve `service` as a data face of `group`

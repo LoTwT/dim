@@ -251,6 +251,12 @@ async fn a_session_part_reaches_its_own_line_by_id_only() {
         }
     );
     assert!(line_owner::<BranchLine>(&route, "main").is_ok());
+    assert!(
+        dim_agent_runtime::line(&route, "main")
+            .owner::<BranchLine>()
+            .is_ok(),
+        "the address form resolves at the call"
+    );
     assert_eq!(
         line_owner::<dyn LoopState>(&route, "main").err(),
         Some(RouteError::NotDataFace {

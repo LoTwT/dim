@@ -1903,3 +1903,43 @@ export interface Services {
   listenAddresses: ListenAddresses
   uiResources: UiResources
 }
+
+/**
+ * A Session's data faces, addressed by id: nothing is looked up until a method of
+ * one is called, and each call looks the target up again.
+ */
+export interface SessionAddress {
+  /** This Session's line `lineId`. */
+  line(lineId: string): LineAddress
+  agentConfig: AgentConfig
+  collaborationConfig: CollaborationConfig
+  initialPromptConfiguration: InitialPromptConfiguration
+  mcpSession: McpSession
+  sessionConfig: SessionConfig
+  sessionIdentity: SessionIdentity
+  sessionLanguage: SessionLanguage
+  sessionLoader: SessionLoader
+  skillsConfig: SkillsConfig
+  toolHost: ToolHost
+  treeCommands: TreeCommands
+  uiResources: UiResources
+}
+
+/** A line's data faces, addressed by id. */
+export interface LineAddress {
+  approval: Approval
+  backgroundExec: BackgroundExec
+  branchLine: BranchLine
+  dispatcher: Dispatcher
+  inputQueue: InputQueue
+  permission: Permission
+  timeline: Timeline
+  timelineIdentity: TimelineIdentity
+  wait: Wait
+}
+
+/** Addresses Session `sessionId`; every call looks it up again. */
+export declare function session(sessionId: string): SessionAddress
+
+/** Addresses line `lineId` of this Session; every call looks it up again. */
+export declare function line(lineId: string): LineAddress
