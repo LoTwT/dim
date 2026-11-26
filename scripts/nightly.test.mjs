@@ -82,5 +82,24 @@ esac\n`, { mode: 0o755 });
   assert.match(conflict.stderr, /Keeping existing .*dimn/);
   assert.equal(readlinkSync(shortcut), 'unrelated-command');
   assert.equal(installed(), 'dimcode 1.2.3-nightly.11');
+  rmSync(shortcut);
+  writeFileSync(file('ln'), `#!/bin/sh
+set -eu
+case "$*" in *dimn*)
+  if [ ! -e "$HOME/.local/bin/dimn" ]; then
+    if [ -f "$HOME/race-directory" ]; then mkdir "$HOME/.local/bin/dimn"; else echo foreign >"$HOME/.local/bin/dimn"; fi
+  fi;;
+esac
+exec /bin/ln "$@"\n`, { mode: 0o755 });
+  for (const directory of [false, true]) {
+    if (directory) writeFileSync(file('race-directory'), '');
+    const collision = install();
+    assert.equal(collision.status, 0, collision.stderr);
+    assert.match(collision.stderr, /Keeping existing .*dimn/);
+    if (directory) assert.deepEqual(readdirSync(shortcut), []);
+    else assert.equal(readFileSync(shortcut, 'utf8'), 'foreign\n');
+    rmSync(shortcut, { recursive: true });
+  }
+  assert.equal(installed(), 'dimcode 1.2.3-nightly.11');
   assert.equal(readFileSync(file('.local/bin/dima'), 'utf8'), 'npm installation');
 });
