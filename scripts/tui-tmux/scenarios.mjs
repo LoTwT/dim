@@ -509,7 +509,7 @@ const scenarios = [
     title: 'Clicking an editable cell inserts there in single-line and scrolled, wrapped drafts',
     async run(tui) {
       await tui.setup({respond: () => ({text: ANSWER})});
-      const terminal = await tui.launch(['--fullscreen'], {cols: 40, rows: 18, waitForComposer: true});
+      const terminal = await tui.launch(['--fullscreen'], {cols: 28, rows: 18, waitForComposer: true});
       const click = async (text, cellOffset) => {
         await terminal.waitFor(text);
         const lines = terminal.capture({join: false}).split('\n');
@@ -526,8 +526,9 @@ const scenarios = [
       await terminal.waitFor('abXcdef');
 
       terminal.key('End', 'C-j');
-      terminal.send('pad '.repeat(120) + '中界tail');
+      terminal.paste('pad '.repeat(45) + '中界tail');
       await click('中界tail', 2);
+      assert(!terminal.capture().includes('abXcdef'), 'the first draft line has scrolled out of view');
       terminal.send('Y');
       await terminal.waitFor('中Y界tail');
     },
