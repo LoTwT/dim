@@ -754,6 +754,15 @@ impl Session {
     /// owning instance's own router, not a [`PublicService`] read. Agents is
     /// the only caller; a part of another language reaches it as the
     /// `sessionScope` data face.
+    ///
+    /// The router is not a facade read, so the typed one does not compile:
+    ///
+    /// ```compile_fail
+    /// use dim_agent_runtime::{Session, SessionScope};
+    /// fn read(session: &Session) {
+    ///     let _ = session.session_service::<SessionScope>();
+    /// }
+    /// ```
     pub fn routed_scope(&self) -> Option<Arc<crate::route::SessionScope>> {
         let loaded = self.0.owner.loaded().ok()?;
         loaded

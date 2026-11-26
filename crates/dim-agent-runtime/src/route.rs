@@ -507,6 +507,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_owner_failure_keeps_its_code() {
+        let remote = |code: &str| BridgeError::Remote {
+            name: "AgentError".into(),
+            message: format!("{code}: absent"),
+            graph: Some(serde_json::json!({
+                "root": {"type": "reference", "value": 0},
+                "nodes": [{"type": "error", "name": "AgentError", "code": code, "message": "absent"}],
+            })),
+        };
+        let routed = owner(remote("UnknownBranch"));
+        let RouteError::Owner {
+            code, reloading, ..
+        } = &routed
+        else {
+            panic!("the owner's failure crosses as Owner: {routed:?}");
+        };
+        assert_eq!(code.as_deref(), Some("UnknownBranch"), "{routed:?}");
+        assert!(!reloading, "{routed:?}");
+        assert_eq!(
+            agent_code(&AgentError::UnknownBranch("absent".into())),
+            "UnknownBranch"
+        );
+    }
+
+    #[test]
     fn an_owner_failure_is_retryable_only_when_its_code_says_reloading() {
         let reloading = owner(AgentError::Reloading("timeline".into()));
         assert!(
