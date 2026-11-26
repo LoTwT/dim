@@ -1087,8 +1087,50 @@ impl ContextUsage {
             _ => None,
         };
         let Some(start) = start else {
-            return Ok(ToolMode::Normal);
+            return Ok(self.registry.effective_tool_mode_now());
         };
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec![serde_json::json!("turn/end")],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["position.sequence".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let ended = match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => value.as_u64(),
+                    _ => None,
+                })
+            }
+            _ => None,
+        };
+        if ended.is_some_and(|end| end >= start) {
+            return Ok(self.registry.effective_tool_mode_now());
+        }
         let reply = self
             .timeline
             .query(TimelineQuery {
