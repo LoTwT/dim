@@ -9,9 +9,10 @@ use dim_agent_capabilities::{
     defaults,
     history::HistoryRenderer,
     host::{
-        CompactionStrategyHost, ContextModelHost, IdentityContext, ModelDriver, ModelHost,
-        PrepareContextHost,
+        CompactionStrategyHost, ContextModelHost, HostFuture, IdentityContext, ModelDriver,
+        ModelHost, PrepareContextHost, ToolExecutionContext,
     },
+    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 pub use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
@@ -19,6 +20,7 @@ use dim_agent_runtime::{
     TimelineIdentity, testing::chain_events,
 };
 use dim_agent_types::{BranchCreateData, EventKind, ModelRequest, SystemPrompt, SystemPromptPart};
+use dim_agent_types::{ToolCall, ToolMode, ToolResult};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Server};
 use rutis::Ctx;
@@ -30,6 +32,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 
 /// The branch Timelines the Goal parts run against, by branch id: a flow
 /// writes the facts it would otherwise have to wait for a model to produce.
@@ -91,6 +94,71 @@ impl DynPlugin for ProbePart {
                 .unwrap()
                 .insert(identity.branch_id.clone(), timeline);
             Ok(Effect::Done)
+        })
+    }
+}
+
+/// Registers the `execute` entry tool, so a Session can run `shell`; the
+/// handler does nothing.
+struct ModeEntryPlugin {
+    tools: Key<ToolRegistry>,
+}
+
+impl ModeEntryPlugin {
+    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            tools: names.key()?,
+        })
+    }
+}
+
+impl DynPlugin for ModeEntryPlugin {
+    fn name(&self) -> &str {
+        "ModeEntry"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.tools.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let tools = ctx.require_at(&self.tools)?;
+            tools.begin_entry(ToolMode::Shell);
+            tools.register(
+                ctx,
+                ToolContribution {
+                    definition: definition("execute", "Run a command.", json!({"type": "object"})),
+                    handler: Arc::new(Noop),
+                },
+            )?;
+            tools.settle_entry(ToolMode::Shell).await.map_err(|error| {
+                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    error.to_string().into(),
+                ))
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct Noop;
+
+impl ToolHandler for Noop {
+    fn execute(
+        &self,
+        _: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async {
+            Ok(ToolResult {
+                content: "ok".into(),
+                structured_content: None,
+                is_error: None,
+                blob_refs: None,
+                background_task: None,
+                context_messages: None,
+                effects: None,
+            })
         })
     }
 }
@@ -157,6 +225,9 @@ impl Fixture {
                 }),
             );
         defaults::tool_host(&mut builder, Arc::new(MockTools));
+        builder.require_feature(Feature::new("ModeEntry").session("ModeEntry", |names| {
+            Ok(Box::new(ModeEntryPlugin::new(names)?))
+        }));
         let part = probe.clone();
         builder.require_feature(Feature::new("GoalProbe").branch("GoalProbe", move |names| {
             Ok(Box::new(ProbePart::new(names, part.clone())?))
@@ -277,6 +348,28 @@ impl Fixture {
                 json!({
                     "cwd": self.home,
                     "tools": tools,
+                    "permissionPolicy": {"allowedTools": tools},
+                }),
+            )
+            .await
+            .unwrap();
+        let id = created["sessionId"].as_str().unwrap().to_owned();
+        if self.goal {
+            wait_goal_ready(&mut self.client, &id).await;
+        }
+        id
+    }
+
+    /// Creates a Session in `mode` with `tools`.
+    pub async fn new_session_with_mode(&mut self, tools: &[&str], mode: &str) -> String {
+        let created = self
+            .client
+            .rpc(
+                "session.create",
+                json!({
+                    "cwd": self.home,
+                    "tools": tools,
+                    "toolMode": mode,
                     "permissionPolicy": {"allowedTools": tools},
                 }),
             )

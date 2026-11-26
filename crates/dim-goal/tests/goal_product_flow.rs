@@ -2373,3 +2373,51 @@ async fn wait_turn_start_after(session: &Session, after: u64) {
     .await
     .expect("a turn starts after the report input");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_effective_shell_update_pauses_the_goal_and_writes_the_mode_text() {
+    let mut fixture = Fixture::start().await;
+    let session = fixture
+        .new_session_with_mode(&["echo", "execute"], "normal")
+        .await;
+    fixture
+        .goal_on(&session, "set", json!({"objective": "keep going"}))
+        .await
+        .unwrap();
+    let read = fixture
+        .client
+        .rpc("session.goal.get", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(read["goal"]["status"]["kind"], "active", "{read}");
+    let updated = fixture
+        .client
+        .rpc(
+            "session.tool_mode.update",
+            json!({"sessionId": session, "mode": "shell"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["effective"], "shell", "{updated}");
+    let read = fixture
+        .client
+        .rpc("session.goal.get", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(read["goal"]["status"]["kind"], "paused", "{read}");
+    assert_eq!(read["goal"]["status"]["reason"], "mode", "{read}");
+    let loaded = fixture
+        .server
+        .agent()
+        .unwrap()
+        .get_session(&session)
+        .unwrap();
+    let writes = support::goal_writes(&loaded, "main").await;
+    assert!(
+        writes
+            .iter()
+            .any(|block| block.marker.contains("op=\"pause\"")
+                && block.marker.contains("reason=\"mode\"")),
+        "the mode pause text is written: {writes:?}"
+    );
+}
