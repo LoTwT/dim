@@ -357,6 +357,13 @@ pub(crate) fn face(
             method: method.into(),
         });
     }
+    // Only a name shared across languages is a data face; a native-only
+    // registration stays inside its scope.
+    if !catalog.is_shared(service) {
+        return Err(RouteError::NotDataFace {
+            service: service.into(),
+        });
+    }
     if REGISTRATION_POINTS.contains(&service)
         || LIFECYCLE_SERVICES.contains(&service)
         || (group == SESSION_GROUP && NOT_CALLABLE.contains(&service))

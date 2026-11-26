@@ -53,6 +53,23 @@ impl Rig {
         // The product marks the same names (its `register_faces`); a route
         // resolves data faces only.
         builder.internal_name("loopState", "hot-path");
+        // The product shares the faces a route resolves (`share_names`); the
+        // rig shares the ones its cases use and leaves a native-only name
+        // unshared.
+        for (name, group) in [
+            ("approval", "branch"),
+            ("branchLine", "branch"),
+            ("dispatcher", "branch"),
+            ("inputQueue", "branch"),
+            ("permission", "branch"),
+            ("timeline", "branch"),
+            ("sessionConfig", "session"),
+            ("sessionIdentity", "session"),
+            ("treeCommands", "session"),
+            ("uiResources", "session"),
+        ] {
+            builder.catalog_mut().register_shared_instance(name, group);
+        }
         builder.require_feature(
             Feature::new("RoutingSessionProbe").session("RoutingSessionProbe", move |_| {
                 Ok(Box::new(HandsSession(probe.clone())))
@@ -339,6 +356,46 @@ async fn an_idle_unloaded_session_answers_session_closing_until_it_loads_again()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_owner_failure_keeps_its_code_through_the_route() {
+    use dim_agent_capabilities::input_queue::InputQueue;
+    use dim_agent_types::{InputMessageData, InputWithdrawData};
+
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+    let command = InputWithdrawData {
+        input_id: "x".into(),
+        reason: None,
+        steer: Some(InputMessageData::text("x", None)),
+    };
+    let direct = session
+        .service::<InputQueue>("main")
+        .expect("the line serves its input queue")
+        .withdraw(command.clone())
+        .await
+        .unwrap_err();
+    let routed = scope
+        .line_call(LineCall::new(
+            "main",
+            "inputQueue",
+            "withdraw",
+            vec![serde_json::to_value(&command).unwrap()],
+        ))
+        .await
+        .unwrap_err();
+    let RouteError::Owner { code, .. } = &routed else {
+        panic!("the owner's failure crosses as Owner: {routed:?}");
+    };
+    assert_eq!(
+        code.as_deref(),
+        Some("InvalidInput"),
+        "direct {direct:?}, routed {routed:?}"
+    );
+    session.close().await.unwrap();
+    rig.host.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     let rig = Rig::start().await;
     let session = rig.open().await;
@@ -378,6 +435,16 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
             method: "wait".into()
         },
         "an operation that needs a caller-side cancellation is not routed"
+    );
+    assert_eq!(
+        scope
+            .call(SessionCall::new("sessionLoader", "new", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::NotDataFace {
+            service: "sessionLoader".into()
+        },
+        "a native-only registration is not a data face"
     );
     assert_eq!(
         scope
