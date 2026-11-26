@@ -970,6 +970,20 @@ A daemon that does not serve `runtime.list` answers `unknown_method`; the panel 
 daemon does not serve runtimes and prints the version, rather than an empty list that reads as "no
 runtimes".
 
+## Tool mode settings
+
+`/settings` exposes the `Tool mode` row under Tools. It reads the shown
+Session's mode with `session.tool_mode.get` when the panel first opens and
+cycles `normal` → `codemode` → `shell` with Enter, writing with
+`session.tool_mode.update`; the row shows the chosen mode. A mode whose entry
+tool is absent stays chosen but runs `normal` (design
+[agent-tool-modes §5](agent-tool-modes.md#5-configuration-creation-and-switching)).
+
+```text
+Tools
+Tool mode              Code Mode >
+```
+
 ## Process isolation settings
 
 `/settings` exposes the `Process isolation` control under Permissions. `/permissions`

@@ -847,6 +847,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "{field}: {error}" => "{field}: {error}",
         "Prompts: {error}" => "프롬프트: {error}",
+        "Tools" => "도구",
+        "Tool mode" => "도구 모드",
+        "Normal" => "일반",
+        "Code Mode" => "코드 모드",
+        "Shell" => "셸",
         _ => return None,
     })
 }

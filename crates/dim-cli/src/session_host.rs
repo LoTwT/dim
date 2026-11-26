@@ -168,6 +168,12 @@ impl SessionPort for SessionHost {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ToolModeState {
+    mode: String,
+    effective: String,
+}
+
 impl SessionHost {
     /// Runs the session on `client`, the connection the composition root
     /// took from the client tree, composing management text in `language`,
@@ -2008,6 +2014,41 @@ impl Worker {
             }
             Command::QueryModels { query, after } => {
                 self.send_models(query, after, 1).await;
+            }
+            Command::ReadToolMode => {
+                if self.client.supports(&["session.tool_mode"]) {
+                    let params = json!({"sessionId": self.session_id});
+                    match self
+                        .client
+                        .typed::<ToolModeState>("session.tool_mode.get", params)
+                        .await
+                    {
+                        Ok(state) => self.send(Update::ToolMode {
+                            mode: state.mode,
+                            effective: state.effective,
+                        }),
+                        Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
+                    }
+                }
+            }
+            Command::SetToolMode { mode } => {
+                if self
+                    .client
+                    .supports(&["session.tool_mode", "session.tool_mode.update"])
+                {
+                    let params = json!({"sessionId": self.session_id, "mode": mode});
+                    match self
+                        .client
+                        .typed::<ToolModeState>("session.tool_mode.update", params)
+                        .await
+                    {
+                        Ok(state) => self.send(Update::ToolMode {
+                            mode: state.mode,
+                            effective: state.effective,
+                        }),
+                        Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
+                    }
+                }
             }
             Command::ReadIsolation => {
                 if !self.client.supports(&["settings.read", "settings.update"]) {

@@ -18,6 +18,8 @@
 //! │   Notify when agent ...  on                  │
 //! │   Show ACP sessions      off                 │
 //! │   Prompt suggestion      off                 │
+//! │   Tools                                      │
+//! │   Tool mode              Normal ›            │
 //! │   Permissions                                │
 //! │   Permission             Workspace write ›   │
 //! │   Process isolation      ›                   │
@@ -54,6 +56,7 @@ pub struct Values {
     /// `None` is a read that has not happened or failed.
     pub prompts: [Option<bool>; 3],
     pub permission: String,
+    pub tool_mode: String,
 }
 
 /// One row: a switch flips in place, a link opens its picker.
@@ -74,9 +77,10 @@ pub enum Setting {
     SkillsPrompt,
     Permission,
     Isolation,
+    ToolMode,
 }
 
-const ROWS: [(Setting, &str); 15] = [
+const ROWS: [(Setting, &str); 16] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
@@ -92,6 +96,7 @@ const ROWS: [(Setting, &str); 15] = [
     (Setting::SkillsPrompt, "skills-prompt"),
     (Setting::Permission, "permission"),
     (Setting::Isolation, "isolation"),
+    (Setting::ToolMode, "tool-mode"),
 ];
 
 impl Setting {
@@ -245,6 +250,8 @@ impl SettingsPanel {
                 prompt_origin(values.prompts[index]),
             ));
         }
+        items.push(Item::heading(t("Tools")));
+        items.push(row(Setting::ToolMode, "Tool mode", link(&values.tool_mode)));
         items.extend([
             Item::heading(t("Permissions")),
             row(Setting::Permission, "Permission", link(&values.permission)),
@@ -283,6 +290,12 @@ impl SettingsPanel {
             self.list
                 .set_detail(prompt_row(field).id(), prompt_origin(self.prompts[index]));
         }
+    }
+
+    /// Shows the mode a read or write reported.
+    pub fn set_tool_mode(&mut self, value: &str) {
+        self.list
+            .set_detail(Setting::ToolMode.id(), format!("{value} ›"));
     }
 
     /// Shows that the prompts source could not be read.

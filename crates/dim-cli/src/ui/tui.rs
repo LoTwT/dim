@@ -1271,6 +1271,9 @@ struct App {
     /// it back into the draft.
     unsent: Option<Initial>,
     permission_policy: Option<dim_agent_types::PermissionPolicy>,
+    tool_mode: String,
+    tool_mode_effective: String,
+    tool_mode_read: bool,
     /// The main branch's context use.
     context: Option<ContextReading>,
     /// The first attempt tag of the next `/login` panel, so a closed panel's
@@ -1722,6 +1725,9 @@ impl App {
             initial: None,
             unsent: None,
             send_now: None,
+            tool_mode: "normal".into(),
+            tool_mode_effective: "normal".into(),
+            tool_mode_read: false,
             permission_policy: Some(dim_agent_types::PermissionPolicy {
                 preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
                 ..Default::default()
@@ -2187,6 +2193,9 @@ impl App {
             panel.set_policy(None);
         }
         self.permission_policy = None;
+        self.tool_mode = "normal".into();
+        self.tool_mode_effective = "normal".into();
+        self.tool_mode_read = false;
         if let Some(Prompt::Settings(panel)) = &self.prompt {
             self.open_settings(panel.selected());
         }
@@ -2806,6 +2815,13 @@ impl App {
                 }
             },
             Update::PermissionsUnknown => self.show_permission_unknown(),
+            Update::ToolMode { mode, effective } => {
+                self.tool_mode = mode.clone();
+                self.tool_mode_effective = effective.clone();
+                if let Some(Prompt::Settings(panel)) = &mut self.prompt {
+                    panel.set_tool_mode(&tool_mode_label(&mode));
+                }
+            }
             Update::PermissionSelected(preset) => {
                 let label = format!("Permission: {}", crate::permission::name(preset));
                 let message = crate::ui::config::write(
@@ -5188,12 +5204,17 @@ impl App {
                 .as_ref()
                 .map(|setting| setting.document.enabled),
             prompts: self.prompt_origins(),
+            tool_mode: tool_mode_label(&self.tool_mode),
             permission: self.permission_policy.as_ref().map_or_else(
                 || "Unavailable".to_owned(),
                 |policy| crate::permission::name(policy.preset).to_owned(),
             ),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
+        if !self.tool_mode_read {
+            self.tool_mode_read = true;
+            self.host.send(Command::ReadToolMode);
+        }
     }
 
     /// Each prompt text's origin, as the last read or write reported it.
@@ -5225,6 +5246,15 @@ impl App {
             Setting::Permission => {
                 let panel = ApprovalsPanel::new(self.permission_policy.as_ref());
                 self.open_prompt(Prompt::Approvals(panel));
+            }
+            Setting::ToolMode => {
+                let next = next_tool_mode(&self.tool_mode);
+                self.tool_mode = next.to_owned();
+                self.host.send(Command::SetToolMode {
+                    mode: next.to_owned(),
+                });
+                self.settings_return = None;
+                self.open_settings(setting);
             }
             Setting::Isolation => {
                 let panel = crate::ui::isolation_panel::IsolationPanel::new();
@@ -9814,6 +9844,23 @@ fn saved_tool_detail(home: &std::path::Path) -> Detail {
 /// keyboard; it uses the ordinary frame path instead of rewriting scrollback.
 fn termux_height_only(previous_columns: u16, size: (u16, u16), termux: bool) -> bool {
     termux && size.0 == previous_columns
+}
+
+fn next_tool_mode(mode: &str) -> &'static str {
+    match mode {
+        "normal" => "codemode",
+        "codemode" => "shell",
+        _ => "normal",
+    }
+}
+
+fn tool_mode_label(mode: &str) -> String {
+    t(match mode {
+        "codemode" => "Code Mode",
+        "shell" => "Shell",
+        _ => "Normal",
+    })
+    .to_owned()
 }
 
 #[cfg(test)]
@@ -19849,6 +19896,7 @@ mod tests {
             assert_eq!(
                 describe(&sent.take()),
                 [
+                    "other",
                     "steer:a",
                     "submit:queue:queue by default",
                     "submit:steer:steer this one"
