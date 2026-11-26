@@ -589,6 +589,7 @@ pub(crate) async fn session_create_from_options(
     let mut params = session_create_params(options);
     if client.offers("session.create.toolMode")
         && let Some(mode) = crate::configure::saved_tool_mode(&options.home)
+        && matches!(mode.as_str(), "normal" | "codemode" | "shell")
     {
         params["toolMode"] = serde_json::json!(mode);
     }
