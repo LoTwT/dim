@@ -324,6 +324,10 @@ impl Collaboration {
         let mut config =
             crate::agents::session_config(&host.profile, self.index.session_defaults());
         config.cwd = leader.config().cwd.clone();
+        config.tool_mode = leader
+            .session_service::<dim_agent_capabilities::tool_registry::ToolRegistry>()
+            .map(|registry| registry.tool_mode())
+            .map_err(|error| member_create_failed(error.to_string()))?;
         config.permission_policy = permission;
         config.collaboration_role = CollaborationRole::Member;
         if let Some(model) = inherited {

@@ -496,10 +496,15 @@ impl ToolRegistry {
             return Ok(());
         }
         let _gate = self.mode_gate.lock().await;
+        if self.tool_mode() != mode || !self.entry_declared(mode) {
+            self.settling.send_replace(None);
+            return Ok(());
+        }
         let result = self
             .transition
             .settle(mode, ModeChangeCause::Registration)
             .await;
+        let _ = self.snapshot();
         self.settling.send_replace(None);
         result
     }
@@ -517,11 +522,19 @@ impl ToolRegistry {
     pub async fn lock_mode(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.mode_gate.lock().await
     }
-    /// Settles an operator update; the mode gate keeps it ordered with a
-    /// registration settlement.
-    pub async fn settle_update(&self, mode: ToolMode) -> Result<(), HostError> {
-        let _gate = self.mode_gate.lock().await;
+    /// Settles an operator update under a gate the caller already holds.
+    pub async fn settle_update_locked(&self, mode: ToolMode) -> Result<(), HostError> {
         self.transition.settle(mode, ModeChangeCause::Update).await
+    }
+    /// Whether `mode`'s entry tool is declared, without reading providers.
+    fn entry_declared(&self, mode: ToolMode) -> bool {
+        let Some(entry) = mode.entry_tool() else {
+            return false;
+        };
+        let sources = self.sources.lock().unwrap();
+        self.declared(&sources)
+            .iter()
+            .any(|tool| tool.name == entry)
     }
     /// The mode in force: the chosen one, or `normal` when its entry tool is
     /// not mounted.

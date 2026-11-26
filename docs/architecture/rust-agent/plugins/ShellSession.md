@@ -21,6 +21,7 @@ before falling back to `BackgroundExec`.
 | `B:Timeline` | Commit command starts, output and terminal ends. |
 | `B:Dispatcher` | Deliver the completion notice and wake the Session. |
 | `B:BranchLifecycle` | Wait for the branch to be published and stop the shell on closing. |
+| `S:SessionLifecycle` | Wait for the Session to be published and stop the shell when it closes. |
 | `P:HostPlatform` | The shell executable and platform dialect. |
 | `S:SessionConfig` | The Session's cwd and execution preferences. |
 | `B:TimelineIdentity` | Identify the branch in its facts and notices. |

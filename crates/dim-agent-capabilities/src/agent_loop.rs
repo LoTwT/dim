@@ -436,9 +436,17 @@ impl AgentLoop {
             .history
             .rendered_context(&self.timeline, through)
             .await?;
+        let tool_mode = self
+            .turn
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|turn| turn.tool_mode)
+            .unwrap_or_default();
         let Some(request) = configured_request(
             &crate::context_policy::PolicyContext::from_context(context.clone()),
             &history,
+            tool_mode,
         ) else {
             return failed("Context is not configured; adopt a model first".into());
         };
@@ -1235,9 +1243,11 @@ impl AgentLoop {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
         let owner = self.clone();
+        let mut through = through;
         self.tasks.spawn(async move {
             let work = AssertUnwindSafe(async {
                 owner.binding.await_mode(tool_mode).await;
+                through = through.max(owner.timeline.sequence());
                 if let Some(mut source) = recovery {
                     owner
                         .binding

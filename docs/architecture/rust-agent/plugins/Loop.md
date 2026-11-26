@@ -107,6 +107,15 @@ step's resumption starts. The turn accepts this automatic continuation at most
 once. An output-limit stop is not a failure of the turn:
 it ends Completed, and its `step/model-output-end` stays for diagnostics.
 
+### Turn mode pin
+
+A turn runs under the `tool_mode` of the input that applied it, recorded by
+the InputQueue at application, not the registry's live value at preparation: a
+later update cannot change a pinned turn. Compaction and rebuild keep the
+recorded pin. The preparation task waits for a registering mode's settlement
+before it binds or declares tools, and its cutoff includes what that
+settlement committed.
+
 ### The continuation's tool boundary
 
 This continuation declares tools because the failed request ran none of the

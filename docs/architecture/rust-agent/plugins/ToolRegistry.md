@@ -47,6 +47,14 @@ mounted. `session.tool_mode.update` replaces the live mode through
 `set_tool_mode`; the next input application pins it, and neither the projection
 nor the update re-adopts the callable set.
 
+The mode gate is one lock shared by the operator's update, an entry
+registration and Goal's `set`/`resume`. The update settles through the
+internal `ModeTransition` service while holding it, then writes the record
+and replaces the live mode before releasing it. An entry tool marks its
+registration, registers and settles through the same service; a turn that
+pins the registering mode waits in its preparation task until the settlement
+publishes, and its cutoff includes what the settlement committed.
+
 ## Handler contract
 
 A handler is `ToolHandler`. Besides `execute`, it answers three optional

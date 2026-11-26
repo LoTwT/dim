@@ -400,14 +400,20 @@ fn checkpoint(data: &ContextCompactionData) -> Option<CompactionCheckpoint> {
 pub(crate) fn configured_request(
     context: &PolicyContext,
     history: &[HistoryEntry],
+    tool_mode: ToolMode,
 ) -> Option<Arc<ModelRequest>> {
     let data = context.configuration()?;
+    let tools = data
+        .settings
+        .tools
+        .as_ref()
+        .map(|tools| crate::tool_registry::project(tool_mode, tools).0);
     Some(Arc::new(
         ModelSettings {
             provider_id: data.settings.provider_id.clone(),
             model_id: data.settings.model_id.clone(),
             capability_snapshot: data.settings.capability_snapshot.clone(),
-            tools: data.settings.tools.clone(),
+            tools,
             system: data.system.clone(),
             config: crate::context_model::adopted_config(
                 data.settings.capability_snapshot.as_ref(),

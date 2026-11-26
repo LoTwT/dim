@@ -1354,6 +1354,8 @@ pub enum Update {
     ToolMode {
         mode: String,
         effective: String,
+        available: Vec<String>,
+        saved: bool,
     },
     /// `session.branch_set_default` refused the chosen line: the lines panel
     /// shows the reason on the line the choice was made on (design §14).

@@ -150,6 +150,7 @@ impl PublicService for shell_session::ShellSession {}
 impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
 impl PublicService for timeline_tree::BranchLine {}
+impl PublicService for tool_registry::ToolRegistry {}
 impl PublicService for timeline_tree::TreeCommands {}
 impl PublicService for prompt_sources::PromptSourcesBranch {}
 impl PublicService for wait::Wait {}

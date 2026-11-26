@@ -1049,18 +1049,6 @@ impl ContextUsage {
         model: &dyn ContextModel,
         through: u64,
     ) -> Result<DynamicFixed> {
-        if configuration.configured_tools.is_none()
-            && self
-                .configured_tools(&configuration.event_id, through)
-                .await?
-        {
-            return Ok(DynamicFixed {
-                configuration: configuration.event_id.clone(),
-                versions: String::new(),
-                identity: configuration.request_identity.clone(),
-                fixed: configuration.fixed,
-            });
-        }
         let sources = self.registry.sources();
         let versions = fingerprint(
             &sources
@@ -1068,6 +1056,14 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
+        let tools = self.registry.visible_definitions();
+        let tools_fingerprint = fingerprint(
+            &tools
+                .iter()
+                .map(|tool| (&tool.name, &tool.description))
+                .collect::<Vec<_>>(),
+        )?;
+        let versions = format!("{versions}:{tools_fingerprint}");
         if let Some(cached) = self
             .dynamic_fixed
             .lock()
@@ -1079,7 +1075,6 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
-        let tools = self.registry.visible_definitions();
         let (_, sources) = self.registry.snapshot();
         let versions = fingerprint(
             &sources

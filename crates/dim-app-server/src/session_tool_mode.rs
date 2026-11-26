@@ -107,9 +107,10 @@ async fn change(
         mode: ToolMode,
     }
     let Params { session_id, mode } = params(input)?;
+    let _gate = tools.lock_mode().await;
     if tools.effective_of_mode(mode) == ToolMode::Shell {
         tools
-            .settle_update(ToolMode::Shell)
+            .settle_update_locked(ToolMode::Shell)
             .await
             .map_err(|error| RpcError::app(-32000, FAILED, error.to_string()))?;
     }

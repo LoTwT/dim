@@ -1273,6 +1273,7 @@ struct App {
     permission_policy: Option<dim_agent_types::PermissionPolicy>,
     tool_mode: String,
     tool_mode_effective: String,
+    tool_mode_available: Vec<String>,
     tool_mode_read: bool,
     /// The main branch's context use.
     context: Option<ContextReading>,
@@ -1727,6 +1728,7 @@ impl App {
             send_now: None,
             tool_mode: "normal".into(),
             tool_mode_effective: "normal".into(),
+            tool_mode_available: vec!["normal".into()],
             tool_mode_read: false,
             permission_policy: Some(dim_agent_types::PermissionPolicy {
                 preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
@@ -2195,6 +2197,7 @@ impl App {
         self.permission_policy = None;
         self.tool_mode = "normal".into();
         self.tool_mode_effective = "normal".into();
+        self.tool_mode_available = vec!["normal".into()];
         self.tool_mode_read = false;
         if let Some(Prompt::Settings(panel)) = &self.prompt {
             self.open_settings(panel.selected());
@@ -2815,11 +2818,23 @@ impl App {
                 }
             },
             Update::PermissionsUnknown => self.show_permission_unknown(),
-            Update::ToolMode { mode, effective } => {
+            Update::ToolMode {
+                mode,
+                effective,
+                available,
+                saved,
+            } => {
                 self.tool_mode = mode.clone();
                 self.tool_mode_effective = effective.clone();
+                self.tool_mode_available = available;
+                if saved
+                    && let Some(error) =
+                        crate::ui::config::write(&self.home, "tool_mode", mode.clone().into())
+                {
+                    self.notices.push(error);
+                }
                 if let Some(Prompt::Settings(panel)) = &mut self.prompt {
-                    panel.set_tool_mode(&tool_mode_label(&mode));
+                    panel.set_tool_mode(&tool_mode_row(&mode, &effective));
                 }
             }
             Update::PermissionSelected(preset) => {
@@ -5204,7 +5219,7 @@ impl App {
                 .as_ref()
                 .map(|setting| setting.document.enabled),
             prompts: self.prompt_origins(),
-            tool_mode: tool_mode_label(&self.tool_mode),
+            tool_mode: tool_mode_row(&self.tool_mode, &self.tool_mode_effective),
             permission: self.permission_policy.as_ref().map_or_else(
                 || "Unavailable".to_owned(),
                 |policy| crate::permission::name(policy.preset).to_owned(),
@@ -5248,7 +5263,7 @@ impl App {
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::ToolMode => {
-                let next = next_tool_mode(&self.tool_mode);
+                let next = next_tool_mode(&self.tool_mode, &self.tool_mode_available);
                 self.tool_mode = next.to_owned();
                 self.host.send(Command::SetToolMode {
                     mode: next.to_owned(),
@@ -9846,11 +9861,21 @@ fn termux_height_only(previous_columns: u16, size: (u16, u16), termux: bool) -> 
     termux && size.0 == previous_columns
 }
 
-fn next_tool_mode(mode: &str) -> &'static str {
-    match mode {
-        "normal" => "codemode",
-        "codemode" => "shell",
-        _ => "normal",
+fn next_tool_mode<'a>(mode: &str, available: &'a [String]) -> &'a str {
+    let index = available.iter().position(|candidate| candidate == mode);
+    match index.and_then(|index| available.get(index + 1)) {
+        Some(next) => next,
+        None => available.first().map_or("normal", String::as_str),
+    }
+}
+
+fn tool_mode_row(chosen: &str, effective: &str) -> String {
+    let chosen = tool_mode_label(chosen);
+    let effective = tool_mode_label(effective);
+    if chosen == effective {
+        chosen
+    } else {
+        format!("{chosen} → {effective}")
     }
 }
 

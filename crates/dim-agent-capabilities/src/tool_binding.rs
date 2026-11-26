@@ -285,6 +285,9 @@ impl ToolBinding {
         let claims: Vec<_> = calls
             .iter()
             .filter_map(|call| {
+                if !snapshot.visible.contains(&call.name) {
+                    return None;
+                }
                 let tool = snapshot.tools.get(&call.name)?;
                 Some((call.id.clone(), tool.handler.claim(call, context)?))
             })

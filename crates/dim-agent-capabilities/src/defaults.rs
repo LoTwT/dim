@@ -332,7 +332,6 @@ pub fn install_compaction(
         );
 }
 
-/// Installs `driver` as the Session `ToolHost`.
 /// A `ToolHost` with no host tools: the minimal profile's only tool is
 /// `execute`, registered by [`crate::shell_tools`].
 pub struct NoTools;
@@ -356,6 +355,7 @@ impl ToolDriver for NoTools {
     }
 }
 
+/// Installs `driver` as the Session `ToolHost`.
 pub fn tool_host(builder: &mut AgentBuilder, driver: Arc<dyn ToolDriver>) {
     crate::register_names(builder);
     builder.session_value(Arc::new(ToolHost(driver)));

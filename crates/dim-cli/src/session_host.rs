@@ -734,6 +734,39 @@ struct CancelNotice {
 }
 
 impl Worker {
+    fn tool_modes(&self) -> Vec<String> {
+        let mut modes = vec!["normal".to_owned()];
+        if self.client.supports(&["session.tool_mode.codemode"]) {
+            modes.push("codemode".to_owned());
+        }
+        if self.client.supports(&["session.tool_mode.shell"]) {
+            modes.push("shell".to_owned());
+        }
+        modes
+    }
+
+    async fn read_tool_mode(&mut self) {
+        if !self.client.supports(&["session.tool_mode"]) {
+            return;
+        }
+        let params = json!({"sessionId": self.session_id});
+        match self
+            .client
+            .typed::<ToolModeState>("session.tool_mode.get", params)
+            .await
+        {
+            Ok(state) => self.send(Update::ToolMode {
+                mode: state.mode,
+                effective: state.effective,
+                available: self.tool_modes(),
+                saved: false,
+            }),
+            Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
+        }
+    }
+}
+
+impl Worker {
     fn new(
         options: Options,
         client: Client,
@@ -2015,27 +2048,9 @@ impl Worker {
             Command::QueryModels { query, after } => {
                 self.send_models(query, after, 1).await;
             }
-            Command::ReadToolMode => {
-                if self.client.supports(&["session.tool_mode"]) {
-                    let params = json!({"sessionId": self.session_id});
-                    match self
-                        .client
-                        .typed::<ToolModeState>("session.tool_mode.get", params)
-                        .await
-                    {
-                        Ok(state) => self.send(Update::ToolMode {
-                            mode: state.mode,
-                            effective: state.effective,
-                        }),
-                        Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
-                    }
-                }
-            }
+            Command::ReadToolMode => self.read_tool_mode().await,
             Command::SetToolMode { mode } => {
-                if self
-                    .client
-                    .supports(&["session.tool_mode", "session.tool_mode.update"])
-                {
+                if self.client.supports(&["session.tool_mode"]) {
                     let params = json!({"sessionId": self.session_id, "mode": mode});
                     match self
                         .client
@@ -2045,8 +2060,13 @@ impl Worker {
                         Ok(state) => self.send(Update::ToolMode {
                             mode: state.mode,
                             effective: state.effective,
+                            available: self.tool_modes(),
+                            saved: true,
                         }),
-                        Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
+                        Err(error) => {
+                            self.send(Update::Notice(format!("tool mode: {error}")));
+                            self.read_tool_mode().await;
+                        }
                     }
                 }
             }
