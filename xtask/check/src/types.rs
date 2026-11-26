@@ -41,14 +41,6 @@ fn calls(root: &Path, services: &str) -> Result<String> {
             _ => {}
         }
     }
-    if std::env::var_os("DIM_TYPES_DEBUG").is_some() {
-        for (name, group) in registered(root)? {
-            let found = declared.iter().any(|ty| catalog_name(ty) == name);
-            if !found {
-                eprintln!("no declaration for {name} ({group})");
-            }
-        }
-    }
     session.sort();
     session.dedup();
     line.sort();
@@ -382,6 +374,9 @@ fn tables_in(block: &syn::Block, names: &mut Vec<String>) {
         let syn::Expr::Array(array) = &*loop_.expr else {
             continue;
         };
+        if !feeds_internal_name(&loop_.body) {
+            continue;
+        }
         for element in &array.elems {
             let syn::Expr::Tuple(tuple) = element else {
                 continue;
@@ -391,6 +386,35 @@ fn tables_in(block: &syn::Block, names: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// Whether a loop body hands its pair to `internal_name`, as the product's
+/// face table does; any other table of pairs is unrelated data.
+fn feeds_internal_name(block: &syn::Block) -> bool {
+    fn mentions(expression: &syn::Expr) -> bool {
+        match expression {
+            syn::Expr::Call(call) => {
+                let named = match &*call.func {
+                    syn::Expr::Path(path) => path
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "internal_name"),
+                    _ => false,
+                };
+                named || call.args.iter().any(mentions)
+            }
+            syn::Expr::MethodCall(call) => {
+                call.method == "internal_name" || call.args.iter().any(mentions)
+            }
+            _ => false,
+        }
+    }
+    block.stmts.iter().any(|statement| match statement {
+        syn::Stmt::Expr(expression, _) => mentions(expression),
+        syn::Stmt::Local(local) => local.init.as_ref().is_some_and(|init| mentions(&init.expr)),
+        _ => false,
+    })
 }
 
 fn marks_in(block: &syn::Block, names: &mut Vec<String>) {

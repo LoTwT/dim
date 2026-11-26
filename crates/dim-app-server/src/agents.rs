@@ -1649,17 +1649,7 @@ impl AgentIndex {
         request: crate::agents::sessions::CallRequest,
     ) -> std::result::Result<serde_json::Value, RouteError> {
         let id = request.session_id.clone();
-        // No owner knows the id: it was closed, deleted, or never existed, so
-        // it cannot be loaded again (#2127).
-        let known = self
-            .directory
-            .inner
-            .lock()
-            .expect("agent index")
-            .owner(&id)
-            .is_some();
         let used = self.acquire(&id).await.map_err(|error| match error {
-            _ if !known => RouteError::NoSession(id.clone()),
             AgentError::Reloading(_) => RouteError::SessionReloading(id.clone()),
             AgentError::Closed(_) => RouteError::NoSession(id.clone()),
             error => RouteError::SessionUnavailable {

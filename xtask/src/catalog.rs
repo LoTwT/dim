@@ -149,7 +149,6 @@ fn reach(
         )
         .into());
     }
-    let groups = ["session", "branch"];
     let unknown: Vec<&str> = offered
         .iter()
         .map(|(name, _)| *name)
@@ -162,7 +161,36 @@ fn reach(
         )
         .into());
     }
-    let _ = groups;
+    // The other direction: a data face the route resolves and the file declares
+    // an interface for must be offered, or an author cannot write the call.
+    let mut missing = Vec::new();
+    for (name, service) in &table.services {
+        let group: &str = match service.group {
+            group @ ("session" | "branch") => group,
+            _ => continue,
+        };
+        if service.face != "data"
+            || !dim_agent_runtime::route::resolves(catalog, faces, name, group)
+        {
+            continue;
+        }
+        let declared = text.lines().any(|line| {
+            line.strip_prefix("export interface ")
+                .or_else(|| line.strip_prefix("export type "))
+                .and_then(|rest| rest.split([' ', '<', '{', '=']).next())
+                .is_some_and(|ty| dim_agent_runtime::names::name_of_type(ty) == *name)
+        });
+        if declared && !offered.iter().any(|(offered, _)| *offered == name) {
+            missing.push(format!("{name} ({group})"));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts does not offer routable data faces: {}",
+            missing.join(", ")
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -841,6 +841,8 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
         )
         .await;
     assert_eq!(missing["error"]["code"], "no_line", "{missing}");
+    // A Session that closed itself keeps stored rows Agents cannot load, which
+    // is `session_unavailable`; a deleted one is `no_session`.
     session.close().await.unwrap();
     let closed = rig
         .call(
@@ -849,6 +851,18 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
             json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
         )
         .await;
-    assert_eq!(closed["error"]["code"], "no_session", "{closed}");
+    assert_eq!(closed["error"]["code"], "session_unavailable", "{closed}");
+    let deleted = rig
+        .call("sessions", "delete", json!({"sessionId": id}))
+        .await;
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    let gone = rig
+        .call(
+            "sessions",
+            "call",
+            json!({"sessionId": id, "service": "sessionConfig", "method": "get"}),
+        )
+        .await;
+    assert_eq!(gone["error"]["code"], "no_session", "{gone}");
     rig.close().await;
 }

@@ -206,7 +206,6 @@ impl SessionScope {
         Ok(session)
     }
 
-    /// The live line `line_id` of this Session.
     /// The live line `line_id` of this Session. A Session that started closing
     /// while the line was being resolved answers `SessionClosing`, not
     /// `NoLine`: closing the Session closes its lines.
