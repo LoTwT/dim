@@ -3,10 +3,15 @@
 //! neither entry tool, so a chosen `codemode` or `shell` reports `normal` as
 //! the mode in force.
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
-use dim_agent_capabilities::{adapters::MockTools, defaults};
+use dim_agent_capabilities::{
+    adapters::MockTools,
+    defaults,
+    history::HistoryRenderer,
+    host::{HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStopReason, ModelStream},
+};
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Session};
-use dim_agent_types::{EventKind, ModelRequest};
+use dim_agent_types::{EventKind, ModelRequest, Role, ToolCall, TurnOutcome};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -14,6 +19,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
 };
+use tokio_util::sync::CancellationToken;
 
 struct Home(PathBuf);
 impl Home {
@@ -38,17 +44,80 @@ impl Drop for Home {
 }
 
 fn builder(codemode: bool) -> AgentBuilder {
+    builder_with_model(codemode, None)
+}
+
+fn builder_with_model(codemode: bool, model: Option<Arc<dyn ModelDriver>>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     if codemode {
         dim_codemode::install(&mut builder);
     }
-    defaults::mock_model_hosts(&mut builder);
+    match model {
+        Some(model) => {
+            defaults::mock_model_hosts_with_model(&mut builder, HistoryRenderer::default(), model)
+        }
+        None => defaults::mock_model_hosts(&mut builder),
+    }
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     builder
 }
 
-async fn launch(home: &Home, codemode: bool) -> RunningServer {
+/// The model calls a tool the request does not declare, then answers.
+struct HiddenCallModel;
+
+impl ModelDriver for HiddenCallModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        _: ModelConnection,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let answered = request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::ToolResult);
+        let chunks = if answered {
+            vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "done".into(),
+                }),
+                Ok(ModelChunk::Text("done".into())),
+                Ok(ModelChunk::TextEnd),
+                Ok(ModelChunk::MessageStop {
+                    message_id: "done".into(),
+                    reason: ModelStopReason::EndTurn,
+                }),
+            ]
+        } else {
+            vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "hidden".into(),
+                }),
+                Ok(ModelChunk::ToolStart {
+                    id: "h1".into(),
+                    name: "echo".into(),
+                }),
+                Ok(ModelChunk::ToolUse(ToolCall {
+                    id: "h1".into(),
+                    name: "echo".into(),
+                    input: serde_json::from_value(json!({"text": "hi"})).expect("echo input"),
+                })),
+                Ok(ModelChunk::MessageStop {
+                    message_id: "hidden".into(),
+                    reason: ModelStopReason::ToolUse,
+                }),
+            ]
+        };
+        Box::pin(async move { Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream) })
+    }
+}
+
+async fn launch_with(home: &Home, builder: AgentBuilder) -> RunningServer {
+    serve(builder, config(home)).await.unwrap()
+}
+
+fn config(home: &Home) -> ServerConfig {
     let models = AimuxModels::from_config(
         serde_json::from_value::<ModelConfigFile>(json!({
             "defaultModel": {"providerId": "local", "modelId": "scripted"},
@@ -57,14 +126,17 @@ async fn launch(home: &Home, codemode: bool) -> RunningServer {
         .unwrap(),
     )
     .unwrap();
-    let config = ServerConfig {
+    ServerConfig {
         unix_path: Some(home.0.join("server.sock")),
         websocket_address: None,
         target_home: Some(home.0.clone()),
         model_catalog: Some(Arc::new(models)),
         ..Default::default()
-    };
-    serve(builder(codemode), config).await.unwrap()
+    }
+}
+
+async fn launch(home: &Home, codemode: bool) -> RunningServer {
+    launch_with(home, builder(codemode)).await
 }
 
 struct Client {
@@ -303,4 +375,54 @@ async fn codemode_declares_only_its_entry_and_skill() {
         .collect::<Vec<_>>();
     names.sort();
     assert_eq!(names, ["codemode"], "{names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_top_level_call_outside_the_mode_is_refused() {
+    let home = Home::new();
+    let server = launch_with(
+        &home,
+        builder_with_model(true, Some(Arc::new(HiddenCallModel))),
+    )
+    .await;
+    let mut client = Client::connect(&server).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": home.work(), "toolMode": "codemode", "tools": ["codemode", "echo"]}),
+        )
+        .await;
+    let session = created["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_owned();
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    let idle = client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await;
+    assert!(idle.get("error").is_none(), "{idle}");
+    let events = chain_events(&live_session(&server, &session), "main", ..)
+        .await
+        .unwrap();
+    let refused = events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            EventKind::TurnEnd(data)
+                if matches!(
+                    &data.outcome,
+                    TurnOutcome::Failed { error }
+                        if error.contains("Tool was not offered in this request: echo")
+                )
+        )
+    });
+    assert!(refused, "the top-level echo call is refused: {events:?}");
 }
