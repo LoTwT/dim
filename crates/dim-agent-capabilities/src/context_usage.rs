@@ -1169,11 +1169,8 @@ impl ContextUsage {
             return Ok(cached.clone());
         }
         let tools = match cached_tools {
-            Some(tools) => tools,
-            None => self
-                .request_tools(through)
-                .await?
-                .unwrap_or_else(|| self.registry.visible_definitions()),
+            Some(tools) => Some(tools),
+            None => self.request_tools(through).await?,
         };
         let mut system = self
             .fields(&configuration.event_id, through, &["data.system"])
@@ -1181,7 +1178,7 @@ impl ContextUsage {
         let system: Option<SystemPrompt> = sources::optional(system.remove(0))?;
         let identity = fingerprint(&(
             &configuration.control_identity,
-            fingerprint(&(&system, &Some(&tools)))?,
+            fingerprint(&(&system, &tools))?,
         ))?;
         let previous = self
             .dynamic_fixed
@@ -1196,7 +1193,7 @@ impl ContextUsage {
             .contribution_counter()
             .filter(|counter| counter.algorithm() == configuration.algorithm)
             .ok_or_else(|| fault("context counter algorithm changed"))?;
-        let fixed = previous.unwrap_or_else(|| counter.fixed(system.as_ref(), Some(&tools)));
+        let fixed = previous.unwrap_or_else(|| counter.fixed(system.as_ref(), tools.as_deref()));
         let value = DynamicFixed {
             configuration: configuration.event_id.clone(),
             versions,
