@@ -2772,3 +2772,104 @@ fn contested() -> Vec<String> {
         .map(str::to_owned)
         .to_vec()
 }
+
+/// The static shape of the managed override freeze (#2189): the stored
+/// override is rebased on the row the refresh wrote, so only the fields the
+/// user pinned survive, and every unedited declaration follows the refreshed
+/// row. `effective_models` is the one merge the static and the managed path
+/// share, so the semantics are pinned here once.
+#[test]
+fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
+    let catalog = BundledCatalog::load().unwrap();
+    let provider = ProviderProjection {
+        provider_id: "custom".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    let row = |vision: bool, efforts: Vec<&str>| {
+        catalog
+            .project(
+                &provider,
+                &json!({
+                    "id": "zz-evolve",
+                    "vision": vision,
+                    "modalities": if vision { json!(["text", "image"]) } else { json!(["text"]) },
+                    "context_window": 32000, "max_output_tokens": 4096,
+                    "reasoning": true,
+                    "supported_reasoning_levels": efforts.iter().map(|effort| json!({"effort": effort})).collect::<Vec<_>>(),
+                }),
+            )
+            .unwrap()
+    };
+    let v1 = row(false, vec!["low", "high"]);
+    assert!(!v1.capabilities.vision);
+    let base_v1 = catalog.effective_models(&provider, std::slice::from_ref(&v1), &[]);
+    // The user supplies the limits through the edit path.
+    let edited = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            context_window: std::num::NonZeroU64::new(100_000),
+            max_output_tokens: std::num::NonZeroU64::new(8_192),
+            ..Default::default()
+        },
+    );
+    // The refresh replaces the row with one that declares the capabilities.
+    let v2 = row(true, vec!["low", "medium", "high", "xhigh"]);
+    assert!(
+        v2.capabilities.vision,
+        "the fixture rows differ as a refresh does"
+    );
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v2),
+        std::slice::from_ref(&edited),
+    );
+    assert_eq!(
+        merged[0].capabilities.context_window,
+        Some(100_000),
+        "the edited window stands"
+    );
+    assert_eq!(
+        merged[0].capabilities.max_output_tokens,
+        Some(8_192),
+        "the edited output stands"
+    );
+    assert!(
+        merged[0].capabilities.vision,
+        "the unedited vision declaration follows the refresh"
+    );
+    assert_eq!(merged[0].capabilities.modalities, ["text", "image"]);
+    let reasoning = merged[0]
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.reasoning.clone())
+        .expect("the refreshed row declares reasoning");
+    assert_eq!(
+        reasoning.effort_options.unwrap(),
+        ["low", "medium", "high", "xhigh"]
+    );
+
+    // The pin: an explicit vision edit wins over the refreshed declaration,
+    // while the limits the edit never touched follow the refreshed row.
+    let pinned = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            vision: Some(false),
+            ..Default::default()
+        },
+    );
+    let v3 = row(true, vec!["low", "high"]);
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v3),
+        std::slice::from_ref(&pinned),
+    );
+    assert!(
+        !merged[0].capabilities.vision,
+        "the explicit vision edit is pinned"
+    );
+    assert_eq!(
+        merged[0].capabilities.context_window, v3.capabilities.context_window,
+        "a limit the edit never touched follows the refresh"
+    );
+}

@@ -42,6 +42,10 @@ enum Limited {
     /// statement about the id can give it limits.
     Unidentified,
     ProviderUnavailable,
+    /// The same account's refreshed catalog declares reasoning efforts and
+    /// image input for the fixture model, as an upstream capability roll-out
+    /// does (#2189).
+    Evolved,
 }
 
 /// A signed-in managed account whose first credential the relay rejects.
@@ -176,8 +180,25 @@ impl ManagedProvider for Provider {
             unavailable_reason: None,
             zdr: false,
         }];
+        if *self.0.limited.lock().unwrap() == Limited::Evolved {
+            let entry = &mut models[0].entry;
+            entry.capabilities.reasoning = true;
+            entry.capabilities.vision = true;
+            entry.capabilities.modalities =
+                ["text", "image"].into_iter().map(str::to_owned).collect();
+            let metadata = entry.metadata.get_or_insert_default();
+            let reasoning = metadata.reasoning.get_or_insert_default();
+            reasoning.supported = true;
+            reasoning.effort_options = Some(
+                ["low", "medium", "high", "xhigh"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            );
+            reasoning.effort = Some("high".into());
+        }
         match *self.0.limited.lock().unwrap() {
-            Limited::Absent => {}
+            Limited::Absent | Limited::Evolved => {}
             Limited::ProviderUnavailable => return ready(Err(ManagedError::Transient)),
             Limited::Available => {
                 let entry: ModelEntry = serde_json::from_value(json!({"modelId":"limited-model",
@@ -1499,6 +1520,251 @@ async fn an_account_identifies_its_models_with_its_prefix_and_aliases() {
             &aliased["result"]["models"][at]["metadata"]["matchedModelId"],
         ),
         "a refresh recomputes what the alias names"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the override freezing the account's own declarations
+/// (#2189): an override that only supplies the model's limits must not stop a
+/// same-account refresh from serving the reasoning efforts and image input the
+/// refreshed catalog declares, on the effective catalog the picker reads. The
+/// edit goes through the public `provider.models.edit` path against the
+/// persisted Provider record, and the catalog evolves between two refreshes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limits_only_override_does_not_freeze_refreshed_capabilities() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    assert_eq!(created["result"]["version"], 1);
+    let model = &created["result"]["models"][0];
+    assert_eq!(model["capabilities"]["vision"], false);
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "high"]),
+        "the old catalog row declares the short list"
+    );
+    // The public edit path supplies just the limits.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192}}),
+            )
+            .await,
+    );
+    // The same account's refreshed catalog now declares the new capabilities.
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window stands"
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output stands"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "the refreshed row's image input reaches the effective entry"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "medium", "high", "xhigh"]),
+        "the refreshed row's declared efforts reach the effective entry"
+    );
+    let management = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":"managed-fixture"}),
+        )
+        .await;
+    assert_ok(&management);
+    let managed = management["result"]["providers"][0]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["model"]["modelId"] == json!("fixture-model"))
+        .cloned()
+        .expect("the management view lists the model");
+    assert_eq!(
+        managed["model"]["capabilities"]["vision"], true,
+        "the picker reads the refreshed declaration too"
+    );
+    assert_eq!(
+        managed["model"]["metadata"]["reasoning"]["effortOptions"],
+        json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(
+        managed["model"]["capabilities"]["contextWindow"],
+        json!(100000)
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The pin the fix must not discard (#2189): a capability the user explicitly
+/// edited wins over the refreshed account declaration, while a capability the
+/// edit never touched still follows the refresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_capability_edit_survives_a_same_account_refresh() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins reasoning off on a model whose catalog row declares it.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the explicit reasoning edit wins over the refreshed declaration"
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["supported"], false,
+        "the pin covers the reasoning descriptor the picker reads"
+    );
+    assert!(
+        model["metadata"]["reasoning"]["effortOptions"].is_null()
+            || model["metadata"]["reasoning"]["effortOptions"] == json!([]),
+        "a pinned-off reasoning offers no efforts: {}",
+        model["metadata"]["reasoning"]
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched follows the refresh"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
     );
     assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
     server.join().await.unwrap();

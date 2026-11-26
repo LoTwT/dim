@@ -570,7 +570,15 @@ use delete. `refresh` updates default models while preserving user models,
 overrides, preferences and explicit disables, with its existing
 admitted-configuration conflict check. A managed refresh for a different account
 clears preferences together with descriptor overrides and disables; a same-account
-refresh preserves them.
+refresh preserves them. Preserving a descriptor override means rebasing it on
+the row the refresh serves: the override was written as a clone of the row it
+edited, so its unedited values are the old row's, not the user's. Every field
+whose name the override marks in `capabilityOverrideFields` (§3.5) — a limit
+the edit stated, and `vision`, `toolCalling`, `reasoning` or
+`modalityCapabilities` for the capability the user chose (#2189) — keeps its
+overridden value; every other capability declaration follows the refreshed
+row, so an account that starts declaring vision or new reasoning levels serves
+them without losing the user's limits.
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain

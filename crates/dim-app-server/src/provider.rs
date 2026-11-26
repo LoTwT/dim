@@ -48,8 +48,8 @@ use crate::{
     model_catalog::{
         BundledCatalog, CatalogCapabilities, CatalogProvider, ModelEdit, ModelEntry, ModelMetadata,
         ModelSource, NewApiEndpoint, ProviderProjection, declarations_hold, declare,
-        declare_supplied_limits, declared_limit_values, drop_undeclared_limits, inherit_limits,
-        limit_valid, limits_valid,
+        declare_supplied_limits, declared_limit_values, drop_undeclared_limits, limit_valid,
+        limits_valid, rebase_override,
     },
     storage::SqliteStorage,
 };
@@ -570,7 +570,7 @@ impl ProviderRecord {
                     .iter()
                     .find(|entry| entry.model_id == source.entry.model_id);
                 let mut entry = match replacement {
-                    Some(replacement) => inherit_limits(replacement.clone(), &source.entry),
+                    Some(replacement) => rebase_override(&source.entry, replacement),
                     None => source.entry.clone(),
                 };
                 bundled.identify_entry(&projection, &mut entry);

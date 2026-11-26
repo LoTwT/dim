@@ -841,7 +841,12 @@ impl BundledCatalog {
         for item in overrides {
             if let Some(pos) = models.iter().position(|m| m.model_id == item.model_id) {
                 let base = &models[pos];
-                let mut model = inherit_limits(item.clone(), base);
+                let mut model = rebase_override(base, item);
+                // The rebased entry's pins decide what identification may
+                // fill, so its record is recomputed here as the managed path
+                // does: the base row's fills are its own, and copying them
+                // would claim a fill the pin replaced.
+                self.identify_entry(provider, &mut model);
                 if provider.provider_id == "openai-codex"
                     && let Some(maximum) = base.codex_context_window_ceiling()
                 {
@@ -875,9 +880,11 @@ impl BundledCatalog {
         }
         if let Some(tool_calling) = edit.tool_calling {
             model.capabilities.tool_calling = tool_calling;
+            declare(&mut model, "toolCalling");
         }
         if let Some(vision) = edit.vision {
             model.capabilities.vision = vision;
+            declare(&mut model, "vision");
         }
         for (field, value, target) in [
             (
@@ -927,6 +934,7 @@ impl BundledCatalog {
             } else {
                 None
             };
+            declare(&mut model, "reasoning");
         }
         if let Some(capabilities) = edit.modality_capabilities {
             model.metadata.get_or_insert_default().raw.insert(
@@ -937,6 +945,7 @@ impl BundledCatalog {
                 "modalityCapabilities".into(),
                 Value::Array(capabilities.into_iter().map(Value::String).collect()),
             );
+            declare(&mut model, "modalityCapabilities");
         }
         model
     }
@@ -1280,15 +1289,65 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
     )
 }
 
-/// A limit the entry does not declare is inherited from the entry it replaces.
-pub fn inherit_limits(mut entry: ModelEntry, base: &ModelEntry) -> ModelEntry {
-    if entry.capabilities.context_window.is_none() {
-        entry.capabilities.context_window = base.capabilities.context_window;
+/// The override a record stores, rebased on the entry the current listing or
+/// catalog row serves (#2189). Everything the user never edited follows the
+/// base row, so a refresh that declares new capabilities serves them: the
+/// override was written as a clone of the row it edited, and its values are
+/// the old row's, not the user's. What the user edited is pinned, marked in
+/// `capabilityOverrideFields`; the display name is always the override's,
+/// because an unedited clone cannot be told from one the user typed.
+pub fn rebase_override(base: &ModelEntry, pinned: &ModelEntry) -> ModelEntry {
+    let mut merged = base.clone();
+    merged.display_name = pinned.display_name.clone();
+    let marks: Vec<String> = pinned
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.capability_override_fields.clone())
+        .unwrap_or_default();
+    let marked = |field: &str| marks.iter().any(|name| name == field);
+    if marked("contextWindow") {
+        merged.capabilities.context_window = pinned.capabilities.context_window;
     }
-    if entry.capabilities.max_output_tokens.is_none() {
-        entry.capabilities.max_output_tokens = base.capabilities.max_output_tokens;
+    if marked("maxOutputTokens") {
+        merged.capabilities.max_output_tokens = pinned.capabilities.max_output_tokens;
     }
-    entry
+    if marked("toolCalling") {
+        merged.capabilities.tool_calling = pinned.capabilities.tool_calling;
+    }
+    if marked("vision") {
+        merged.capabilities.vision = pinned.capabilities.vision;
+    }
+    if marked("reasoning") {
+        merged.capabilities.reasoning = pinned.capabilities.reasoning;
+    }
+    if let Some(metadata) = merged.metadata.as_mut() {
+        if marked("reasoning") {
+            metadata.reasoning = pinned
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.reasoning.clone());
+        }
+        if marked("modalityCapabilities")
+            && let Some(pinned_metadata) = pinned.metadata.as_ref()
+        {
+            for key in ["imageGeneration", "modalityCapabilities"] {
+                match pinned_metadata.raw.get(key) {
+                    Some(value) => {
+                        metadata.raw.insert(key.into(), value.clone());
+                    }
+                    None => {
+                        metadata.raw.remove(key);
+                    }
+                }
+            }
+        }
+        for field in marks {
+            if !metadata.capability_override_fields.contains(&field) {
+                metadata.capability_override_fields.push(field);
+            }
+        }
+    }
+    merged
 }
 
 /// A field named in `capabilityOverrideFields` is a declaration and must be
