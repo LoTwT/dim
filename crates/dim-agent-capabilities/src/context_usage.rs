@@ -1044,10 +1044,8 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
-    /// The tools the last model request at or before `through` declared,
-    /// with that request's position: the same request always declares the
-    /// same tools, so the position is their cache identity.
-    async fn request_tools(&self, through: u64) -> Result<Option<(Vec<ToolDefinition>, u64)>> {
+    /// The position of the last model request at or before `through`.
+    async fn request_position(&self, through: u64) -> Result<Option<u64>> {
         let reply = self
             .timeline
             .query(TimelineQuery {
@@ -1063,7 +1061,7 @@ impl ContextUsage {
                         values: vec![serde_json::json!("model/call")],
                     }),
                     select: QuerySelect::Fields {
-                        fields: vec!["data.request.tools".into(), "position.sequence".into()],
+                        fields: vec!["position.sequence".into()],
                     },
                     group_by: vec![],
                     pick: None,
@@ -1078,13 +1076,53 @@ impl ContextUsage {
                 }),
             })
             .await?;
-        let Some((value, sequence)) = (match &reply.result {
+        Ok(match &reply.result {
             QueryOutput::Rows { rows } => {
                 rows.first().and_then(|row| match row.values.as_slice() {
-                    [
-                        QueryValue::Value { value },
-                        QueryValue::Value { value: sequence },
-                    ] => Some((value.clone(), sequence.as_u64()?)),
+                    [QueryValue::Value { value }] => value.as_u64(),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+    }
+
+    /// The tools the last model request at or before `through` declared.
+    async fn request_tools(&self, through: u64) -> Result<Option<Vec<ToolDefinition>>> {
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec![serde_json::json!("model/call")],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["data.request.tools".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let Some(value) = (match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => Some(value.clone()),
                     _ => None,
                 })
             }
@@ -1094,8 +1132,7 @@ impl ContextUsage {
         };
         Ok(serde_json::from_value::<Option<Vec<ToolDefinition>>>(value)
             .ok()
-            .flatten()
-            .map(|tools| (tools, sequence)))
+            .flatten())
     }
 
     async fn current_tools(
@@ -1111,12 +1148,12 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let (tools, identity) = match self.request_tools(through).await? {
-            Some((tools, sequence)) => (tools, format!("request:{sequence}")),
+        let (identity, cached_tools) = match self.request_position(through).await? {
+            Some(sequence) => (format!("request:{sequence}"), None),
             None => {
                 let tools = self.registry.visible_definitions();
                 let identity = format!("live:{}", fingerprint(&tools)?);
-                (tools, identity)
+                (identity, Some(tools))
             }
         };
         let versions = format!("{versions}:{identity}");
@@ -1131,6 +1168,13 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
+        let tools = match cached_tools {
+            Some(tools) => tools,
+            None => self
+                .request_tools(through)
+                .await?
+                .unwrap_or_else(|| self.registry.visible_definitions()),
+        };
         let mut system = self
             .fields(&configuration.event_id, through, &["data.system"])
             .await?;
