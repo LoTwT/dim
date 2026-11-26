@@ -1,6 +1,11 @@
+#![cfg(unix)]
 //! A routed call by id against a minimal host that has only the offline model
 //! catalog: Agents admits the Session, so the load-and-hold path of ADR 027 D5
 //! is the production one (#2127).
+//!
+//! Unix only: the host listens on a Unix socket. `scripts/test-windows-native.mjs`
+//! compiles `dim-cli --lib` and the two flow targets it names, so Windows never
+//! builds this file.
 
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};

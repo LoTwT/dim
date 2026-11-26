@@ -368,6 +368,13 @@ fn lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
 /// carry: a parameter that is the calling row, a cancellation, or a callback.
 /// Read from the `#[rutis::service]` blocks themselves, so a new operation of
 /// that kind cannot slip past the list the runtime refuses.
+///
+/// What it recognizes: a `Ctx` or a reference to one, the `CancelledFn` and
+/// `CancellationToken` aliases, and `dyn Fn(..)` behind `Arc` or a reference.
+/// What it does not: an `impl Fn` parameter, a bare `fn(..)` pointer, and any
+/// other alias of those types; an operation written that way needs the list
+/// updated by hand, which the two-way comparison will report as a listed
+/// operation whose signature looks routable.
 fn derived_lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(root.join("crates"))? {
@@ -847,4 +854,74 @@ pub fn check(root: &Path) -> Result<()> {
     }
     println!("service declarations passed");
     Ok(())
+}
+
+#[cfg(test)]
+mod derivation_tests {
+    use super::*;
+
+    fn tree(source: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "dim-derived-{}-{}",
+            std::process::id(),
+            source.len()
+        ));
+        std::fs::create_dir_all(root.join("crates/example/src")).unwrap();
+        std::fs::write(root.join("crates/example/src/lib.rs"), source).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_callback_operation_is_derived_and_a_plain_one_is_not() {
+        let root = tree(
+            r#"
+            pub struct Example;
+            #[rutis::service]
+            impl Example {
+                /// A plain read.
+                pub async fn get(&self) -> Result<u64, Error> { Ok(1) }
+                /// Takes the calling row.
+                pub async fn read(&self, caller: &Ctx, path: String) -> Result<u64, Error> { Ok(1) }
+                /// Takes a cancellation.
+                pub async fn wait(&self, cancelled: CancelledFn) -> Result<u64, Error> { Ok(1) }
+            }
+            "#,
+        );
+        let derived = derived_lifecycle(&root).expect("the derivation reads the tree");
+        assert_eq!(
+            derived,
+            vec![
+                ("example".to_owned(), "read".to_owned()),
+                ("example".to_owned(), "wait".to_owned()),
+            ],
+            "{derived:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_comparison_names_the_operation_that_disagrees() {
+        let derived = [
+            ("example".to_owned(), "read".to_owned()),
+            ("example".to_owned(), "wait".to_owned()),
+        ];
+        let listed = [("example".to_owned(), "read".to_owned())];
+        let missing: Vec<String> = derived
+            .iter()
+            .filter(|pair| !listed.contains(pair))
+            .map(|(service, method)| format!("{service}.{method}"))
+            .collect();
+        assert_eq!(missing, vec!["example.wait".to_owned()]);
+        let listed = [
+            ("example".to_owned(), "get".to_owned()),
+            ("example".to_owned(), "read".to_owned()),
+            ("example".to_owned(), "wait".to_owned()),
+        ];
+        let extra: Vec<String> = listed
+            .iter()
+            .filter(|pair| !derived.contains(pair))
+            .map(|(service, method)| format!("{service}.{method}"))
+            .collect();
+        assert_eq!(extra, vec!["example.get".to_owned()]);
+    }
 }

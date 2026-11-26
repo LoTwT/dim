@@ -78,9 +78,12 @@ signatures disagree, so this stays true as operations are added.
 own Session's services through injection as before. The Session's own scope is not one of the
 faces a routed call resolves.
 
-A line is admitted while it is published and not closing. Its durable `branch/end` takes it
-out of the published set at once, so a later call answers `no_line`, which is final for that
-line; a call admitted before the end keeps its owner's own result and failure. Rust calls the same operations: it builds `args` from the target operation's request
+A line is admitted while it is published and not closing. A running line that ends a tool call
+commits that batch but stays selectable until its turn ends, so a call placed between the two
+still reaches its owner; the turn's durable `branch/end` is what takes the line out of the
+published set, and from then on a new call answers `no_line`, which is final for that line. A
+call admitted before the end keeps its owner's own result and failure, including one that
+arrives after it. Rust calls the same operations: it builds `args` from the target operation's request
 type and reads the reply as that operation's reply type.
 
 ## Available services
