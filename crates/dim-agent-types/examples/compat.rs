@@ -85,12 +85,8 @@ fn native_events() -> Vec<AgentEvent> {
         EventKind::InputApplied(InputAppliedData {
             input_id: "rust-1".into(),
             mode: Some(InputMode::Queue),
-            tool_mode: None,
         }),
-        EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
-            turn_id: turn(),
-        }),
+        EventKind::TurnStart(TurnStartData { turn_id: turn() }),
         EventKind::ModelStart(StepData {
             turn_id: turn(),
             request_id: request_id(),

@@ -1339,7 +1339,6 @@ async fn unconfigured_usage_does_not_project_legacy_messages() {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "legacy".into(),
             })
             .into(),
@@ -3011,7 +3010,6 @@ async fn a_streamed_context_resumes_at_the_event_its_checkpoint_names() {
         input_id: first.id.clone(),
     }));
     let cut = append(EventKind::TurnStart(TurnStartData {
-        tool_mode: None,
         turn_id: "turn-1".into(),
     }));
     let kept = append(EventKind::InputMessage(InputMessageData::text(
@@ -3098,7 +3096,6 @@ async fn a_cut_after_a_compaction_reads_only_its_tail_and_keeps_the_verdict() {
         input_id: first.id.clone(),
     }));
     append(EventKind::TurnStart(TurnStartData {
-        tool_mode: None,
         turn_id: "turn-1".into(),
     }));
     append(EventKind::ModelStart(ModelStartData {
@@ -3130,7 +3127,6 @@ async fn a_cut_after_a_compaction_reads_only_its_tail_and_keeps_the_verdict() {
         input_id: second.id.clone(),
     }));
     let cut = append(EventKind::TurnStart(TurnStartData {
-        tool_mode: None,
         turn_id: "turn-2".into(),
     }));
     let compaction = append(completed(&cut.id, "short", cut.sequence, vec![]));
@@ -3293,7 +3289,6 @@ async fn a_malformed_compaction_cut_replays_the_segment_and_keeps_the_verdict() 
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "turn-1".into(),
             })
             .into(),
@@ -3315,7 +3310,6 @@ async fn a_malformed_compaction_cut_replays_the_segment_and_keeps_the_verdict() 
     let turn = timeline
         .append(
             EventDraft::new(EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "turn-2".into(),
             }))
             .with_id(later),
@@ -5064,7 +5058,6 @@ async fn a_line_starts_before_an_undelivered_removal_under_a_later_system_change
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "t1".into(),
             })
             .into(),
@@ -5326,7 +5319,6 @@ async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "t1".into(),
             })
             .into(),

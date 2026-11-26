@@ -159,10 +159,9 @@ owns this projection. Three terms:
 - A Code Mode program discovers and calls exactly the `delegated` set: `tools.list` and
   `tools.describe` project it, and `tools.call` admits inside it. `codemode` itself is never
   delegated, so a program cannot nest one.
-- The Loop holds the turn's mode. The InputQueue records the effective mode when it applies an
-  input, at its serial position on the Dispatcher, and the turn — even one deferred for compaction
-  or recovered after a restart — uses that recorded mode; the applied record carries it, so a
-  rebuild recovers it. Every request of the turn uses the pin, together with the callable set
+- The Loop holds the turn's mode: the live effective mode when the Dispatcher applies the input,
+  at its serial position. The turn — even one deferred for compaction — uses it for every request;
+  a rebuild starts its pending inputs under the effective mode then.
   ToolBinding pins today. A switch
   takes effect with the next applied input, not with the next request, and needs no re-adoption:
   the branch's configuration, the version pins and the source sets stay as they are. A request
@@ -220,8 +219,6 @@ session.create.toolMode ──▶ SessionConfig.toolMode ──▶ ToolRegistry 
 A member Session records the creating Session's current mode when it is created. Switching the
 creator later does not change it: the member is its own Session with its own operator control.
 
-The turn records its pin in `turn/start` as an additive optional `toolMode`, so a usage read for an
-open turn uses the turn's mode even when a follow-up input was applied inside it.
 
 ## 6. Shell mode's tool
 
@@ -343,8 +340,7 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
 ## 9. Compatibility
 
 - Stored records: an absent `toolMode` is `normal`; `normal` is omitted when serialized, so the
-  native store's text form does not change for existing Sessions. The applied input record gains
-  an optional `toolMode`; a record without it reads as `normal`, the only mode before this feature.
+  native store's text form does not change for existing Sessions.
 - A fork copies its source's current configuration and therefore its mode.
 - The v3 Code Mode gate stays. `excluded_tools` keeps `codemode` out of that Session's callable set,
   the fallback rule makes the Session `normal`, and a v3 client can neither select nor receive Code
@@ -443,9 +439,9 @@ Requirements go to other owners:
 - **PromptSources.** The environment block follows the surface: while `shell` is in force (the
   `effective` value) it drops the Windows file-encoding guidance about `read`/`edit`/`write`. Its
   owner carries this into [PromptSources](plugins/PromptSources.md).
-- **Loop.** Record the effective mode when the input is applied, at its serial position, and
-  recover it from the applied record on a rebuild; hold it for the turn. Its page gains the turn's
-  mode pin. Its owner carries this into [Loop](../architecture/rust-agent/plugins/Loop.md).
+- **Loop.** Record the effective mode when the input is applied, at its serial position; a rebuild
+  starts its pending inputs under the effective mode then. Its page gains the turn's mode pin. Its
+  owner carries this into [Loop](../architecture/rust-agent/plugins/Loop.md).
 
 Everything else stays within the owners that already exist: ToolRegistry projects its own set and
 holds the live mode, the Loop holds the turn's mode pin, ToolBinding pins the callable set,

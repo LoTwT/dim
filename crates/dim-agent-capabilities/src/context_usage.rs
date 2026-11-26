@@ -4,9 +4,9 @@ use crate::{
     tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
-    AgentError, BranchLifecycle, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand,
-    QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Result, Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOrder,
+    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
+    Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -1044,9 +1044,8 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
-    /// The mode the turn at `through` ran under: the driving input's
-    /// recorded mode at the turn's start, or `normal` when none precedes it.
-    async fn mode_at(&self, through: u64) -> Result<ToolMode> {
+    /// The tools the last model request at or before `through` declared.
+    async fn request_tools(&self, through: u64) -> Result<Option<Vec<ToolDefinition>>> {
         let reply = self
             .timeline
             .query(TimelineQuery {
@@ -1059,128 +1058,16 @@ impl ContextUsage {
                         value: QueryOperand::Field {
                             path: "kind".into(),
                         },
-                        values: vec![serde_json::json!("turn/start")],
+                        values: vec![serde_json::json!("model/call")],
                     }),
                     select: QuerySelect::Fields {
-                        fields: vec!["position.sequence".into(), "data.tool_mode".into()],
+                        fields: vec!["data.request.tools".into()],
                     },
                     group_by: vec![],
                     pick: None,
                     order_by: vec![QueryOrder {
                         key: QueryOrderKey::Position,
                         direction: TimelineQueryDirection::Descending,
-                    }],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::MIN,
-                    after: None,
-                }),
-            })
-            .await?;
-        let (start, pin) = match &reply.result {
-            QueryOutput::Rows { rows } => rows
-                .first()
-                .and_then(|row| match row.values.as_slice() {
-                    [
-                        QueryValue::Value { value },
-                        QueryValue::Value { value: mode },
-                    ] => Some((
-                        value.as_u64(),
-                        serde_json::from_value::<Option<ToolMode>>(mode.clone())
-                            .ok()
-                            .flatten(),
-                    )),
-                    _ => None,
-                })
-                .unwrap_or((None, None)),
-            _ => (None, None),
-        };
-        let Some(start) = start else {
-            return Ok(self.registry.effective_tool_mode_now());
-        };
-        let reply = self
-            .timeline
-            .query(TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: None,
-                through: Some(through),
-                include_publishing: false,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::In {
-                        value: QueryOperand::Field {
-                            path: "kind".into(),
-                        },
-                        values: vec![serde_json::json!("turn/end")],
-                    }),
-                    select: QuerySelect::Fields {
-                        fields: vec!["position.sequence".into()],
-                    },
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![QueryOrder {
-                        key: QueryOrderKey::Position,
-                        direction: TimelineQueryDirection::Descending,
-                    }],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::MIN,
-                    after: None,
-                }),
-            })
-            .await?;
-        let ended = match &reply.result {
-            QueryOutput::Rows { rows } => {
-                rows.first().and_then(|row| match row.values.as_slice() {
-                    [QueryValue::Value { value }] => value.as_u64(),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
-        if ended.is_some_and(|end| end >= start) {
-            return Ok(self.registry.effective_tool_mode_now());
-        }
-        if let Some(mode) = pin {
-            return Ok(mode);
-        }
-        let reply = self
-            .timeline
-            .query(TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: ended.map(|end| TimelinePosition {
-                    branch_id: self.timeline.branch_id().to_owned(),
-                    sequence: end,
-                }),
-                through: Some(start),
-                include_publishing: false,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::And {
-                        conditions: vec![
-                            QueryFilter::In {
-                                value: QueryOperand::Field {
-                                    path: "kind".into(),
-                                },
-                                values: vec![serde_json::json!("input/applied")],
-                            },
-                            QueryFilter::Compare {
-                                left: QueryOperand::Field {
-                                    path: "data.mode".into(),
-                                },
-                                comparison: QueryComparison::Ne,
-                                right: QueryOperand::Value {
-                                    value: serde_json::json!("append"),
-                                },
-                            },
-                        ],
-                    }),
-                    select: QuerySelect::Fields {
-                        fields: vec!["data.tool_mode".into()],
-                    },
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![QueryOrder {
-                        key: QueryOrderKey::Position,
-                        direction: TimelineQueryDirection::Ascending,
                     }],
                 },
                 page: Some(QueryPage {
@@ -1198,12 +1085,11 @@ impl ContextUsage {
             }
             _ => None,
         }) else {
-            return Ok(ToolMode::Normal);
+            return Ok(None);
         };
-        Ok(serde_json::from_value::<Option<ToolMode>>(value)
+        Ok(serde_json::from_value::<Option<Vec<ToolDefinition>>>(value)
             .ok()
-            .flatten()
-            .unwrap_or(ToolMode::Normal))
+            .flatten())
     }
 
     async fn current_tools(
@@ -1219,7 +1105,10 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let tools = self.registry.visible_for(self.mode_at(through).await?);
+        let tools = self
+            .request_tools(through)
+            .await?
+            .unwrap_or_else(|| self.registry.visible_definitions());
         let tools_fingerprint = fingerprint(
             &tools
                 .iter()

@@ -443,10 +443,6 @@ impl ToolRegistry {
     pub fn set_tool_mode(&self, mode: ToolMode) {
         *self.mode.lock().unwrap() = mode;
     }
-    /// The declarations of `mode`'s visible tools in their mounted order.
-    pub fn visible_for(&self, mode: ToolMode) -> Vec<ToolDefinition> {
-        project(self.effective_of_mode(mode), &self.snapshot().0).0
-    }
     /// The declarations the model request carries: the callable set projected
     /// by the effective mode.
     pub fn visible_definitions(&self) -> Vec<ToolDefinition> {

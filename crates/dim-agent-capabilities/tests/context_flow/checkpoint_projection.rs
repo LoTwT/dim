@@ -200,7 +200,6 @@ fn a_record_without_replacement_parts_deserializes_and_replays() {
     let context = fixed(vec![
         EventKind::InputMessage(InputMessageData::text("first", None)),
         EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
             turn_id: "turn".into(),
         }),
         EventKind::ContextCompaction(data),
@@ -249,7 +248,6 @@ async fn a_streamed_context_from_a_snapshot_matches_the_full_render() {
     let cut = timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "next".into(),
             })
             .into(),
@@ -315,7 +313,6 @@ async fn a_streamed_context_without_a_snapshot_matches_the_full_render() {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "next".into(),
             })
             .into(),
@@ -358,7 +355,6 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
     let cut = timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "next".into(),
             })
             .into(),
@@ -584,7 +580,6 @@ async fn a_checkpoint_whose_render_fails_falls_back_to_full_replay() {
     let cut = timeline
         .append(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "next".into(),
             })
             .into(),
@@ -723,7 +718,6 @@ fn completed_compaction_survives_missing_or_older_recovery_checkpoint() {
     };
     let turn = || {
         EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
             turn_id: "turn".into(),
         })
     };
@@ -867,7 +861,6 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
     let mut context = fixed(vec![
         EventKind::ContextConfigured(configuration.clone()),
         EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
             turn_id: "turn".into(),
         }),
         EventKind::PromptChanged(PromptChangedData {
@@ -1189,7 +1182,6 @@ fn an_interrupted_output_keeps_its_text_and_started_calls_and_drops_its_thinking
         input,
         consumed,
         EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
             turn_id: "turn".into(),
         }),
         start("r1"),

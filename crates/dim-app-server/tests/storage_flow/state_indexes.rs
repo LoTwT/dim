@@ -34,7 +34,6 @@ async fn restore_field_reads_seek_the_complete_control_and_numeric_keys() {
                 sequence
             };
             push(EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: turn.to_string(),
             }));
             push(EventKind::ContextScope(ContextScopeData {
@@ -560,7 +559,6 @@ async fn v40_output_identity_upgrade_is_atomic_and_directory_reads_do_not_audit_
                 record(
                     2,
                     EventKind::TurnStart(TurnStartData {
-                        tool_mode: None,
                         turn_id: "between outputs".into(),
                     }),
                 ),

@@ -1901,7 +1901,6 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
     seed.append(
         "main",
         EventKind::TurnStart(TurnStartData {
-            tool_mode: None,
             turn_id: "work".into(),
         }),
     );

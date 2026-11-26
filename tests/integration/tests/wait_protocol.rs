@@ -366,7 +366,6 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                 _ => {
                     let draft = match action {
                         Start => EventKind::TurnStart(TurnStartData {
-                            tool_mode: None,
                             turn_id: "turn".into(),
                         })
                         .into(),
@@ -404,7 +403,6 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                                 EventKind::InputApplied(InputAppliedData {
                                     input_id: input_id(position),
                                     mode: None,
-                                    tool_mode: None,
                                 })
                                 .into(),
                             )
@@ -431,7 +429,6 @@ async fn wait_timeline_traces_match_the_notification_contract() {
             timeline
                 .append(
                     EventKind::TurnStart(TurnStartData {
-                        tool_mode: None,
                         turn_id: "turn".into(),
                     })
                     .into(),
@@ -462,7 +459,6 @@ async fn wait_timeline_traces_match_the_notification_contract() {
             })
         } else {
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "turn".into(),
             })
         };
@@ -478,7 +474,6 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                 EventKind::InputApplied(InputAppliedData {
                     input_id: input_id(0),
                     mode: None,
-                    tool_mode: None,
                 })
                 .into(),
             )

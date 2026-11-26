@@ -550,7 +550,6 @@ async fn property_pages_include_matching_unpublished_facts_at_the_same_cut() {
         input("one").with_id("1"),
         draft(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "t1".into(),
             }),
             "2",
@@ -579,7 +578,6 @@ async fn property_pages_include_matching_unpublished_facts_at_the_same_cut() {
         input("two").with_id("5"),
         draft(
             EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
                 turn_id: "t2".into(),
             }),
             "6",

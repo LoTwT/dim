@@ -64,12 +64,11 @@ impl InputQueue {
         let mut drafts = Vec::new();
         for decision in decisions {
             match decision {
-                Decision::Apply(input_id, mode, tool_mode) => {
+                Decision::Apply(input_id, mode) => {
                     drafts.push(
                         EventKind::InputApplied(InputAppliedData {
                             input_id,
                             mode: Some(mode),
-                            tool_mode: Some(tool_mode),
                         })
                         .into(),
                     );
@@ -438,14 +437,9 @@ impl InputQueue {
         for (_, decision) in decisions {
             (published, _) = self.write(vec![decision], published)?;
         }
-        let tool_mode = self.tools.effective_tool_mode();
         let releases = release
             .into_iter()
             .flat_map(|id| state.release(&id))
-            .map(|decision| match decision {
-                Decision::Apply(id, queue_mode, _) => Decision::Apply(id, queue_mode, tool_mode),
-                other => other,
-            })
             .collect();
         let (published, _) = self.write(releases, published)?;
         self.await_publication(published).await?;

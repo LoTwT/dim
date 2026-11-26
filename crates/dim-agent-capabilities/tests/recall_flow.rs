@@ -1265,7 +1265,6 @@ fn consumed(input: &str) -> EventKind {
 
 fn turn_start(turn: &str) -> EventKind {
     EventKind::TurnStart(TurnStartData {
-        tool_mode: None,
         turn_id: turn.into(),
     })
 }
@@ -2701,7 +2700,6 @@ fn an_input_that_never_counted_and_thinking_are_not_told() {
     recorded.push(EventKind::InputApplied(InputAppliedData {
         input_id: pending.clone(),
         mode: Some(InputMode::Queue),
-        tool_mode: None,
     }));
     let taken = recorded.push(input_message("counted once"));
     recorded.push(turn_start("t1"));

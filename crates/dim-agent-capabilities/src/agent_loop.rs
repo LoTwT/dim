@@ -87,12 +87,12 @@ struct Applied {
     tool_mode: ToolMode,
 }
 impl Applied {
-    fn new(event: &AgentEvent, data: &InputAppliedData) -> Self {
+    fn new(event: &AgentEvent, data: &InputAppliedData, tool_mode: ToolMode) -> Self {
         Self {
             id: data.input_id.clone(),
             sequence: event.sequence,
             mode: data.mode.unwrap_or_default(),
-            tool_mode: data.tool_mode.unwrap_or_default(),
+            tool_mode,
         }
     }
 }
@@ -256,13 +256,8 @@ impl AgentLoop {
             deferred: None,
             tool_mode,
         });
-        self.timeline.append(
-            EventKind::TurnStart(TurnStartData {
-                tool_mode: None,
-                turn_id: id,
-            })
-            .into(),
-        )?;
+        self.timeline
+            .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
         Ok(())
     }
     fn end(&self, turn: &mut Turn, outcome: TurnOutcome) -> Result<()> {
@@ -684,7 +679,6 @@ impl AgentLoop {
                 fields: vec![
                     "data.input_id".into(),
                     "data.mode".into(),
-                    "data.tool_mode".into(),
                     "position.sequence".into(),
                 ],
             };
@@ -704,12 +698,11 @@ impl AgentLoop {
                             value: serde_json::Value::String(id),
                         },
                         mode,
-                        tool_mode,
                         QueryValue::Value {
                             value: serde_json::Value::Number(sequence),
                         },
                     ],
-                ) = <[_; 4]>::try_from(row.values)
+                ) = <[_; 3]>::try_from(row.values)
                 else {
                     return Err(AgentError::fault(
                         "Loop",
@@ -722,17 +715,7 @@ impl AgentLoop {
                         .map_err(|error| AgentError::fault("Loop", error.to_string()))?,
                     QueryValue::Elements { .. } => unreachable!("an applied input mode is scalar"),
                 };
-                let tool_mode = match tool_mode {
-                    QueryValue::Missing => ToolMode::default(),
-                    QueryValue::Value { value } => {
-                        serde_json::from_value::<Option<ToolMode>>(value)
-                            .map_err(|error| AgentError::fault("Loop", error.to_string()))?
-                            .unwrap_or_default()
-                    }
-                    QueryValue::Elements { .. } => {
-                        unreachable!("an applied input tool mode is scalar")
-                    }
-                };
+                let tool_mode = self.binding.effective_mode();
                 pending.push(Applied {
                     id,
                     mode,
@@ -983,7 +966,7 @@ impl AgentLoop {
                     failed: Some(CAPABILITY_RELOADING.into()),
                     continued: false,
                     deferred: None,
-                    tool_mode: ToolMode::default(),
+                    tool_mode: self.binding.effective_mode(),
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -1419,7 +1402,7 @@ impl AgentLoop {
         let mut slot = self.turn.lock().unwrap();
         match &event.kind {
             EventKind::InputApplied(data) => {
-                let input = Applied::new(&event, data);
+                let input = Applied::new(&event, data, self.binding.effective_mode());
                 let drives = input.mode != InputMode::Append;
                 self.pending.lock().unwrap().push(input);
                 match slot.as_mut() {

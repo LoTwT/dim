@@ -75,7 +75,6 @@ observable input queue.
 | `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
 | `S:TreeCommands` | Reach the validating branch input entry for `submit`. |
 | `B:TimelineIdentity` | Identify the branch for `submit`. |
-| `S:ToolRegistry` | Read the effective tool mode when an input is applied; the applied record carries it to the turn. |
 
 ### Data face
 

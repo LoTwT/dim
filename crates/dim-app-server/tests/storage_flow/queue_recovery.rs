@@ -1,80 +1,12 @@
 use super::*;
-use dim_agent_capabilities::{
-    host::{HostFuture, ToolExecutionContext},
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
-};
-use dim_agent_runtime::{InputSnapshot, Names};
-use dim_agent_types::{ToolCall, ToolMode, ToolResult};
-use rutis::Ctx;
-use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
+use dim_agent_runtime::InputSnapshot;
 use serde_json::json;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-
-struct ModeEntryPlugin {
-    tools: Key<ToolRegistry>,
-}
-
-impl ModeEntryPlugin {
-    fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            tools: names.key()?,
-        })
-    }
-}
-
-impl DynPlugin for ModeEntryPlugin {
-    fn name(&self) -> &str {
-        "ModeEntry"
-    }
-    fn injects(&self) -> Vec<TypeKey> {
-        vec![self.tools.erase()]
-    }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
-        Box::pin(async move {
-            let tools = ctx.require_at(&self.tools)?;
-            tools.register(
-                ctx,
-                ToolContribution {
-                    definition: definition("execute", "Run a command.", json!({"type": "object"})),
-                    handler: Arc::new(Noop),
-                },
-            )?;
-            Ok(Effect::Done)
-        })
-    }
-}
-
-struct Noop;
-
-impl ToolHandler for Noop {
-    fn execute(
-        &self,
-        _: ToolCall,
-        _: ToolExecutionContext,
-        _: CancellationToken,
-    ) -> HostFuture<'_, ToolResult> {
-        Box::pin(async {
-            Ok(ToolResult {
-                content: "ok".into(),
-                structured_content: None,
-                is_error: None,
-                blob_refs: None,
-                background_task: None,
-                context_messages: None,
-                effects: None,
-            })
-        })
-    }
-}
 
 fn builder(store: &Arc<SqliteTimelineStore>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.require_feature(Feature::new("ModeEntry").session("ModeEntry", |names| {
-        Ok(Box::new(ModeEntryPlugin::new(names)?))
-    }));
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     builder
 }
@@ -269,7 +201,6 @@ async fn queue_resume_reuses_an_application_written_by_an_older_owner_after_a_sa
                 EventKind::InputApplied(InputAppliedData {
                     input_id: input_id.clone(),
                     mode: Some(InputMode::Queue),
-                    tool_mode: None,
                 }),
             ),
         ],
@@ -541,135 +472,6 @@ async fn obsolete_queue_result_versions_do_not_control_recovery() {
         .await
         .unwrap();
     assert_eq!(records[0].event.sequence, head + 1);
-    agent.close().await.unwrap();
-    store.close().await.unwrap();
-    db.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_first_time_application_after_restore_takes_the_persisted_mode() {
-    let database = Database::new();
-    let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let store = SqliteTimelineStore::new(db.clone());
-    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
-    let session = agent
-        .create_session(SessionConfig {
-            tool_mode: ToolMode::Shell,
-            tools: Some(vec!["echo".into(), "wait".into(), "execute".into()]),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let id = session.id().to_owned();
-    session
-        .input(
-            InputMessageData::text("tool:wait {\"millis\":5000}", Some(InputMode::Queue)),
-            "main",
-        )
-        .await
-        .unwrap();
-    let held = session
-        .input(
-            InputMessageData::text("held across restart", Some(InputMode::Queue)),
-            "main",
-        )
-        .await
-        .unwrap()
-        .id
-        .clone();
-    agent.close().await.unwrap();
-    store.close().await.unwrap();
-    db.close().await.unwrap();
-
-    let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let store = SqliteTimelineStore::new(db.clone());
-    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
-    let session = settled("the held input restores", agent.restore_session(id.clone()))
-        .await
-        .unwrap();
-    settled("the restored queue applies", session.idle("main"))
-        .await
-        .unwrap();
-    let history = chain_events(&session, "main", ..).await.unwrap();
-    let applied = history.iter().find_map(|event| match &event.kind {
-        EventKind::InputApplied(data) if data.input_id == held => data.tool_mode,
-        _ => None,
-    });
-    assert_eq!(
-        applied,
-        Some(ToolMode::Shell),
-        "a first-time application uses the persisted mode"
-    );
-    agent.close().await.unwrap();
-    store.close().await.unwrap();
-    db.close().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rebuild_releases_a_queued_input_under_the_persisted_mode() {
-    let database = Database::new();
-    let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let store = SqliteTimelineStore::new(db.clone());
-    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
-    let session = agent
-        .create_session(SessionConfig {
-            tool_mode: ToolMode::Shell,
-            tools: Some(vec!["echo".into(), "wait".into(), "execute".into()]),
-            permission_policy: PermissionPolicy {
-                preset: PermissionPreset::FullAccess,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let id = session.id().to_owned();
-    agent.close().await.unwrap();
-    store.close().await.unwrap();
-    db.close().await.unwrap();
-
-    let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let store = SqliteTimelineStore::new(db.clone());
-    let head = store.head(&key(&id, "main")).await.unwrap();
-    append(
-        &store,
-        key(&id, "main"),
-        vec![record(
-            head + 1,
-            EventKind::InputMessage(InputMessageData::text(
-                "held across restart",
-                Some(InputMode::Queue),
-            )),
-        )],
-    )
-    .await
-    .unwrap();
-    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
-    let session = settled(
-        "the queued input restores",
-        agent.restore_session(id.clone()),
-    )
-    .await
-    .unwrap();
-    settled("the rebuild applies the queue", session.idle("main"))
-        .await
-        .unwrap();
-    let history = chain_events(&session, "main", ..).await.unwrap();
-    let applied = history.iter().find_map(|event| match &event.kind {
-        EventKind::InputApplied(data) if data.input_id == format!("event-{}", head + 1) => {
-            data.tool_mode
-        }
-        _ => None,
-    });
-    assert_eq!(
-        applied,
-        Some(ToolMode::Shell),
-        "the rebuild's release uses the persisted mode"
-    );
     agent.close().await.unwrap();
     store.close().await.unwrap();
     db.close().await.unwrap();
