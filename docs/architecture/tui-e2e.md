@@ -437,8 +437,8 @@ CI keeps:
   `daemon_startup_progress::` cases. It runs when their owning test files or
   the production paths they protect change. The `tui_update` cases use the
   debug-only `DIM_TEST_RELEASE_BUILD=1` override instead of a separate
-  release-stamped build step. Together with the ordinary run, CI keeps the
-  original 422 non-TUI and 287 TUI `cli_flow*` cases.
+  release-stamped build step. When the dedicated step is selected, the two
+  runs together keep the original 422 non-TUI and 287 TUI `cli_flow*` cases.
 - The explicit `cli_flow` step that names the 12 `--ignored` production and
   line-mode flows one by one: the production App Server, the account and
   permission presets, the real-owner MCP/hooks/workflow writes, and the

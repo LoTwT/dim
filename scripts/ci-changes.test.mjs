@@ -121,16 +121,25 @@ test('debug-only CLI tests follow their owning modules',()=>{
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow.rs']),only('rust','debug'));
   assert.deepEqual(classify(['crates/dimcode/tests/support/cli_harness.rs']),only('rust','node','debug'));
   assert.deepEqual(classify(['crates/dimcode/Cargo.toml']),only('rust','debug','dependencies'));
-  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust'));
-  for (const file of ['crates/dim-cli/src/client.rs','crates/dim-cli/src/update.rs'])
-    assert.deepEqual(classify([file]),only('rust','windows','debug'),file);
+  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust','debug'));
+  for (const file of [
+    'crates/dim-cli/src/client.rs',
+    'crates/dim-cli/src/update.rs',
+    'crates/dim-cli/src/update/staged.rs',
+    'crates/dim-cli/src/plugins.rs',
+    'crates/dim-cli/src/ui/tui.rs',
+  ]) assert.deepEqual(classify([file]),only('rust','windows','debug'),file);
   assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts','debug'));
   assert.deepEqual(classify(['crates/dim-app-server/src/cli.rs']),only('rust','node','debug','windows_native'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/transport.rs']),only('rust','node','debug','windows_native'));
+  assert.deepEqual(classify(['crates/dim-agent-capabilities/src/build.rs']),only('rust','node','debug'));
+  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/support/daemon.rs']),only('rust','node','debug'));
   assert.deepEqual(classify(['crates/dim-cli/src/session_host.rs']),only('rust','windows'));
 });
 
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
-  assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
+  assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows','debug'));
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));
   assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'));
   assert.deepEqual(classify(['xtask/check/src/literal_main.rs']),only('static','xtask'));

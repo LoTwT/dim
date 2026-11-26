@@ -51,17 +51,20 @@ const rules=[
   [/^scripts\//,['scripts']],
   [/^docker\//,['scripts']],
   // The startup, replacement and update paths these acceptances protect.
-  [/^crates\/dim-cli\/src\/(?:client|update)\.rs$/,['rust','windows','debug']],
+  [/^crates\/dim-cli\/src\/(?:client\.rs|update(?:\.rs|\/))/,['rust','windows','debug']],
+  [/^crates\/dim-cli\/src\/(?:plugins\.rs|ui\/)/,['rust','windows','debug']],
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
-  // Debug-build acceptances (#2218) leave ordinary workspace tests. Only the
-  // files that own them select the dedicated debug step.
+  // Debug-build acceptances (#2218) leave ordinary workspace tests. The owning
+  // test files and the production paths they protect select the dedicated step.
   [/^crates\/dimcode\/tests\/(?:cli_flow|cli_daemon_flow)\.rs$/,['rust','debug']],
   [/^crates\/dimcode\/tests\/cli_flow\/(?:daemon_startup_progress|daemon_replace|staged_update)\.rs$/,['rust','debug']],
-  [/^crates\/dimcode\/tests\/support\/cli_harness\.rs$/,['rust','node','debug']],
-  [/^crates\/dimcode\/Cargo\.toml$/,['rust','debug']],
+  [/^crates\/dimcode\/tests\/support\/(?:cli_harness|daemon)\.rs$/,['rust','node','debug']],
+  [/^crates\/dimcode\/(?:Cargo\.toml|src\/main\.rs)$/,['rust','debug']],
   [/^crates\/dimcode\//,['rust']],
+  [/^crates\/dim-agent-capabilities\/src\/build\.rs$/,['rust','node','debug']],
+  [/^crates\/dim-app-server\/src\/transport\.rs$/,['rust','node','debug']],
   [/^crates\/dim-app-server\/src\/protocol\.rs$/,['rust','node','web','scripts']],
   [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts','debug']],
   [/^crates\/dim-app-server\/src\/cli\.rs$/,['rust','node','debug']],

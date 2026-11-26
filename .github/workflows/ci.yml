@@ -366,7 +366,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo clippy --locked -p dimcode --all-targets --features dev-tests -- -D warnings
-          cargo build --locked -p dimcode --features dev-tests --tests --message-format=json > target/debug-test-artifacts.jsonl
+          cargo build --locked -p dimcode --features dev-tests --test cli_daemon_flow --test cli_flow --message-format=json > target/debug-test-artifacts.jsonl
           node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_startup_progress --test-threads=2
           node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_replace::build_identity --test-threads=2
           node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_flow staged_update::recovery --test-threads=2
