@@ -41,7 +41,9 @@ process, and both pass the owner's arguments, reply and error through. The two s
 the same failure differently: the `sessions` envelope answers snake_case codes, and a Session
 part's scope throws `RouteError`, whose variants are camelCase and whose owner variant carries
 the owner's name, message, data and reloading flag. A routed method that replies nothing answers
-`null`, while a direct call to it answers nothing (`undefined`). Agents loads the
+`null` through `sessionScope` (the bridge maps an absent value to JSON null), and the `sessions`
+envelope leaves `value` out so a process caller reads `undefined`; a direct call answers nothing
+(`undefined`) either way. Agents loads the
 Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
 selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
 `session_unavailable` (report the reason) or `no_line` (final for that line), before the

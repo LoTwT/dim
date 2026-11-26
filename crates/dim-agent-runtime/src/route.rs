@@ -64,8 +64,8 @@ pub enum RouteError {
     #[error("no live Session {0}")]
     NoSession(String),
     /// The Session instance is closing, and so is a call to one of its lines.
-    /// A Session-scoped caller ends its work; a process caller treats it as
-    /// [`Self::NoSession`].
+    /// A Session-scoped caller ends its work, and a process caller reads the
+    /// same answer as `session_closing` and ends the work it was doing.
     #[error("Session {0} is closing")]
     SessionClosing(String),
     /// Agents is reloading and cannot take calls yet. A process caller retries

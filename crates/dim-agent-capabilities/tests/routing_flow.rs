@@ -67,6 +67,15 @@ impl Rig {
             ("treeCommands", "session"),
             ("uiResources", "session"),
             ("sessionLoader", "session"),
+            // The mechanism names the product also shares: a route refuses them
+            // for being registration points or lifecycle services, not for
+            // being unshared.
+            ("guideEntries", "session"),
+            ("sessionLifecycle", "session"),
+            ("sessionMethods", "session"),
+            ("sessionScope", "session"),
+            ("toolRegistry", "session"),
+            ("branchLifecycle", "branch"),
         ] {
             builder.catalog_mut().register_shared_instance(name, group);
         }
@@ -481,6 +490,34 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
         },
         "a native-only registration is not a data face"
     );
+    for (service, group) in [
+        ("sessionMethods", "session"),
+        ("toolRegistry", "session"),
+        ("guideEntries", "session"),
+    ] {
+        assert_eq!(
+            scope
+                .call(SessionCall::new(service, "register", vec![]))
+                .await
+                .unwrap_err(),
+            RouteError::NotDataFace {
+                service: service.into()
+            },
+            "{service} is a registration point of the {group} group"
+        );
+    }
+    for service in ["sessionLifecycle", "branchLifecycle"] {
+        assert_eq!(
+            scope
+                .call(SessionCall::new(service, "activated", vec![]))
+                .await
+                .unwrap_err(),
+            RouteError::NotDataFace {
+                service: service.into()
+            },
+            "{service} is a scope lifecycle service"
+        );
+    }
     assert_eq!(
         scope
             .call(SessionCall::new("sessionScope", "lineCall", vec![]))

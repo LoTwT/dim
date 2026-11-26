@@ -1407,7 +1407,7 @@ export interface PartRegistry {
 /** Why a routed call did not reach a reply. */
 export type RouteError =
   | /** The Session is not there, has no owner, or is closed and cannot load again. Only a process caller receives it; Agents loads and holds a Session that is merely not loaded (ADR 027 D5), so this is final. */ { noSession: string }
-  | /** The Session instance is closing, and so is a call to one of its lines. A Session-scoped caller ends its work; a process caller treats it as [`Self::NoSession`]. */ { sessionClosing: string }
+  | /** The Session instance is closing, and so is a call to one of its lines. A Session-scoped caller ends its work, and a process caller reads the same answer as `session_closing` and ends the work it was doing. */ { sessionClosing: string }
   | /** Agents is reloading and cannot take calls yet. A process caller retries later. */ { sessionReloading: string }
   | /** The Session exists but cannot be loaded now: its restore failed, or the Agent that owns it is unavailable. The caller reports the reason and does not retry. */ { sessionUnavailable: { session: string; reason: string } }
   | /** The Session is live but the line is closing, closed, or not one of its lines. Final for that line: no hold and no retry. */ { noLine: { session: string; line: string } }

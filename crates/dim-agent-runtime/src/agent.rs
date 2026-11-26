@@ -764,6 +764,10 @@ impl Session {
         )?;
         Some(crate::route::RoutedSession::new(self.clone(), scope))
     }
+    /// The instance of the loaded Session subtree, so a host can find the
+    /// loader rows this Session runs. Keys under it stay readable only from
+    /// inside the Session, so it opens no service beyond the
+    /// [`PublicService`] reads above.
     pub fn instance(&self) -> Result<rutis::host::InstanceId> {
         Ok(self.0.owner.loaded()?.scope.instance)
     }
