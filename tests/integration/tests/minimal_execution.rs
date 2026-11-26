@@ -10,7 +10,10 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     history::HistoryRenderer,
     host::*,
-    host_platform::{HostPlatform, HostPlatformConfig, HostPlatformPlugin, resolve_shell},
+    host_platform::{
+        ExecShellRuntime, HostPlatform, HostPlatformConfig, HostPlatformPlugin, OutputEncoding,
+        ShellEdition, ShellSource, ShellStatus, resolve_shell,
+    },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
@@ -992,6 +995,112 @@ async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
     assert!(text(result).contains("after-stop"), "{}", text(result));
     session.close().await.unwrap();
     harness.shutdown().await;
+}
+
+/// A command that ignores the interrupt is released by the owner. The command
+/// runs in the terminal's foreground process group, not the shell's, and macOS
+/// has no `/proc` tree to walk, so the owner signals that group itself before
+/// it terminates the shell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_a_command_that_ignores_the_interrupt_leaves_no_process() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("stubborn.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'echo $$ > {}; trap \"\" INT TERM HUP; while true; do sleep 1; done'",
+                        pid_file.display()
+                    ),
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(10), stop.stop(task_id.clone()))
+        .await
+        .expect("the stop returns once the owner confirms the terminal")
+        .unwrap();
+    assert_eq!(ended.task_id, task_id);
+    assert_eq!(ended.status, ExecStatus::Failed);
+    let path = if cfg!(target_os = "macos") {
+        " the foreground-group signal did not release it"
+    } else {
+        ""
+    };
+    assert!(gone(&pid).await, "process {pid} survived the stop;{path}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A startup consumer cannot skip the initialization: the shell's `.zshrc`
+/// reads the first wrapper line, and the next copy must run it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_startup_consumer_cannot_skip_the_init() {
+    let home = scratch("zsh-consumer");
+    std::fs::write(
+        home.join(".zshrc"),
+        "HISTFILE=/tmp/dim-consumer-history
+read -r __dim_init_line
+",
+    )
+    .unwrap();
+    let Some(platform) = zsh_platform(&home) else {
+        return;
+    };
+    let harness = Harness::new(platform).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "printf 'histfile=%s' \"${HISTFILE-unset}\""}),
+            )],
+        )
+        .await;
+    let events = until(&session, "result", |events| tool_results(events) == 1).await;
+    let call_results = results(&events);
+    let result = text(&call_results[0]);
+    assert!(result.contains("histfile=unset"), "{result}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+fn zsh_platform(home: &Path) -> Option<HostPlatform> {
+    let zsh = "/bin/zsh";
+    if !Path::new(zsh).is_file() {
+        return None;
+    }
+    let mut env: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    env.retain(|(key, _)| key != "HOME" && key != "SHELL");
+    env.push((OsString::from("HOME"), home.as_os_str().to_owned()));
+    env.push((OsString::from("SHELL"), OsString::from(zsh)));
+    let runtime = ExecShellRuntime {
+        executable_path: zsh.into(),
+        edition: ShellEdition::Zsh,
+        source: ShellSource::Fallback,
+        output_encoding: OutputEncoding::Utf8,
+    };
+    let mut platform = HostPlatform::current(ShellStatus::Available(runtime))
+        .unwrap()
+        .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default()));
+    platform.env = env;
+    Some(platform)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

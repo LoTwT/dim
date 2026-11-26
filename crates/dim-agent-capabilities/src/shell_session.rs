@@ -553,8 +553,10 @@ impl ShellSession {
     ///
     /// A shell can spend its first input on a startup consumer — zsh's newuser
     /// wizard, for example — instead of the shell prompt, so the wrapper is
-    /// written again until one copy runs. The typed line carries the marker
-    /// fragments separately, so its echo cannot satisfy the check.
+    /// written again until one copy runs. A copy counts only after its start
+    /// marker reached the tail: the typed line carries the marker fragments
+    /// separately, so its echo cannot satisfy the check, and an end marker a
+    /// consumer emitted by itself is not an initialization.
     async fn send_initial(self: &Arc<Self>, command: &str) -> Result<(), String> {
         let (start, end) = marker_pair();
         let dialect = {
@@ -569,6 +571,7 @@ impl ShellSession {
         let end_marker = end.full();
         let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
         let mut write_at = tokio::time::Instant::now();
+        let mut started = false;
         loop {
             let task_id = {
                 let inner = self.inner.lock().await;
@@ -583,10 +586,7 @@ impl ShellSession {
                     task_id: task_id.clone(),
                 })
                 .await;
-            let started = match &tail {
-                Ok(tail) => tail.text.contains(&start_marker),
-                Err(_) => false,
-            };
+            started |= matches!(&tail, Ok(tail) if tail.text.contains(&start_marker));
             let now = tokio::time::Instant::now();
             if now >= write_at && !started {
                 self.write_shell(format!("{wrapped}\n").as_bytes())
@@ -595,7 +595,9 @@ impl ShellSession {
                 write_at = now + INIT_RETRY;
             }
             match &tail {
-                Ok(tail) if tail.text.contains(&end_marker) => return Ok(()),
+                // A wrapper line the shell executed printed its start marker;
+                // an end marker alone is text a startup consumer emitted.
+                Ok(tail) if started && tail.text.contains(&end_marker) => return Ok(()),
                 Ok(_) => {}
                 Err(_) => {
                     if self

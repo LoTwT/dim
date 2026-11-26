@@ -1248,8 +1248,11 @@ impl HostPlatform {
                 }
                 // A command still running after the interrupt did not end
                 // inside the live shell (some shells abort the whole wrapper
-                // line, so no end marker can print). Terminating the shell
-                // sweeps the command to its terminal.
+                // line, so no end marker can print). The command runs in the
+                // terminal's foreground process group, which a shell that
+                // aborts the line leaves running; signal it before terminating
+                // the shell, whose sweep records the command's terminal.
+                command.shell.kill_foreground_group().await;
                 command.shell.terminate();
                 if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status == WaitStatus::Running {
                     return Err(HostPlatformError::Failed(
@@ -3548,6 +3551,25 @@ impl PtyProcessTree {
         }
         Ok(())
     }
+    /// Signals the terminal's foreground process group, where an interactive
+    /// shell runs the command it is executing, and answers its leader when that
+    /// group is not the shell's own.
+    pub fn kill_foreground_group(&self) -> Option<u32> {
+        #[cfg(unix)]
+        {
+            let leader = self.master.process_group_leader()?;
+            if leader as u32 == self.pid {
+                return None;
+            }
+            // SAFETY: plain syscall on the addressed group.
+            unsafe { libc::kill(-leader, libc::SIGKILL) };
+            Some(leader as u32)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
     /// The root exited on its own and was reaped: its descendants stay.
     fn released(&self) -> bool {
         self.reaped && !self.terminating
@@ -3568,6 +3590,23 @@ impl Drop for PtyProcessTree {
         if self.released() {
             self.job.keep_processes();
         }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_group_gone(leader: u32) -> bool {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        // SAFETY: signal 0 only probes the addressed group.
+        if unsafe { libc::kill(-(leader as libc::pid_t), 0) } != 0
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 
@@ -4716,6 +4755,19 @@ pub(crate) mod shell {
 
         pub(crate) fn terminate(&self) {
             self.kill.cancel();
+        }
+
+        pub(crate) async fn kill_foreground_group(&self) -> bool {
+            let leader = {
+                let pty = self.pty.lock().await;
+                pty.as_ref().and_then(|pty| pty.kill_foreground_group())
+            };
+            #[cfg(unix)]
+            if let Some(leader) = leader {
+                return super::wait_group_gone(leader).await;
+            }
+            let _ = leader;
+            true
         }
 
         pub(crate) fn output_record(&self) -> super::OutputRecord {
