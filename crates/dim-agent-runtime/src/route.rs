@@ -4,18 +4,23 @@
 //! A caller outside a scope holds no instance key, so it names what it wants,
 //! and the owner of the target holds the index and does the lookup:
 //!
-//! - a Session's [`SessionScope`] resolves one of its own lines, for the
-//!   Session's parts and their runtimes; it holds no Session id, so a caller
-//!   cannot name another Session;
+//! - a Session's [`SessionScope`] resolves one of its own lines and its own
+//!   Session faces, for the Session's parts and their runtimes; it holds no
+//!   Session id, so a caller cannot name another Session, and the scope itself
+//!   is not one of the faces it resolves;
 //! - Agents' `sessions` resolves a Session, and a line of it, for the process
-//!   (`dim-app-server`): it finds the Session and then calls
-//!   [`SessionScope::line_call`] in that instance.
+//!   (`dim-app-server`): it finds the Session — loading it for the call when it
+//!   is not loaded (D5) — and then calls [`SessionScope::line_call`] or
+//!   [`SessionScope::call`] in that instance.
 //!
-//! Two data operations carry every routed call, with the same arguments in
+//! Three data operations carry every routed call, with the same arguments in
 //! every language:
 //!
 //! - [`SessionScope::line_call`] — `{lineId, service, method, args}`;
-//! - `sessions.call` — `{sessionId, lineId?, service, method, args}`.
+//! - [`SessionScope::call`] — `{service, method, args}`, for the Session's own
+//!   faces;
+//! - `sessions.call` — `{sessionId, lineId?, service, method, args}`, which
+//!   takes the same two forms for a process caller.
 //!
 //! Each call looks the target up again, so a caller never keeps a live target
 //! (D4). Rust calls the same two operations: it builds `args` from the target
@@ -29,10 +34,11 @@
 //! belongs to the owner: the route passes the method and its arguments through
 //! and returns the owner's reply, or the owner's own failure as it wrote it.
 //!
-//! A Session that has no live instance — idle-unloaded, closed or never
-//! created — answers [`RouteError::NoSession`]. A Session that is closing
-//! answers [`RouteError::SessionClosing`], and a line target answers it too,
-//! because closing the Session closes its lines. A line that is closing or
+//! Only the process path can find a Session that has no live instance: Agents
+//! loads it for the call (D5), so [`RouteError::NoSession`] means the Session
+//! does not exist, or is closed and cannot load again. A Session that is
+//! closing answers [`RouteError::SessionClosing`], and a line target answers it
+//! too, because closing the Session closes its lines. A line that is closing or
 //! closed, or that belongs to another Session, answers [`RouteError::NoLine`];
 //! that is final for the line: routing never retries it.
 
