@@ -35,52 +35,52 @@ pub const ABOUT: usize = 200;
 /// Events one read asks for. The answer, not this page, ends the read.
 const PAGE_EVENTS: usize = 128;
 
-/// Who the account is told to (§3.8).
+/// The grammatical person the account is told in (§3.8).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Voice {
-    /// The line's own model: its replies and calls are "you".
-    Own,
-    /// Another agent reading the line: no one is addressed.
-    Observer,
+pub enum Person {
+    /// To the line's own model: its replies and calls are "you".
+    Second,
+    /// To another agent: the line's replies and calls have no subject.
+    Third,
 }
 
-impl Voice {
+impl Person {
     fn called(self) -> &'static str {
         match self {
-            Self::Own => "you called",
-            Self::Observer => "called",
+            Self::Second => "you called",
+            Self::Third => "called",
         }
     }
     fn started_calling(self) -> &'static str {
         match self {
-            Self::Own => "you started calling",
-            Self::Observer => "started calling",
+            Self::Second => "you started calling",
+            Self::Third => "started calling",
         }
     }
     /// What an input read after its turn's first model step says it was.
     fn working(self) -> &'static str {
         match self {
-            Self::Own => "(while you were working)",
-            Self::Observer => "(while working)",
+            Self::Second => "(while you were working)",
+            Self::Third => "(while working)",
         }
     }
     /// The marker of a block whose version is the current one (§3.5).
     fn current_version(self) -> &'static str {
         match self {
-            Self::Own => " (current version in your context)",
-            Self::Observer => " (current version)",
+            Self::Second => " (current version in your context)",
+            Self::Third => " (current version)",
         }
     }
 }
 
 /// Reads `branch_id` of `tree` at its current head and answers `query` (§5.2).
-/// `turn` is the reader's own turn in progress on that line; an observer has
-/// none.
+/// `turn` is the reader's own turn in progress on that line; a reader of
+/// another agent's line has none.
 pub async fn read(
     tree: &TreeCommands,
     branch_id: &str,
     turn: Option<&str>,
-    voice: Voice,
+    person: Person,
     query: &Query,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, HostError> {
@@ -89,13 +89,13 @@ pub async fn read(
     if query.open.is_none() && (query.about.is_some() || query.tool.is_some()) {
         return tokio::select! {
             _ = cancel.cancelled() => Err(cancelled()),
-            result = search::run(tree, &branch, branch_id, voice, query, cancel) => result,
+            result = search::run(tree, &branch, branch_id, person, query, cancel) => result,
         };
     }
     if query.open.is_some() {
         return tokio::select! {
             _ = cancel.cancelled() => Err(cancelled()),
-            answer = search::open(tree, &branch, branch_id, voice, query, cancel) => answer,
+            answer = search::open(tree, &branch, branch_id, person, query, cancel) => answer,
         };
     }
     tokio::select! {
@@ -105,7 +105,7 @@ pub async fn read(
             &branch,
             branch_id,
             turn.unwrap_or_default(),
-            voice,
+            person,
             query,
             cancel,
         ) => answer,
@@ -333,7 +333,7 @@ struct Narrative<'a> {
     /// are only the joins of a later one: a page read backwards cuts the
     /// oldest turn, and nothing before its end is told.
     floor: usize,
-    voice: Voice,
+    person: Person,
 }
 
 /// The events a narrative tells: each thing's origin and its joined events.
@@ -355,10 +355,10 @@ impl<'a> Narrative<'a> {
     /// Folds a pinned branch history into things and turns.
     #[cfg(feature = "testing")]
     fn new(events: &'a [Arc<AgentEvent>]) -> Self {
-        Self::fold(events, 0, events.len(), Voice::Own)
+        Self::fold(events, 0, events.len(), Person::Second)
     }
 
-    fn fold(events: &'a [Arc<AgentEvent>], floor: usize, own_start: usize, voice: Voice) -> Self {
+    fn fold(events: &'a [Arc<AgentEvent>], floor: usize, own_start: usize, person: Person) -> Self {
         let own_start = events
             .iter()
             .rposition(|event| matches!(event.kind, EventKind::BranchStart(_)))
@@ -737,7 +737,7 @@ impl<'a> Narrative<'a> {
             told,
             own_start,
             floor,
-            voice,
+            person,
         }
     }
 
@@ -961,14 +961,14 @@ impl<'a> Narrative<'a> {
                 input,
                 live,
                 working,
-            } => input_line(input, live, *working, self.voice),
+            } => input_line(input, live, *working, self.person),
             Kind::Reply { text, state } => {
-                format!("{}: {}", reply_label(state, self.voice, false), part(text))
+                format!("{}: {}", reply_label(state, self.person, false), part(text))
             }
-            Kind::Call(call) => call_line(call, self.events[thing.origin].create_at, self.voice),
+            Kind::Call(call) => call_line(call, self.events[thing.origin].create_at, self.person),
             Kind::Interrupt => "the user interrupted the turn".into(),
             Kind::Permission { mode } => format!("permission mode changed to {mode}"),
-            Kind::Compaction { current } => compaction_line(*current, self.voice),
+            Kind::Compaction { current } => compaction_line(*current, self.person),
             Kind::Fork { parent } => format!("this line was opened by {}", part(parent)),
             Kind::SessionFork => {
                 "this conversation was copied from another session up to here".into()
@@ -1015,7 +1015,7 @@ impl<'a> Narrative<'a> {
             .or_else(|| opening.first())
         {
             Some((input, live)) => parts.push(match (line_write(input), &input.user) {
-                (Some(write), _) => format!("turn: {}", write_line(&write, false, self.voice)),
+                (Some(write), _) => format!("turn: {}", write_line(&write, false, self.person)),
                 (None, Some(user)) => format!("turn: user \"{}\"", part(&user_text(user))),
                 (None, None) => format!("turn: {}", part(&blocks_name(&input.blocks, live))),
             }),
@@ -1023,7 +1023,7 @@ impl<'a> Narrative<'a> {
         }
         let summary = self.tool_summary(index);
         if !summary.is_empty() {
-            parts.push(format!("{} {}", self.voice.called(), part(&summary)));
+            parts.push(format!("{} {}", self.person.called(), part(&summary)));
         }
         parts.push(self.outcome_text(turn, calling_turn).into());
         parts.join(" — ")
@@ -1069,7 +1069,7 @@ impl<'a> Narrative<'a> {
     /// The full text of one thing (§6), paged by characters.
     fn full(&self, thing: &Thing<'a>) -> String {
         let event = &self.events[thing.origin];
-        let heading = heading(thing, event.id.as_str(), event.create_at, self.voice);
+        let heading = heading(thing, event.id.as_str(), event.create_at, self.person);
         format!("{heading}\n{}", self.body(thing))
     }
 
@@ -1087,7 +1087,7 @@ impl<'a> Narrative<'a> {
                 for (position, block) in input.blocks.iter().enumerate() {
                     let InputBlock::Raw { text, key, retire } = block;
                     let marker = if live[position] {
-                        self.voice.current_version()
+                        self.person.current_version()
                     } else if *retire && key.is_some() {
                         " (ended)"
                     } else {
@@ -1115,7 +1115,7 @@ impl<'a> Narrative<'a> {
 }
 
 /// The first line of a thing's full view: its time, id and what it is (§6).
-fn heading(thing: &Thing<'_>, id: &str, time: u64, voice: Voice) -> String {
+fn heading(thing: &Thing<'_>, id: &str, time: u64, person: Person) -> String {
     let clock = clock(time);
     match &thing.kind {
         Kind::Input {
@@ -1136,7 +1136,7 @@ fn heading(thing: &Thing<'_>, id: &str, time: u64, voice: Voice) -> String {
                         format!("line {}'s final message", part(from))
                     }
                     (LineWrite::Message { from, .. }, true) => {
-                        format!("line {} {}", part(from), voice.working())
+                        format!("line {} {}", part(from), person.working())
                     }
                     (LineWrite::Message { from, .. }, false) => format!("line {}", part(from)),
                     (LineWrite::Idle { branch, .. }, _) => {
@@ -1149,13 +1149,13 @@ fn heading(thing: &Thing<'_>, id: &str, time: u64, voice: Voice) -> String {
                 return format!("{clock} {id} {label}");
             }
             match (&input.user, *working) {
-                (Some(_), true) => format!("{clock} {id} user {}", voice.working()),
+                (Some(_), true) => format!("{clock} {id} user {}", person.working()),
                 (Some(_), false) => format!("{clock} {id} user"),
                 (None, _) => format!("{clock} {id} {}", part(&blocks_name(&input.blocks, live))),
             }
         }
-        Kind::Reply { state, .. } => format!("{clock} {id} {}", reply_label(state, voice, true)),
-        Kind::Call(call) => format!("{clock} {id} {}", call_heading(call, voice)),
+        Kind::Reply { state, .. } => format!("{clock} {id} {}", reply_label(state, person, true)),
+        Kind::Call(call) => format!("{clock} {id} {}", call_heading(call, person)),
         _ => format!("{clock} {id} {}", line_heading(thing)),
     }
 }
@@ -1313,36 +1313,36 @@ fn result_text(result: &ToolResult) -> String {
 }
 
 /// How a reply is labelled: cut to `PART` in a line, whole in a full view.
-fn reply_label(state: &ReplyState, voice: Voice, full: bool) -> String {
-    match (state, voice) {
-        (ReplyState::Writing, Voice::Own) => "you (still writing)".into(),
-        (ReplyState::Writing, Voice::Observer) => "reply (still writing)".into(),
-        (ReplyState::Completed, Voice::Own) => "you".into(),
-        (ReplyState::Completed, Voice::Observer) => "reply".into(),
-        (ReplyState::CutOff(reason), voice) => {
+fn reply_label(state: &ReplyState, person: Person, full: bool) -> String {
+    match (state, person) {
+        (ReplyState::Writing, Person::Second) => "you (still writing)".into(),
+        (ReplyState::Writing, Person::Third) => "reply (still writing)".into(),
+        (ReplyState::Completed, Person::Second) => "you".into(),
+        (ReplyState::Completed, Person::Third) => "reply".into(),
+        (ReplyState::CutOff(reason), person) => {
             let reason = if full { reason.clone() } else { part(reason) };
-            match voice {
-                Voice::Own => format!("your reply was cut off ({reason})"),
-                Voice::Observer => format!("the reply was cut off ({reason})"),
+            match person {
+                Person::Second => format!("your reply was cut off ({reason})"),
+                Person::Third => format!("the reply was cut off ({reason})"),
             }
         }
     }
 }
 
-fn compaction_line(current: bool, voice: Voice) -> String {
-    if current && voice == Voice::Own {
+fn compaction_line(current: bool, person: Person) -> String {
+    if current && person == Person::Second {
         "the conversation up to here was summarized (that summary is in your context)".into()
     } else {
         "the conversation up to here was summarized".into()
     }
 }
 
-fn input_line(input: &InputMessageData, live: &[bool], working: bool, voice: Voice) -> String {
+fn input_line(input: &InputMessageData, live: &[bool], working: bool, person: Person) -> String {
     if let Some(write) = line_write(input) {
-        return write_line(&write, working, voice);
+        return write_line(&write, working, person);
     }
     let speaker = if working {
-        format!("user {}", voice.working())
+        format!("user {}", person.working())
     } else {
         "user".into()
     };
@@ -1428,7 +1428,7 @@ fn line_write(input: &InputMessageData) -> Option<LineWrite<'_>> {
 
 /// How one line write reads in a line (§3.4). `working` is whether the input
 /// was read after its turn's first model step, whatever mode it arrived in.
-fn write_line(write: &LineWrite<'_>, working: bool, voice: Voice) -> String {
+fn write_line(write: &LineWrite<'_>, working: bool, person: Person) -> String {
     match write {
         LineWrite::Message {
             from,
@@ -1448,7 +1448,7 @@ fn write_line(write: &LineWrite<'_>, working: bool, voice: Voice) -> String {
         } if working => format!(
             "line {} {}: {}",
             part(from),
-            voice.working(),
+            person.working(),
             value(text, false)
         ),
         LineWrite::Message {
@@ -1462,9 +1462,9 @@ fn write_line(write: &LineWrite<'_>, working: bool, voice: Voice) -> String {
             "line {}'s turn ended ({}) without a message{}",
             part(branch),
             part(status),
-            match voice {
-                Voice::Own => " to you",
-                Voice::Observer => "",
+            match person {
+                Person::Second => " to you",
+                Person::Third => "",
             }
         ),
         LineWrite::Ended { branch } => format!("line {} was ended from outside", part(branch)),
@@ -1513,31 +1513,31 @@ fn first_body_line(blocks: &[InputBlock]) -> String {
     body.split('\n').next().unwrap_or_default().to_owned()
 }
 
-fn call_line(call: &Call, origin: u64, voice: Voice) -> String {
+fn call_line(call: &Call, origin: u64, person: Person) -> String {
     let brief = call.input.as_ref().map(brief).unwrap_or_default();
     if brief.is_empty() {
         format!(
             "{} → {}",
-            call_heading(call, voice),
+            call_heading(call, person),
             ending(call, origin, false)
         )
     } else {
         format!(
             "{} {} → {}",
-            call_heading(call, voice),
+            call_heading(call, person),
             part(&brief),
             ending(call, origin, false)
         )
     }
 }
 
-fn call_heading(call: &Call, voice: Voice) -> String {
+fn call_heading(call: &Call, person: Person) -> String {
     if call.input.is_some() {
-        format!("{} {}", voice.called(), part(&call.name))
+        format!("{} {}", person.called(), part(&call.name))
     } else {
         format!(
             "{} {} (arguments not received)",
-            voice.started_calling(),
+            person.started_calling(),
             part(&call.name)
         )
     }

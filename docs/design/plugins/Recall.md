@@ -354,19 +354,19 @@ All of them are core events, and the list is the allowlist of §3.2. Recall deci
 them; it only tells them. A change to
 their data contract that drops a join id of §3.2 breaks Recall.
 
-### 3.8 Voice and other readers
+### 3.8 Person and other readers
 
 The projection is a component, [narrative.rs](../../../crates/dim-agent-capabilities/src/narrative.rs):
-it takes a Session's tree, a line id, the reader's own turn if it has one, a voice, and the
-query of §5.2, and returns the page of §5.3 and §6. It reads and writes nothing else. `recall` is
-one reader: its own line, its own turn, the own voice. Collaboration's `agent read` is another: a
-team member's current line, no turn of its own, the observer voice
+it takes a Session's tree, a line id, the reader's own turn if it has one, a grammatical person,
+and the query of §5.2, and returns the page of §5.3 and §6. It reads and writes nothing else.
+`recall` is one reader: its own line, its own turn, the second person. Collaboration's
+`agent read` is another: a team member's current line, no turn of its own, the third person
 ([Collaboration](Collaboration.md#read-a-members-line)).
 
-The own voice is what §3.4 and §6 state. The observer voice tells the same lines and adds
+The second person is what §3.4 and §6 state. The third person tells the same lines and adds
 nothing; it only drops the address to the reader:
 
-| Own voice | Observer voice |
+| Second person | Third person |
 | --- | --- |
 | `you called` / `you started calling` | `called` / `started calling` |
 | `you`, `you (still writing)`, `your reply was cut off (<reason>)` | `reply`, `reply (still writing)`, `the reply was cut off (<reason>)` |

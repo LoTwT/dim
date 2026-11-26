@@ -157,13 +157,13 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 它们都是核心事件，这份列表就是 §3.2 的白名单。Recall 不据此做决定，只讲述它们。若这些事件的数据合同去掉了 §3.2 的某个关联 id，Recall 就会失效。
 
-### 3.8 语气与其他读者
+### 3.8 人称与其他读者
 
-这个投影是一个组件，[narrative.rs](../../../../crates/dim-agent-capabilities/src/narrative.rs)：输入一个 Session 的树、一条线的 id、读者自己的那一轮（有的话）、一种语气和 §5.2 的查询，返回 §5.3 与 §6 的页面。它不读也不写别的。`recall` 是一个读者：读自己的线，有自己的那一轮，用自述语气。Collaboration 的 `agent read` 是另一个：读团队成员当前的线，没有自己的那一轮，用旁观语气（[Collaboration](Collaboration.md#读取成员的线)）。
+这个投影是一个组件，[narrative.rs](../../../../crates/dim-agent-capabilities/src/narrative.rs)：输入一个 Session 的树、一条线的 id、读者自己的那一轮（有的话）、一种人称和 §5.2 的查询，返回 §5.3 与 §6 的页面。它不读也不写别的。`recall` 是一个读者：读自己的线，有自己的那一轮，用第二人称。Collaboration 的 `agent read` 是另一个：读团队成员当前的线，没有自己的那一轮，用第三人称（[Collaboration](Collaboration.md#读取成员的线)）。
 
-自述语气就是 §3.4 与 §6 写的样子。旁观语气讲同样的行，不增加任何信息，只去掉对读者的称呼：
+第二人称就是 §3.4 与 §6 写的样子。第三人称讲同样的行，不增加任何信息，只去掉对读者的称呼：
 
-| 自述语气 | 旁观语气 |
+| 第二人称 | 第三人称 |
 | --- | --- |
 | `you called` / `you started calling` | `called` / `started calling` |
 | `you`、`you (still writing)`、`your reply was cut off (<reason>)` | `reply`、`reply (still writing)`、`the reply was cut off (<reason>)` |

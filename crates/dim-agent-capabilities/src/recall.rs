@@ -1,11 +1,11 @@
 //! The `recall` tool: the branch's history told to the model as an account of
 //! what happened. Design: `docs/design/plugins/Recall.md` §5 (tool contract);
-//! the account is the narrative projection of §3, told in the line's own
-//! voice ([`crate::narrative`]). This part's page is
+//! the account is the narrative projection of §3, told in the second
+//! person ([`crate::narrative`]). This part's page is
 //! `docs/architecture/rust-agent/plugins/Recall.md`.
 use crate::{
     host::{HostError, HostFuture, ToolExecutionContext},
-    narrative::{self, ABOUT, Query, Voice},
+    narrative::{self, ABOUT, Person, Query},
     timeline_tree::TreeCommands,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
@@ -125,7 +125,7 @@ impl RecallTool {
             &self.0,
             &context.branch_id,
             Some(&context.turn_id),
-            Voice::Own,
+            Person::Second,
             &query,
             &cancel,
         )

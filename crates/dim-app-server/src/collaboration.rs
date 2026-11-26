@@ -24,7 +24,7 @@ use dim_agent_capabilities::{
         ToolExecutionContext,
     },
     methods::RpcError,
-    narrative::{self, Query, Voice},
+    narrative::{self, Person, Query},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
@@ -1491,7 +1491,7 @@ impl CollaborationSession {
     }
 
     /// A team member's default line, told by the narrative projection in the
-    /// observer's voice (design §9).
+    /// third person (Recall §3.8).
     async fn read(
         &self,
         agent_id: &str,
@@ -1515,7 +1515,7 @@ impl CollaborationSession {
             (Ok(tree), Ok(line)) => (tree, line),
             (Err(error), _) | (_, Err(error)) => return Ok(ToolResult::error(error.to_string())),
         };
-        narrative::read(&tree, &line, None, Voice::Observer, query, cancel).await
+        narrative::read(&tree, &line, None, Person::Third, query, cancel).await
     }
 
     fn consume(
