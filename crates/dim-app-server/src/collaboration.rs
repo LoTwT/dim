@@ -3402,7 +3402,7 @@ fn agent_definition(
         CollaborationRole::Leader => {
             properties["resultId"] = json!({"type": "string"});
             properties["prompt"] = json!({"type": "string",
-                "description": "The message that gives the member this task. A new member starts from this message alone, without your conversation."});
+                "description": "The message that gives the member this task. A new member starts from this message alone."});
             properties["title"] = json!({"type": "string", "minLength": 1,
                 "description": "Short, nonblank single-line title for this task in the background task list; separate from prompt and the Agent profile name."});
             properties["profile"] = json!({
