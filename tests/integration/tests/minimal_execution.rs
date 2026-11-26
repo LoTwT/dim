@@ -1134,6 +1134,30 @@ async fn stopping_a_command_that_ignores_the_interrupt_leaves_no_process() {
     harness.shutdown().await;
 }
 
+/// A shell slower than the init retry still initializes: every written copy is
+/// watched until the deadline, not only the newest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_shell_still_initializes() {
+    let Some(platform) = zsh_platform() else {
+        return;
+    };
+    let harness = Harness::new(platform).await;
+    std::fs::write(harness.cwd.join(".zshrc"), "preexec() { sleep 1.5; }\n").unwrap();
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "printf 'ready'"}))],
+        )
+        .await;
+    let events = until(&session, "result", |events| tool_results(events) == 1).await;
+    let call_results = results(&events);
+    let result = text(&call_results[0]);
+    assert!(result.contains("ready"), "{result}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 /// Closing a Session releases the command its shell is running, not only
 /// stopping a task. macOS has no `/proc` tree to walk, so the shell's
 /// termination signals the terminal's foreground process group.

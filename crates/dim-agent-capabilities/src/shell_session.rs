@@ -554,10 +554,10 @@ impl ShellSession {
     ///
     /// A shell can spend its first input on a startup consumer — zsh's newuser
     /// wizard, for example — instead of the shell prompt, so the wrapper is
-    /// written again until one copy runs. Each copy carries its own markers, so
-    /// an end marker a consumer printed for an earlier copy cannot complete a
-    /// later one, and the typed line carries the fragments separately, so its
-    /// echo cannot satisfy the check.
+    /// written again until one copy runs. Each copy carries its own markers, and
+    /// every copy is watched until the deadline, so an end marker from another
+    /// copy cannot complete one and a slow copy still counts; the typed line
+    /// carries the fragments separately, so its echo cannot satisfy the check.
     async fn send_initial(self: &Arc<Self>, command: &str) -> Result<(), String> {
         let dialect = {
             let inner = self.inner.lock().await;
@@ -565,7 +565,9 @@ impl ShellSession {
         };
         let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
         let mut write_at = tokio::time::Instant::now();
-        let mut current: Option<(String, String)> = None;
+        // Every written copy keeps its markers until the deadline: a copy
+        // slower than the retry interval still completes the initialization.
+        let mut copies: Vec<(String, String)> = Vec::new();
         loop {
             let task_id = {
                 let inner = self.inner.lock().await;
@@ -580,19 +582,16 @@ impl ShellSession {
                     task_id: task_id.clone(),
                 })
                 .await;
-            let (started, complete) = match (&current, &tail) {
-                (Some((start_marker, end_marker)), Ok(tail)) => (
-                    tail.text.contains(start_marker),
-                    init_complete(&tail.text, start_marker, end_marker),
-                ),
-                _ => (false, false),
-            };
-            if complete {
-                return Ok(());
+            if let Ok(tail) = &tail {
+                for (start_marker, end_marker) in &copies {
+                    if init_complete(&tail.text, start_marker, end_marker) {
+                        return Ok(());
+                    }
+                }
             }
+            let started = matches!(&tail, Ok(tail) if copies.iter().any(|(start, _)| tail.text.contains(start)));
             let now = tokio::time::Instant::now();
-            // A copy that started is left to finish: replacing it would drop a
-            // completion that arrives after the retry interval.
+            // A started copy is left to finish: another would only queue behind it.
             if now >= write_at && !started {
                 let (start, end) = marker_pair();
                 let wrapped = match dialect {
@@ -602,7 +601,7 @@ impl ShellSession {
                 self.write_shell(format!("{wrapped}\n").as_bytes())
                     .await
                     .map_err(|error| error.to_string())?;
-                current = Some((start.full(), end.full()));
+                copies.push((start.full(), end.full()));
                 write_at = now + INIT_RETRY;
             }
             if let Err(_) = &tail
