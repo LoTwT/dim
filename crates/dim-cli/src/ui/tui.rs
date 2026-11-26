@@ -1274,7 +1274,6 @@ struct App {
     tool_mode: String,
     tool_mode_effective: String,
     tool_mode_available: Vec<String>,
-    tool_mode_read: bool,
     /// The main branch's context use.
     context: Option<ContextReading>,
     /// The first attempt tag of the next `/login` panel, so a closed panel's
@@ -1729,7 +1728,6 @@ impl App {
             tool_mode: "normal".into(),
             tool_mode_effective: "normal".into(),
             tool_mode_available: vec!["normal".into()],
-            tool_mode_read: false,
             permission_policy: Some(dim_agent_types::PermissionPolicy {
                 preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
                 ..Default::default()
@@ -2198,7 +2196,6 @@ impl App {
         self.tool_mode = "normal".into();
         self.tool_mode_effective = "normal".into();
         self.tool_mode_available = vec!["normal".into()];
-        self.tool_mode_read = false;
         if let Some(Prompt::Settings(panel)) = &self.prompt {
             self.open_settings(panel.selected());
         }
@@ -5177,6 +5174,7 @@ impl App {
                     self.host.send(Command::ReadSuggestionSetting);
                 }
                 self.host.send(Command::ReadPromptSettings);
+                self.host.send(Command::ReadToolMode);
                 self.open_settings(Setting::Theme);
             }
             (Some("recording"), None, None) => {
@@ -5226,10 +5224,6 @@ impl App {
             ),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
-        if !self.tool_mode_read {
-            self.tool_mode_read = true;
-            self.host.send(Command::ReadToolMode);
-        }
     }
 
     /// Each prompt text's origin, as the last read or write reported it.
@@ -19922,7 +19916,6 @@ mod tests {
             assert_eq!(
                 describe(&sent.take()),
                 [
-                    "other",
                     "steer:a",
                     "submit:queue:queue by default",
                     "submit:steer:steer this one"
