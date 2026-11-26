@@ -20,6 +20,7 @@ use dim_app_server::settings::{Settings, SettingsScope};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Deserializer};
+use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     num::NonZeroU64,
@@ -117,16 +118,22 @@ impl Changes {
             .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
         owner.change(change).await
     }
-    /// Takes the input ids this branch's Goal wrote that may still be
-    /// queued; a settle owns them until it withdraws or skips them.
-    pub(crate) fn take_queued(&self, key: &TimelineKey) -> Vec<String> {
+    /// The input ids this branch's Goal wrote that may still be queued.
+    pub(crate) fn queued(&self, key: &TimelineKey) -> Vec<String> {
         self.owners
             .lock()
             .unwrap()
             .get(key)
             .and_then(Weak::upgrade)
-            .map(|owner| std::mem::take(&mut *owner.queued.lock().unwrap()))
+            .map(|owner| owner.queued.lock().unwrap().clone())
             .unwrap_or_default()
+    }
+    /// Forgets one id a settle withdrew; a failed withdrawal keeps it for a
+    /// retry.
+    pub(crate) fn forget_queued(&self, key: &TimelineKey, input_id: &str) {
+        if let Some(owner) = self.owners.lock().unwrap().get(key).and_then(Weak::upgrade) {
+            owner.queued.lock().unwrap().retain(|id| id != input_id);
+        }
     }
     /// Registers `owner` for its branch; the returned handle withdraws it.
     fn register(&self, key: TimelineKey, owner: &Arc<Owner>) -> Weak<Owner> {
@@ -573,6 +580,64 @@ impl Owner {
         Ok(event)
     }
 
+    /// Waits until the InputQueue applies the input `input_id`; the first
+    /// Shell request must see the pause this settle wrote.
+    async fn await_applied(&self, input_id: &str) -> Result<(), AgentError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let query = TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: None,
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: vec![json!("input/applied")],
+                            },
+                            QueryFilter::Compare {
+                                left: QueryOperand::Field {
+                                    path: "data.input_id".into(),
+                                },
+                                comparison: QueryComparison::Eq,
+                                right: QueryOperand::Value {
+                                    value: json!(input_id),
+                                },
+                            },
+                        ],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["id".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::new(1).unwrap(),
+                    after: None,
+                }),
+            };
+            let reply = tokio::select! {
+                _ = self.stop.cancelled() => return Err(AgentError::Closed("Goal".into())),
+                result = self.timeline.query(query) => result?,
+            };
+            if matches!(&reply.result, QueryOutput::Rows { rows } if !rows.is_empty()) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AgentError::Cancelled(
+                    "the mode pause was not applied".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// Waits until this generation's rebuild has returned and folded the facts
     /// it held (R6.2): before that, the fold is partial and a record composed
     /// from it would state a state the branch does not have. The batch is
@@ -766,6 +831,9 @@ impl Owner {
                 && queued_goal_input(data)
             {
                 self.queued.lock().unwrap().push(events[1].id.clone());
+            }
+            if matches!(change, Change::PauseMode) {
+                self.await_applied(&events[1].id).await?;
             }
             let sequence = events[1].sequence;
             let mut lock = self.state.lock().unwrap();
@@ -1852,7 +1920,7 @@ impl Owner {
                     branch_id: self.branch_id.clone(),
                     sequence: after,
                 }),
-                through: Some(self.timeline.committed()),
+                through: None,
                 include_publishing: true,
                 query: QuerySpec {
                     filter: Some(QueryFilter::And {
@@ -1896,7 +1964,7 @@ impl Owner {
                     branch_id: self.branch_id.clone(),
                     sequence: turn_start,
                 }),
-                through: Some(self.timeline.committed()),
+                through: None,
                 include_publishing: true,
                 query: QuerySpec {
                     filter: Some(QueryFilter::And {

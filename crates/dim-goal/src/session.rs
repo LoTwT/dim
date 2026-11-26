@@ -117,21 +117,25 @@ impl DynPlugin for GoalSession {
                             let Ok(read) = changes.current(&key).await else {
                                 continue;
                             };
-                            if !matches!(
+                            let active = matches!(
                                 read.goal.as_ref().map(|goal| &goal.status),
                                 Some(GoalViewStatus::Active)
-                            ) {
-                                continue;
-                            }
-                            if let Err(error) = changes.change(&key, Change::PauseMode).await {
+                            );
+                            if active
+                                && let Err(error) = changes.change(&key, Change::PauseMode).await
+                            {
                                 return Err(HostError::failed(error.to_string()));
                             }
-                            let queued = changes.take_queued(&key);
+                            let queued = changes.queued(&key);
+                            if queued.is_empty() {
+                                continue;
+                            }
+                            let Some(provider) = methods.provider("session.input.withdraw") else {
+                                return Err(HostError::failed(
+                                    "the input queue is not loaded; Goal inputs are still held",
+                                ));
+                            };
                             for input_id in queued {
-                                let Some(provider) = methods.provider("session.input.withdraw")
-                                else {
-                                    break;
-                                };
                                 let params = json!({
                                     "sessionId": session_id,
                                     "branchId": key.branch_id,
@@ -142,10 +146,10 @@ impl DynPlugin for GoalSession {
                                     params,
                                     None,
                                     CancellationToken::new(),
-                                    |_| {},
+                                    |_: serde_json::Value| {},
                                 ) {
                                     Ok(accepted) => match accepted.reply.await {
-                                        Ok(Ok(_)) => {}
+                                        Ok(Ok(_)) => changes.forget_queued(&key, &input_id),
                                         Ok(Err(error)) => {
                                             return Err(HostError::failed(format!("{error:?}")));
                                         }

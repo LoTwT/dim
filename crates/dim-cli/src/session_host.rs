@@ -941,6 +941,7 @@ impl Worker {
             session_create_from_options(&mut self.client, &self.options).await?
         } else {
             let mut params = session_create_params(&self.options);
+            crate::add_creation_tool_mode(&self.client, &self.options, &mut params);
             // `session_create_params` contacts no daemon, so the member
             // `--worktree` asks for is added here; the initial path adds it
             // in `session_create_from_options`.

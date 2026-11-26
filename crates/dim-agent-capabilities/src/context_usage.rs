@@ -1013,9 +1013,7 @@ impl ContextUsage {
             .await
             .map_err(ContextOpError::Read)?
             .ok_or_else(|| ContextOpError::Read(fault("missing initialized usage total")))?;
-        if let Some(Configuration::Ready { counter }) = &summary.configuration
-            && counter.configured_tools != Some(true)
-        {
+        if let Some(Configuration::Ready { counter }) = &summary.configuration {
             let model = view
                 .model
                 .as_ref()
@@ -1024,6 +1022,9 @@ impl ContextUsage {
                 .current_tools(counter, model.as_ref(), through)
                 .await
                 .map_err(ContextOpError::Read)?;
+            if fixed.fixed == counter.fixed {
+                return reading(through, &summary, None);
+            }
             let counter_model = model
                 .contribution_counter()
                 .ok_or_else(|| ContextOpError::Read(fault("missing additive counter")))?;
