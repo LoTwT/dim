@@ -943,14 +943,17 @@ async fn a_handed_off_command_keeps_its_exit_code() {
     let (_, end) = &ended(&events)[0];
     assert_eq!(end.task_id, task_id);
     assert_eq!(end.status, ExecStatus::Failed);
-    let exit = end
-        .result
-        .structured_content
-        .as_ref()
-        .unwrap()
-        .get("exitCode")
-        .and_then(Value::as_i64);
-    assert_eq!(exit, Some(7));
+    let fields = end.result.structured_content.as_ref().unwrap();
+    assert_eq!(fields.get("exitCode").and_then(Value::as_i64), Some(7));
+    assert_eq!(
+        fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
+    assert!(
+        text(&end.result).contains("Command exited with code 7."),
+        "{}",
+        text(&end.result)
+    );
     session.close().await.unwrap();
     harness.shutdown().await;
 }
@@ -975,14 +978,31 @@ async fn a_detached_job_keeps_its_exit_code() {
     let (_, end) = &ended(&events)[0];
     assert_eq!(end.task_id, task_id);
     assert_eq!(end.status, ExecStatus::Failed);
-    let exit = end
-        .result
-        .structured_content
-        .as_ref()
-        .unwrap()
-        .get("exitCode")
-        .and_then(Value::as_i64);
-    assert_eq!(exit, Some(7));
+    let fields = end.result.structured_content.as_ref().unwrap();
+    assert_eq!(fields.get("exitCode").and_then(Value::as_i64), Some(7));
+    assert_eq!(
+        fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
+    assert!(
+        text(&end.result).contains("Command exited with code 7."),
+        "{}",
+        text(&end.result)
+    );
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let stopped = stop.stop(task_id.clone()).await.unwrap();
+    let stopped_fields = stopped.result.structured_content.as_ref().unwrap();
+    assert_eq!(
+        stopped_fields.get("exitCode").and_then(Value::as_i64),
+        Some(7)
+    );
+    assert_eq!(
+        stopped_fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
     session.close().await.unwrap();
     harness.shutdown().await;
 }
