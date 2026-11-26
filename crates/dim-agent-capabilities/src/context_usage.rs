@@ -1044,6 +1044,49 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
+    /// The position of the last model request at or before `through`.
+    async fn request_position(&self, through: u64) -> Result<Option<u64>> {
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec![serde_json::json!("model/call")],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["position.sequence".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        Ok(match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => value.as_u64(),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+    }
+
     /// The tools the last model request at or before `through` declared.
     async fn request_tools(&self, through: u64) -> Result<Option<Vec<ToolDefinition>>> {
         let reply = self
@@ -1105,17 +1148,15 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let tools = self
-            .request_tools(through)
-            .await?
-            .unwrap_or_else(|| self.registry.visible_definitions());
-        let tools_fingerprint = fingerprint(
-            &tools
-                .iter()
-                .map(|tool| (&tool.name, &tool.description))
-                .collect::<Vec<_>>(),
-        )?;
-        let versions = format!("{versions}:{tools_fingerprint}");
+        let (identity, cached_tools) = match self.request_position(through).await? {
+            Some(sequence) => (format!("request:{sequence}"), None),
+            None => {
+                let tools = self.registry.visible_definitions();
+                let identity = format!("live:{}", fingerprint(&tools)?);
+                (identity, Some(tools))
+            }
+        };
+        let versions = format!("{versions}:{identity}");
         if let Some(cached) = self
             .dynamic_fixed
             .lock()
@@ -1127,13 +1168,17 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
+        let tools = match cached_tools {
+            Some(tools) => Some(tools),
+            None => self.request_tools(through).await?,
+        };
         let mut system = self
             .fields(&configuration.event_id, through, &["data.system"])
             .await?;
         let system: Option<SystemPrompt> = sources::optional(system.remove(0))?;
         let identity = fingerprint(&(
             &configuration.control_identity,
-            fingerprint(&(&system, &Some(&tools)))?,
+            fingerprint(&(&system, &tools))?,
         ))?;
         let previous = self
             .dynamic_fixed
@@ -1148,7 +1193,7 @@ impl ContextUsage {
             .contribution_counter()
             .filter(|counter| counter.algorithm() == configuration.algorithm)
             .ok_or_else(|| fault("context counter algorithm changed"))?;
-        let fixed = previous.unwrap_or_else(|| counter.fixed(system.as_ref(), Some(&tools)));
+        let fixed = previous.unwrap_or_else(|| counter.fixed(system.as_ref(), tools.as_deref()));
         let value = DynamicFixed {
             configuration: configuration.event_id.clone(),
             versions,
