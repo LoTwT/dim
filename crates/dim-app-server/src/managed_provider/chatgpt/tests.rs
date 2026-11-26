@@ -118,6 +118,85 @@ fn chatgpt_no_surviving_reasoning_levels_keeps_reasoning_undeclared() {
     }
 }
 
+/// The picker and the implicit default must stay inside what the model's
+/// actual request path accepts (#2189): the aimux Responses model rejects
+/// `none` and `minimal` for the minor-versioned gpt-6 slugs with an
+/// unsupported warning that fails the turn, so the projection must not offer
+/// them. Levels keep the order the catalog declares them in, so the same
+/// filtering applies to any selection or default, which only ever names a
+/// declared level. Levels the request path does not constrain (pre-gpt-6
+/// slugs) pass through unchanged.
+#[test]
+fn chatgpt_reasoning_levels_stay_within_the_request_paths_acceptance() {
+    // `gpt-6.2-sol`'s request path accepts low/medium/high/xhigh/max: `none`
+    // and `minimal` must never be offered, and a rejected declared default
+    // must not survive either.
+    let model = remote_model(json!({
+        "slug":"gpt-6.2-sol","display_name":"Sol","visibility":"list",
+        "supported_reasoning_levels":[
+            {"effort":"none","description":"off"},
+            {"effort":"minimal","description":"tiny"},
+            {"effort":"low"},
+            {"effort":"medium"},
+            {"effort":"high"},
+            {"effort":"xhigh"},
+            {"effort":"max"}
+        ],
+        "default_reasoning_level":"minimal"
+    }));
+    let (capabilities, metadata) = project_remote_model(&model);
+    assert!(capabilities.reasoning);
+    let reasoning = metadata.unwrap().reasoning.unwrap();
+    assert_eq!(
+        reasoning.effort_options.unwrap(),
+        ["low", "medium", "high", "xhigh", "max"],
+        "only levels the request path accepts, in catalog order"
+    );
+    assert_eq!(
+        reasoning.effort, None,
+        "a default the request path rejects cannot become the implicit default"
+    );
+
+    // `gpt-6-sol`'s request path accepts `none`; the explicit major-only
+    // spelling keeps it.
+    let model = remote_model(json!({
+        "slug":"gpt-6-sol","display_name":"Sol","visibility":"list",
+        "supported_reasoning_levels":[
+            {"effort":"none"},
+            {"effort":"low"},
+            {"effort":"high"},
+            {"effort":"max"}
+        ],
+        "default_reasoning_level":"high"
+    }));
+    let (_, metadata) = project_remote_model(&model);
+    let reasoning = metadata.unwrap().reasoning.unwrap();
+    assert_eq!(
+        reasoning.effort_options.unwrap(),
+        ["none", "low", "high", "max"]
+    );
+    assert_eq!(reasoning.effort.as_deref(), Some("high"));
+
+    // A slug the request path does not constrain is not filtered: every
+    // declared level it accepts is offered as before.
+    let model = remote_model(json!({
+        "slug":"gpt-fixture","display_name":"Fixture","visibility":"list",
+        "supported_reasoning_levels":[
+            {"effort":"none"},
+            {"effort":"minimal"},
+            {"effort":"low"}
+        ],
+        "default_reasoning_level":"low"
+    }));
+    let (_, metadata) = project_remote_model(&model);
+    let reasoning = metadata.unwrap().reasoning.unwrap();
+    assert_eq!(
+        reasoning.effort_options.unwrap(),
+        ["none", "minimal", "low"],
+        "unconstrained slugs keep every accepted level"
+    );
+}
+
 #[derive(Clone)]
 struct OpenAiFixture {
     issuer: String,
@@ -458,6 +537,20 @@ async fn chatgpt_catalog_projects_declared_capabilities() {
                     "supported_reasoning_levels":[{"effort":"ultra"}],
                     "default_reasoning_level":"ultra",
                     "input_modalities":["text"]
+                },
+                {
+                    "slug":"gpt-6.2-sol","display_name":"Sol","visibility":"list",
+                    "supported_reasoning_levels":[
+                        {"effort":"none"},
+                        {"effort":"minimal"},
+                        {"effort":"low"},
+                        {"effort":"medium"},
+                        {"effort":"high"},
+                        {"effort":"xhigh"},
+                        {"effort":"max"}
+                    ],
+                    "default_reasoning_level":"minimal",
+                    "input_modalities":["text","image"]
                 }
             ]}))
         }),
@@ -472,7 +565,7 @@ async fn chatgpt_catalog_projects_declared_capabilities() {
     write(&mut lease, &signed_in_store(now())).await.unwrap();
     drop(lease);
     let catalog = owner.catalog(&cancel).await.unwrap();
-    assert_eq!(catalog.models.len(), 2);
+    assert_eq!(catalog.models.len(), 3);
     let rich = catalog.models[0].entry.clone();
     assert_eq!(rich.model_id, "gpt-fixture-rich");
     assert!(rich.capabilities.reasoning);
@@ -492,6 +585,24 @@ async fn chatgpt_catalog_projects_declared_capabilities() {
     assert_eq!(plain.capabilities.modalities, ["text"]);
     assert!(!plain.capabilities.vision);
     assert!(plain.metadata.is_none());
+    let sol = catalog.models[2].entry.clone();
+    assert_eq!(sol.model_id, "gpt-6.2-sol");
+    assert!(sol.capabilities.reasoning);
+    assert!(sol.capabilities.vision);
+    let sol_reasoning = sol
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.reasoning.clone())
+        .expect("Sol declares reasoning");
+    assert_eq!(
+        sol_reasoning.effort_options.unwrap(),
+        ["low", "medium", "high", "xhigh", "max"],
+        "levels the request path rejects never reach the picker"
+    );
+    assert_eq!(
+        sol_reasoning.effort, None,
+        "the rejected declared default is not the implicit default"
+    );
     owner.close().await;
     root.shutdown().await.unwrap();
     serve.abort();

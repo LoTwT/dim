@@ -1196,6 +1196,7 @@ dependencies = [
 name = "dim-app-server"
 version = "0.1.0-alpha.29"
 dependencies = [
+ "aimux-providers",
  "async-trait",
  "axum",
  "base64 0.22.1",

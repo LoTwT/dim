@@ -188,7 +188,21 @@ fn declared_modalities(value: Option<&serde_json::Value>) -> Vec<String> {
 }
 
 fn project_remote_model(model: &RemoteModel) -> (CatalogCapabilities, Option<ModelMetadata>) {
-    let efforts = declared_efforts(model.supported_reasoning_levels.as_ref());
+    let mut efforts = declared_efforts(model.supported_reasoning_levels.as_ref());
+    // The picker's choices and the implicit default must stay inside what the
+    // model's actual request path accepts (#2189): the aimux Responses model
+    // drops an effort outside its per-slug table with a warning that fails
+    // the turn, so a level the route would reject is never offered, whatever
+    // the account catalog declares. A slug the table does not constrain is
+    // not filtered. The declared order is kept either way.
+    if let Some(accepted) = model
+        .slug
+        .as_deref()
+        .map(aimux_providers::openai::language_model_capabilities::get_model_capabilities)
+        .and_then(|capabilities| capabilities.supported_reasoning_efforts)
+    {
+        efforts.retain(|effort| accepted.contains(&effort.as_str()));
+    }
     let modalities = declared_modalities(model.input_modalities.as_ref());
     let mut capabilities = CatalogCapabilities {
         vision: modalities.iter().any(|modality| modality == "image"),
