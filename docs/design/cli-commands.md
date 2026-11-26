@@ -973,12 +973,12 @@ runtimes".
 ## Tool mode settings
 
 `/settings` exposes the `Tool mode` row under Tools. It reads the shown
-Session's mode with `session.tool_mode.get` when the panel first opens and
-cycles the modes the daemon advertises with Enter — `normal` always, and
-`codemode`/`shell` when `session.tool_mode.codemode` / `.shell` is advertised
-— writing with `session.tool_mode.update`. The row shows the chosen mode, and
-the mode in force when it falls back, e.g. `Code Mode → Normal`; a mode whose
-entry tool is absent keeps the choice but runs `normal` (design
+Session's mode with `session.tool_mode.get` each time the panel opens and
+cycles `normal` → `codemode` → `shell` with Enter, writing with
+`session.tool_mode.update`. The row shows the chosen mode, and the mode in
+force when it falls back, e.g. `Code Mode → Normal`; a mode the daemon does not
+advertise is marked `(unavailable)` and keeps the choice while running
+`normal` (design
 [agent-tool-modes §5](agent-tool-modes.md#5-configuration-creation-and-switching)).
 
 ```text

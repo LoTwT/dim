@@ -2831,7 +2831,11 @@ impl App {
                     self.notices.push(error);
                 }
                 if let Some(Prompt::Settings(panel)) = &mut self.prompt {
-                    panel.set_tool_mode(&tool_mode_row(&mode, &effective));
+                    panel.set_tool_mode(&tool_mode_row(
+                        &mode,
+                        &effective,
+                        &self.tool_mode_available,
+                    ));
                 }
             }
             Update::PermissionSelected(preset) => {
@@ -5217,7 +5221,11 @@ impl App {
                 .as_ref()
                 .map(|setting| setting.document.enabled),
             prompts: self.prompt_origins(),
-            tool_mode: tool_mode_row(&self.tool_mode, &self.tool_mode_effective),
+            tool_mode: tool_mode_row(
+                &self.tool_mode,
+                &self.tool_mode_effective,
+                &self.tool_mode_available,
+            ),
             permission: self.permission_policy.as_ref().map_or_else(
                 || "Unavailable".to_owned(),
                 |policy| crate::permission::name(policy.preset).to_owned(),
@@ -5257,7 +5265,7 @@ impl App {
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::ToolMode => {
-                let next = next_tool_mode(&self.tool_mode, &self.tool_mode_available);
+                let next = next_tool_mode(&self.tool_mode);
                 self.tool_mode = next.to_owned();
                 self.host.send(Command::SetToolMode {
                     mode: next.to_owned(),
@@ -9855,21 +9863,22 @@ fn termux_height_only(previous_columns: u16, size: (u16, u16), termux: bool) -> 
     termux && size.0 == previous_columns
 }
 
-fn next_tool_mode<'a>(mode: &str, available: &'a [String]) -> &'a str {
-    let index = available.iter().position(|candidate| candidate == mode);
-    match index.and_then(|index| available.get(index + 1)) {
-        Some(next) => next,
-        None => available.first().map_or("normal", String::as_str),
+fn next_tool_mode(mode: &str) -> &'static str {
+    match mode {
+        "normal" => "codemode",
+        "codemode" => "shell",
+        _ => "normal",
     }
 }
 
-fn tool_mode_row(chosen: &str, effective: &str) -> String {
+fn tool_mode_row(chosen: &str, effective: &str, available: &[String]) -> String {
     let chosen = tool_mode_label(chosen);
     let effective = tool_mode_label(effective);
-    if chosen == effective {
-        chosen
-    } else {
-        format!("{chosen} → {effective}")
+    let unavailable = effective != chosen && !available.iter().any(|mode| mode.as_str() == chosen);
+    match (unavailable, chosen == effective) {
+        (true, _) => format!("{chosen} (unavailable) → {effective}"),
+        (false, true) => chosen,
+        (false, false) => format!("{chosen} → {effective}"),
     }
 }
 

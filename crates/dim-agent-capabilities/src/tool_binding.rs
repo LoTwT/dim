@@ -78,8 +78,6 @@ fn current(registry: &ToolRegistry) -> (ToolSetAdoption, Vec<Arc<ToolSourceSet>>
 }
 
 impl ToolBinding {
-    /// Fixes the handlers of `request_id` to the tools its prefix (through
-    /// `through`) adopted, then releases the pins no later prefix declares.
     /// The mode in force for a step with no open turn.
     pub fn effective_mode(&self) -> ToolMode {
         self.registry.effective_tool_mode_now()
@@ -90,6 +88,8 @@ impl ToolBinding {
         self.registry.await_entry(mode).await;
     }
 
+    /// Fixes the handlers of `request_id` to the tools its prefix (through
+    /// `through`) adopted, then releases the pins no later prefix declares.
     pub fn bind(
         &self,
         request_id: &str,

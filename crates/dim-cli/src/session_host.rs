@@ -746,7 +746,7 @@ impl Worker {
     }
 
     async fn read_tool_mode(&mut self) {
-        if !self.client.supports(&["session.tool_mode"]) {
+        if self.session_id.is_empty() || !self.client.supports(&["session.tool_mode"]) {
             return;
         }
         let params = json!({"sessionId": self.session_id});
@@ -2053,7 +2053,7 @@ impl Worker {
             }
             Command::ReadToolMode => self.read_tool_mode().await,
             Command::SetToolMode { mode } => {
-                if self.client.supports(&["session.tool_mode"]) {
+                if !self.session_id.is_empty() && self.client.supports(&["session.tool_mode"]) {
                     let params = json!({"sessionId": self.session_id, "mode": mode});
                     match self
                         .client
