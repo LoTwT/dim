@@ -795,10 +795,13 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
         .server
         .agent()
         .expect("the product profile has an Agent")
-        .create_session(dim_agent_runtime::SessionConfig {
-            cwd: rig._home.path().to_string_lossy().into_owned(),
-            ..Default::default()
-        })
+        .create_session(
+            dim_agent_runtime::SessionConfig {
+                cwd: rig._home.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
     let id = session.id().to_owned();

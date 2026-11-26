@@ -90,7 +90,7 @@ impl Rig {
 
     async fn open(&self) -> Session {
         self.host
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .expect("a Session opens")
     }
@@ -358,7 +358,11 @@ async fn an_idle_unloaded_session_answers_session_closing_until_it_loads_again()
         "a scope of a Session that is gone reports its Session as closing"
     );
 
-    let restored = rig.host.restore_session(id.clone()).await.unwrap();
+    let restored = rig
+        .host
+        .restore_session(id.clone(), Default::default())
+        .await
+        .unwrap();
     assert!(
         rig.scope(&restored)
             .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
