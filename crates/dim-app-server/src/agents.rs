@@ -1674,9 +1674,15 @@ impl AgentIndex {
         // The router comes from the owning instance: the runtime hands out a
         // handle it alone can build, so a bare `Session` has no path to it.
         let Some(routed) = used.host.agent.routed_session(&id) else {
-            return Err(RouteError::SessionUnavailable {
-                session: id,
-                reason: "the Session's scope is not provided".into(),
+            // The scope goes away when the Session closes, so a close in this
+            // window is that answer rather than an unavailable Session.
+            return Err(if session.is_closing() {
+                RouteError::SessionClosing(id)
+            } else {
+                RouteError::SessionUnavailable {
+                    session: id,
+                    reason: "the Session's scope is not provided".into(),
+                }
             });
         };
         let scope = routed.scope().clone();

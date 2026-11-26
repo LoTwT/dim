@@ -1941,8 +1941,11 @@ export type ReplyOf<C> = C extends { service: infer S; method: infer M }
     : never
   : never
 
+/** What a routed call answers: a method that replies nothing reaches the caller as `null`, while a direct call to it returns `undefined`. */
+export type RoutedReply<C> = ReplyOf<C> extends void ? null : ReplyOf<C>
+
 /** A Session's own faces, typed per operation: `service` and `method` choose the reply. */
 export interface SessionScope {
-  call<C extends SessionCall>(call: C): Promise<ReplyOf<C>>
-  lineCall<C extends LineCall>(call: C): Promise<ReplyOf<C>>
+  call<C extends SessionCall>(call: C): Promise<RoutedReply<C>>
+  lineCall<C extends LineCall>(call: C): Promise<RoutedReply<C>>
 }

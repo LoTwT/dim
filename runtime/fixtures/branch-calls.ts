@@ -38,7 +38,13 @@ export async function readByCalls(
   const committed: number | bigint = sequence
   const config = await scope.call({ service: 'sessionConfig', method: 'get', args: [] })
   const cwd: string = config.cwd
-  void [status, committed, cwd]
+  // A method that replies nothing reaches a routed caller as `null`.
+  const removed: null = await scope.call({
+    service: 'sessionLoader',
+    method: 'remove',
+    args: [{ instanceId: 0 }],
+  })
+  void [status, committed, cwd, removed]
 
   // @ts-expect-error a service the route does not resolve is refused.
   void scope.lineCall({ lineId: 'main', service: 'inputQueueX', method: 'withdraw', args: [] })

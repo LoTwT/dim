@@ -40,7 +40,8 @@ line of the caller's own Session, `sessions.call` a Session and a line of it for
 process, and both pass the owner's arguments, reply and error through. The two surfaces spell
 the same failure differently: the `sessions` envelope answers snake_case codes, and a Session
 part's scope throws `RouteError`, whose variants are camelCase and whose owner variant carries
-the owner's name, message, data and reloading flag. Agents loads the
+the owner's name, message, data and reloading flag. A routed method that replies nothing answers
+`null`, while a direct call to it answers nothing (`undefined`). Agents loads the
 Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
 selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
 `session_unavailable` (report the reason) or `no_line` (final for that line), before the

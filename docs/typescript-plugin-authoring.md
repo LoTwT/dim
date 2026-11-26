@@ -67,7 +67,9 @@ The two entries name a failure with different spellings. `sessions.call` answers
 camelCase (`noSession`, `sessionClosing`, `sessionReloading`, `sessionUnavailable`,
 `noLine`, `notDataFace`, `methodNotRoutable`, `wrongScope`, `owner`), and `owner` keeps the
 owner's `name`, `message`, `data` and `reloading`. Only `session_reloading`/`sessionReloading`
-and an owner failure that says it reloads may be retried.
+and an owner failure that says it reloads may be retried. A routed method that replies nothing
+answers `null`; called directly it answers `undefined`, so do not test its reply for
+truthiness.
 
 Operations whose signature cannot cross languages — a callback, a cancellation, or the
 calling row — are not routed: call them on an injected service directly. `xtask -- check`

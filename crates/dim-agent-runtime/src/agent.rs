@@ -754,11 +754,9 @@ impl Session {
     pub fn session_service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
         self.0.owner.session_face::<T>()
     }
-    /// The instance of the loaded Session subtree, so a host can find the
-    /// loader rows this Session runs. Keys under it stay readable only from
-    /// inside the Session, so it opens no service beyond the
-    /// [`PublicService`] reads above.
-    /// This Session with its router, when its owning instance provides one.
+    /// This Session with its router, when its owning instance provides one:
+    /// the runtime alone builds the handle, so a bare [`Session`] has no path
+    /// to it.
     fn routed(&self) -> Option<crate::route::RoutedSession> {
         let loaded = self.0.owner.loaded().ok()?;
         let scope = loaded.ctx.get_at::<crate::route::SessionScope>(
