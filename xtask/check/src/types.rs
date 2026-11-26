@@ -48,6 +48,43 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     line.sort();
     line.dedup();
     let refused = lifecycle(root)?;
+    // The list and the signatures must name the same operations: a signature
+    // that cannot cross languages but is missing fails, and so does a listed
+    // operation whose signature can.
+    let groups = registered(root)?;
+    let derived: Vec<(String, String)> = derived_lifecycle(root)?
+        .into_iter()
+        // Only a service a route resolves, and only an operation the file
+        // declares, is part of that surface.
+        .filter(|(service, method)| {
+            // Only a Session or branch face crosses through a route at all.
+            let in_scope = groups
+                .iter()
+                .any(|(name, group)| name == service && (group == "session" || group == "branch"));
+            in_scope
+                && !unroutable.contains(service)
+                && service != "sessionScope"
+                && declares_method(services, service, method)
+        })
+        .collect();
+    let missing: Vec<String> = derived
+        .iter()
+        .filter(|pair| !refused.contains(pair))
+        .map(|(service, method)| format!("{service}.{method}"))
+        .collect();
+    let extra: Vec<String> = refused
+        .iter()
+        .filter(|pair| !derived.contains(pair))
+        .map(|(service, method)| format!("{service}.{method}"))
+        .collect();
+    if !missing.is_empty() || !extra.is_empty() {
+        return Err(format!(
+            "crates/dim-agent-runtime/src/route.rs: LIFECYCLE_METHODS does not match the service signatures; not listed: [{}], listed but routable: [{}]",
+            missing.join(", "),
+            extra.join(", ")
+        )
+        .into());
+    }
     let faces = |items: &[(String, String)], name: &str| {
         let mut text = format!("export type {name} = {{\n");
         for (member, ty) in items {
@@ -325,6 +362,169 @@ fn lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
         return Err(format!("{}: LIFECYCLE_METHODS is missing", path.display()).into());
     }
     Ok(found)
+}
+
+/// The operations a catalog's own method signatures say a routed call cannot
+/// carry: a parameter that is the calling row, a cancellation, or a callback.
+/// Read from the `#[rutis::service]` blocks themselves, so a new operation of
+/// that kind cannot slip past the list the runtime refuses.
+fn derived_lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates"))? {
+        let directory = entry?.path().join("src");
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        sources(&mut files, &directory)?;
+        for file in files {
+            let ast = syn::parse_file(&std::fs::read_to_string(&file)?)?;
+            service_blocks(&ast.items, &mut found);
+        }
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+fn service_blocks(items: &[syn::Item], found: &mut Vec<(String, String)>) {
+    for item in items {
+        match item {
+            syn::Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    service_blocks(items, found);
+                }
+            }
+            syn::Item::Impl(block) if block.attrs.iter().any(is_service) => {
+                let service = type_name(&block.self_ty);
+                for item in &block.items {
+                    let syn::ImplItem::Fn(function) = item else {
+                        continue;
+                    };
+                    if function
+                        .attrs
+                        .iter()
+                        .any(|attr| is_service(attr) && skip_argument(attr))
+                    {
+                        continue;
+                    }
+                    let carried = function.sig.inputs.iter().any(|input| {
+                        let syn::FnArg::Typed(typed) = input else {
+                            return false;
+                        };
+                        carries_lifecycle(&typed.ty)
+                    });
+                    if carried {
+                        found.push((
+                            catalog_name(&service),
+                            camel(&function.sig.ident.to_string()),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a parameter type is one a routed call cannot carry: the calling
+/// row, a cancellation, or a callback.
+fn carries_lifecycle(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Reference(reference) => carries_lifecycle(&reference.elem),
+        syn::Type::Path(path) => {
+            let Some(last) = path.path.segments.last() else {
+                return false;
+            };
+            matches!(
+                last.ident.to_string().as_str(),
+                "Ctx" | "CancelledFn" | "CancellationToken"
+            ) || match &last.arguments {
+                syn::PathArguments::AngleBracketed(arguments) => {
+                    arguments.args.iter().any(|argument| match argument {
+                        syn::GenericArgument::Type(ty) => carries_lifecycle(ty),
+                        _ => false,
+                    })
+                }
+                _ => false,
+            }
+        }
+        syn::Type::TraitObject(object) => object.bounds.iter().any(|bound| {
+            matches!(bound, syn::TypeParamBound::Trait(bound)
+                if bound.path.segments.last().is_some_and(|segment| segment.ident == "Fn"))
+        }),
+        _ => false,
+    }
+}
+
+/// Whether the file declares `method` on `service`'s interface.
+fn declares_method(services: &str, service: &str, method: &str) -> bool {
+    let typed = services
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("export interface ")
+                .or_else(|| line.strip_prefix("export type "))
+                .and_then(|rest| rest.split([' ', '<', '{', '=']).next())
+        })
+        .find(|ty| catalog_name(ty) == service);
+    let Some(typed) = typed else {
+        return false;
+    };
+    let start = match services.find(&format!("export interface {typed} {{")) {
+        Some(start) => start,
+        None => return false,
+    };
+    services[start..]
+        .lines()
+        .take_while(|line| *line != "}")
+        .any(|line| line.trim_start().starts_with(&format!("{method}(")))
+}
+
+/// `#[service]`, `#[service(skip)]` or their `rutis::` spellings.
+fn is_service(attr: &syn::Attribute) -> bool {
+    let path = attr.path();
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    matches!(segments.as_slice(), [service] if service == "service")
+        || matches!(segments.as_slice(), [root, service] if root == "rutis" && service == "service")
+}
+
+fn skip_argument(attr: &syn::Attribute) -> bool {
+    attr.parse_args::<syn::Ident>()
+        .is_ok_and(|argument| argument == "skip")
+}
+
+/// The last path segment of a type.
+fn type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// The name a method crosses as: `publish_file` is `publishFile`.
+fn camel(ident: &str) -> String {
+    let mut camel = String::new();
+    for (index, part) in ident.split('_').enumerate() {
+        if index == 0 {
+            camel += part;
+            continue;
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            camel += &first.to_uppercase().collect::<String>();
+            camel += chars.as_str();
+        }
+    }
+    camel
 }
 
 /// The names routing does not resolve, read from the runtime that refuses

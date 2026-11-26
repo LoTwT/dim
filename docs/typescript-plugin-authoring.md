@@ -69,10 +69,10 @@ camelCase (`noSession`, `sessionClosing`, `sessionReloading`, `sessionUnavailabl
 owner's `name`, `message`, `data` and `reloading`. Only `session_reloading`/`sessionReloading`
 and an owner failure that says it reloads may be retried.
 
-Operations that need a function, a subscription the caller must settle, or the calling row,
-are not routed: call them on an injected service directly. That covers
-`dispatcher.listen`/`consume`, `permission.check`, `toolHost.execute`,
-`treeCommands.create`, `uiResources.publishFile`/`withdraw` and `wait.wait`.
+Operations whose signature cannot cross languages — a callback, a cancellation, or the
+calling row — are not routed: call them on an injected service directly. `xtask -- check`
+derives them from the service signatures and fails when the runtime's refusal list and the
+signatures disagree, so this stays true as operations are added.
 
 `sessionScope.call` serves the caller that selected a Session by id; a Session part calls its
 own Session's services through injection as before. The Session's own scope is not one of the
