@@ -136,7 +136,7 @@ test('debug-only CLI tests follow their owning modules',()=>{
   assert.deepEqual(classify(['crates/dim-agent-capabilities/src/build.rs']),only('rust','node','debug'));
   assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust','debug'));
   assert.deepEqual(classify(['crates/dimcode/tests/support/daemon.rs']),only('rust','node','debug'));
-  assert.deepEqual(classify(['crates/dim-cli/src/session_host.rs']),only('rust','windows'));
+  assert.deepEqual(classify(['crates/dim-cli/src/session_host.rs']),only('rust','windows','debug'));
 });
 
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{

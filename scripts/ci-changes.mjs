@@ -52,7 +52,7 @@ const rules=[
   [/^docker\//,['scripts']],
   // The startup, replacement and update paths these acceptances protect.
   [/^crates\/dim-cli\/src\/(?:client\.rs|update(?:\.rs|\/))/,['rust','windows','debug']],
-  [/^crates\/dim-cli\/src\/(?:lib\.rs|plugins\.rs|ui\/)/,['rust','windows','debug']],
+  [/^crates\/dim-cli\/src\/(?:lib\.rs|plugins\.rs|session_host(?:\.rs|\/)|ui\/)/,['rust','windows','debug']],
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
