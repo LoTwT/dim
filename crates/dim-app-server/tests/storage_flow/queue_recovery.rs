@@ -614,3 +614,69 @@ async fn a_first_time_application_after_restore_takes_the_persisted_mode() {
     store.close().await.unwrap();
     db.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_releases_a_queued_input_under_the_persisted_mode() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig {
+            tool_mode: ToolMode::Shell,
+            tools: Some(vec!["echo".into(), "wait".into(), "execute".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    agent.close().await.unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let head = store.head(&key(&id, "main")).await.unwrap();
+    append(
+        &store,
+        key(&id, "main"),
+        vec![record(
+            head + 1,
+            EventKind::InputMessage(InputMessageData::text(
+                "held across restart",
+                Some(InputMode::Queue),
+            )),
+        )],
+    )
+    .await
+    .unwrap();
+    let agent = MinimalHost::start(&builder(&store)).await.unwrap();
+    let session = settled(
+        "the queued input restores",
+        agent.restore_session(id.clone()),
+    )
+    .await
+    .unwrap();
+    settled("the rebuild applies the queue", session.idle("main"))
+        .await
+        .unwrap();
+    let history = chain_events(&session, "main", ..).await.unwrap();
+    let applied = history.iter().find_map(|event| match &event.kind {
+        EventKind::InputApplied(data) if data.input_id == format!("event-{}", head + 1) => {
+            data.tool_mode
+        }
+        _ => None,
+    });
+    assert_eq!(
+        applied,
+        Some(ToolMode::Shell),
+        "the rebuild's release uses the persisted mode"
+    );
+    agent.close().await.unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}

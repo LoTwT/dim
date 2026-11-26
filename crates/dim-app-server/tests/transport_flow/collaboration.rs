@@ -1154,6 +1154,24 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
                 member_mode["result"]["mode"], "codemode",
                 "the member inherits the leader's live choice: {member_mode}"
             );
+            assert_eq!(
+                member_mode["result"]["effective"], "normal",
+                "the member falls back when its mount list has no codemode: {member_mode}"
+            );
+            let switched = client
+                .rpc(
+                    "session.tool_mode.update",
+                    json!({"sessionId": lead, "mode": "normal"}),
+                )
+                .await;
+            assert_ok(&switched);
+            let member_after = client
+                .rpc("session.tool_mode.get", json!({"sessionId": member}))
+                .await;
+            assert_eq!(
+                member_after["result"]["mode"], "codemode",
+                "a later creator switch leaves the member's choice: {member_after}"
+            );
             let member_tools = model_tools(&member_session).await;
             assert!(
                 declares(&member_tools, "echo"),
