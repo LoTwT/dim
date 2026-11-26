@@ -8056,15 +8056,13 @@ async fn an_end_from_outside_a_tool_line_wakes_main_with_a_notice() {
 
 /// Starts Wait's `wait` in a turn on `main` and answers its call id and
 /// sequence once the call is written and no result has landed, so a notice
-/// written after this reaches a wait that is still waiting.
+/// written after this reaches a wait that is still waiting. The wait uses its
+/// default timeout: these tests end it from a notice before any timeout, and a
+/// short timeout only races the runner.
 async fn start_wait(session: &Session) -> (String, u64) {
-    soon(session.submit(
-        r#"tool:wait {"timeoutMs":3000}"#.into(),
-        InputMode::Queue,
-        "main",
-    ))
-    .await
-    .unwrap();
+    soon(session.submit(r#"tool:wait {}"#.into(), InputMode::Queue, "main"))
+        .await
+        .unwrap();
     let events = until_events(session, "main", |events| {
         events.iter().any(
             |event| matches!(&event.kind, EventKind::ToolUse(data) if data.call.name == "wait"),
