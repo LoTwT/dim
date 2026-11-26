@@ -101,11 +101,17 @@ pub(super) async fn collect() -> Result<Table> {
 /// (`xtask/access-layer.json`'s `removed` list).
 fn retired(root: &std::path::Path, catalog: &ServiceCatalog) -> Result<()> {
     let layer = xtask_check::access::load(root)?;
-    let back: Vec<&String> = layer
-        .removed
-        .iter()
-        .filter(|name| catalog.key(name).is_some() || catalog.is_shared(name))
-        .collect();
+    // A catalog name is known at the process, as a shared name, or inside an
+    // instance group: `key_in` answers `OutsideInstance` for the last.
+    let known = |name: &str| {
+        catalog.key(name).is_some()
+            || catalog.is_shared(name)
+            || matches!(
+                catalog.key_in(name, &rutis_loader::resolve::Build::default()),
+                Err(rutis_loader::LoaderError::OutsideInstance { .. })
+            )
+    };
+    let back: Vec<&String> = layer.removed.iter().filter(|name| known(name)).collect();
     if !back.is_empty() {
         return Err(format!(
             "{}: retired service names are registered again: {back:?}",
@@ -612,5 +618,26 @@ mod face_tests {
         assert!(face("x", false, false, None).is_err());
         assert!(face("x", true, false, None).is_err());
         assert!(face("x", false, false, Some("hotpath")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retired_tests {
+    use super::*;
+
+    #[test]
+    fn a_retired_instance_name_is_refused() {
+        let directory = std::env::temp_dir().join(format!("dim-retired-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("xtask")).unwrap();
+        // `sessionConfig` is registered inside the Session group only.
+        std::fs::write(
+            directory.join("xtask/access-layer.json"),
+            r#"{"allow": [], "removed": ["sessionConfig"]}"#,
+        )
+        .unwrap();
+        let catalog = dim_agent_runtime::names::catalog();
+        let error = retired(&directory, &catalog).expect_err("an instance name is covered");
+        assert!(error.to_string().contains("sessionConfig"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

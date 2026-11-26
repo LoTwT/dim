@@ -1473,11 +1473,14 @@ export type PermissionState = {
 /** A Session service failure; generated exports throw this serde value. */
 export type SessionsError =
   | { code: "rejected"; message: string }
-  | /** A routed call could not select its target: `no_session`, `session_closing`, `session_reloading`, `session_unavailable` or `no_line`. Only `session_reloading` is retryable. */ { code: "no_session"; message: string }
+  | /** A routed call could not select its target. These are the same codes a Session's own scope answers: `no_session`, `session_closing`, `session_reloading` (retryable), `session_unavailable`, `no_line`, `not_data_face`, `method_not_routable` and `wrong_scope`. */ { code: "no_session"; message: string }
   | { code: "session_closing"; message: string }
   | { code: "session_reloading"; message: string }
-  | { code: "session_unavailable"; message: string }
-  | { code: "no_line"; message: string }
+  | /** The Session exists but cannot load; `reason` says why. */ { code: "session_unavailable"; message: string; reason: string }
+  | /** The line is not the Session's, or it is gone; `line` names it. */ { code: "no_line"; message: string; line: string }
+  | { code: "not_data_face"; message: string; service: string }
+  | { code: "method_not_routable"; message: string; service: string; method: string }
+  | { code: "wrong_scope"; message: string; service: string; group: string }
   | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; message: string; data?: import('./plugin.js').BridgeJsonValue | null; retryable: boolean }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
@@ -1819,7 +1822,7 @@ export type RouteErrorThrown = RustError<"RouteError", "noSession" | "sessionClo
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "not_data_face" | "method_not_routable" | "wrong_scope" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
@@ -1898,11 +1901,10 @@ export type SessionFaces = {
   sessionIdentity: SessionIdentity
   sessionLanguage: SessionLanguage
   sessionLoader: SessionLoader
-  sessionScope: SessionScope
   skillsConfig: SkillsConfig
   toolHost: Omit<ToolHost, 'execute'>
   treeCommands: Omit<TreeCommands, 'create'>
-  uiResources: UiResources
+  uiResources: Omit<UiResources, 'publishFile' | 'withdraw'>
 }
 
 /** One call a route resolves: `service` and `method` name a data face and one of its methods, and `args` are that method's parameters. */

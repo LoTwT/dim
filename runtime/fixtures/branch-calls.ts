@@ -53,6 +53,8 @@ void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw',
 void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
 // @ts-expect-error a reply keeps the target method's own type.
 void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
+// @ts-expect-error an operation bound to the calling row is direct-only.
+void scope.call({ service: 'uiResources', method: 'publishFile', args: [{}] })
 // @ts-expect-error a subscription an operation hands the caller is not routed.
 void scope.lineCall({ lineId: 'main', service: 'dispatcher', method: 'listen', args: ['n', [], (_e: unknown) => {}] })
 // @ts-expect-error an operation that needs a caller-side cancellation is not routed.

@@ -380,6 +380,27 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     );
     assert_eq!(
         scope
+            .call(SessionCall::new("sessionScope", "lineCall", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::NotDataFace {
+            service: "sessionScope".into()
+        },
+        "the Session's own scope is not one of the faces it resolves"
+    );
+    assert_eq!(
+        scope
+            .call(SessionCall::new("uiResources", "publishFile", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::MethodNotRoutable {
+            service: "uiResources".into(),
+            method: "publishFile".into()
+        },
+        "an operation bound to the calling row is direct-only"
+    );
+    assert_eq!(
+        scope
             .line_call(LineCall::new("main", "dispatcher", "listen", vec![]))
             .await
             .unwrap_err(),

@@ -190,14 +190,26 @@ const RELOADING: &str = "Reloading";
 /// cancellation to settle, and a routed call carries data only. The list is
 /// maintained by hand; the generated authoring requests read this same
 /// constant, so the runtime and the declarations cannot disagree.
-pub const LIFECYCLE_METHODS: [(&str, &str); 6] = [
+pub const LIFECYCLE_METHODS: [(&str, &str); 8] = [
     ("dispatcher", "consume"),
     ("dispatcher", "listen"),
     ("permission", "check"),
     ("toolHost", "execute"),
     ("treeCommands", "create"),
+    ("uiResources", "publishFile"),
+    ("uiResources", "withdraw"),
     ("wait", "wait"),
 ];
+
+/// The Session's own scope resolves a line and the Session's faces; it is not
+/// one of the faces a routed call resolves, so `sessionScope.call` cannot reach
+/// `sessionScope.lineCall`. Session parts inject this Session's services
+/// directly instead.
+const NOT_CALLABLE: [&str; 1] = ["sessionScope"];
+
+/// The scope lifecycle services: the runtime provides them, and a route does
+/// not hand them to a caller.
+const LIFECYCLE_SERVICES: [&str; 2] = ["sessionLifecycle", "branchLifecycle"];
 
 const REGISTRATION_POINTS: [&str; 5] = [
     "sessionMethods",
@@ -241,9 +253,13 @@ impl SessionScope {
     fn line_context(&self, line_id: &str) -> Routed<Arc<TimelineContext>> {
         let session = self.live()?;
         let line = session.line(line_id);
-        // A Session that started closing while the line was being selected
-        // answers `SessionClosing`: its lines close with it.
-        self.live()?;
+        // A Session that started closing while the line was being selected —
+        // or whose loaded scope went with that close — answers `SessionClosing`:
+        // its lines close with it.
+        match self.live() {
+            Ok(_) => {}
+            Err(closing) => return Err(closing),
+        }
         line.ok_or_else(|| RouteError::NoLine {
             session: self.session_id.clone(),
             line: line_id.to_owned(),
@@ -326,12 +342,9 @@ pub(crate) fn face(
             method: method.into(),
         });
     }
-    let lifecycle = [
-        names::name_of::<SessionLifecycle>(),
-        names::name_of::<BranchLifecycle>(),
-    ];
     if REGISTRATION_POINTS.contains(&service)
-        || lifecycle.iter().any(|name| name == service)
+        || LIFECYCLE_SERVICES.contains(&service)
+        || (group == SESSION_GROUP && NOT_CALLABLE.contains(&service))
         || faces.reason(service).is_some()
     {
         return Err(RouteError::NotDataFace {

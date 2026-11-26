@@ -296,19 +296,36 @@ pub struct StopRequest {
 pub enum SessionsError {
     #[error("{message}")]
     Rejected { message: String },
-    /// A routed call could not select its target: `no_session`,
-    /// `session_closing`, `session_reloading`, `session_unavailable` or
-    /// `no_line`. Only `session_reloading` is retryable.
+    /// A routed call could not select its target. These are the same codes a
+    /// Session's own scope answers: `no_session`, `session_closing`,
+    /// `session_reloading` (retryable), `session_unavailable`, `no_line`,
+    /// `not_data_face`, `method_not_routable` and `wrong_scope`.
     #[error("{message}")]
     NoSession { message: String },
     #[error("{message}")]
     SessionClosing { message: String },
     #[error("{message}")]
     SessionReloading { message: String },
+    /// The Session exists but cannot load; `reason` says why.
     #[error("{message}")]
-    SessionUnavailable { message: String },
+    SessionUnavailable { message: String, reason: String },
+    /// The line is not the Session's, or it is gone; `line` names it.
     #[error("{message}")]
-    NoLine { message: String },
+    NoLine { message: String, line: String },
+    #[error("{message}")]
+    NotDataFace { message: String, service: String },
+    #[error("{message}")]
+    MethodNotRoutable {
+        message: String,
+        service: String,
+        method: String,
+    },
+    #[error("{message}")]
+    WrongScope {
+        message: String,
+        service: String,
+        group: String,
+    },
     /// The target owner's own failure, with the name and message it wrote and
     /// whether the owner says it may be retried.
     #[error("{message}")]
@@ -907,8 +924,10 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
         RouteError::NoSession(_) => SessionsError::NoSession { message },
         RouteError::SessionClosing(_) => SessionsError::SessionClosing { message },
         RouteError::SessionReloading(_) => SessionsError::SessionReloading { message },
-        RouteError::SessionUnavailable { .. } => SessionsError::SessionUnavailable { message },
-        RouteError::NoLine { .. } => SessionsError::NoLine { message },
+        RouteError::SessionUnavailable { reason, .. } => {
+            SessionsError::SessionUnavailable { message, reason }
+        }
+        RouteError::NoLine { line, .. } => SessionsError::NoLine { message, line },
         RouteError::Owner {
             name,
             data,
@@ -920,10 +939,17 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
             data,
             retryable: reloading,
         },
-        RouteError::MethodNotRoutable { .. } => SessionsError::Rejected { message },
-        RouteError::NotDataFace { .. } | RouteError::WrongScope { .. } => {
-            SessionsError::Rejected { message }
-        }
+        RouteError::NotDataFace { service } => SessionsError::NotDataFace { message, service },
+        RouteError::MethodNotRoutable { service, method } => SessionsError::MethodNotRoutable {
+            message,
+            service,
+            method,
+        },
+        RouteError::WrongScope { service, group } => SessionsError::WrongScope {
+            message,
+            service,
+            group,
+        },
     }
 }
 

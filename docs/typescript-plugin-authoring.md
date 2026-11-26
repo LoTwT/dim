@@ -59,6 +59,25 @@ The request types are generated, so `service`, `method` and `args` are the targe
 a typo fails `tsc`. Nothing a call returns may be kept: the next call looks the target up
 again.
 
+The two entries name a failure with different spellings. `sessions.call` answers the
+`sessions` envelope with snake_case codes — `no_session`, `session_closing`,
+`session_reloading`, `session_unavailable`, `no_line`, `not_data_face`,
+`method_not_routable`, `wrong_scope`, and `routed` for the owner's own failure.
+`sessionScope.lineCall`/`call` throw a `RouteError` whose variants carry the same kinds in
+camelCase (`noSession`, `sessionClosing`, `sessionReloading`, `sessionUnavailable`,
+`noLine`, `notDataFace`, `methodNotRoutable`, `wrongScope`, `owner`), and `owner` keeps the
+owner's `name`, `message`, `data` and `reloading`. Only `session_reloading`/`sessionReloading`
+and an owner failure that says it reloads may be retried.
+
+Operations that need a function, a subscription the caller must settle, or the calling row,
+are not routed: call them on an injected service directly. That covers
+`dispatcher.listen`/`consume`, `permission.check`, `toolHost.execute`,
+`treeCommands.create`, `uiResources.publishFile`/`withdraw` and `wait.wait`.
+
+`sessionScope.call` serves the caller that selected a Session by id; a Session part calls its
+own Session's services through injection as before. The Session's own scope is not one of the
+faces a routed call resolves.
+
 A line is admitted while it is published and not closing. Its durable `branch/end` takes it
 out of the published set at once, so a later call answers `no_line`, which is final for that
 line; a call admitted before the end keeps its owner's own result and failure. Rust calls the same operations: it builds `args` from the target operation's request

@@ -1649,8 +1649,18 @@ impl AgentIndex {
         request: crate::agents::sessions::CallRequest,
     ) -> std::result::Result<serde_json::Value, RouteError> {
         let id = request.session_id.clone();
+        // A replaced or stopping index is transient: the caller retries the
+        // Session it knows against the next generation (#2127).
+        if self.stopping.is_cancelled() {
+            return Err(RouteError::SessionReloading(id));
+        }
         let used = self.acquire(&id).await.map_err(|error| match error {
             AgentError::Reloading(_) => RouteError::SessionReloading(id.clone()),
+            // The index stopped between the check above and the acquire: the
+            // same transient answer, not a missing Session.
+            AgentError::Closed(closed) if self.stopping.is_cancelled() => {
+                RouteError::SessionReloading(closed)
+            }
             AgentError::Closed(_) => RouteError::NoSession(id.clone()),
             error => RouteError::SessionUnavailable {
                 session: id.clone(),
@@ -1663,9 +1673,18 @@ impl AgentIndex {
         }
         let scope = session
             .session_service::<dim_agent_runtime::SessionScope>()
-            .map_err(|error| RouteError::SessionUnavailable {
-                session: id.clone(),
-                reason: error.to_string(),
+            .map_err(|error| match error {
+                _ if session.is_closing() => RouteError::SessionClosing(id.clone()),
+                AgentError::Reloading(_) => RouteError::Owner {
+                    name: "AgentError".into(),
+                    message: error.to_string(),
+                    data: None,
+                    reloading: true,
+                },
+                error => RouteError::SessionUnavailable {
+                    session: id.clone(),
+                    reason: error.to_string(),
+                },
             })?;
         match request.line_id {
             Some(line_id) => {

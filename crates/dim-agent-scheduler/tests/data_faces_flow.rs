@@ -813,6 +813,10 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
         face["ok"], true,
         "a Session-scope face answers through Agents: {face}"
     );
+    // The line's head may advance between the two reads (a fact publishes in
+    // between), so the routed answer must lie in the window the two direct
+    // reads bound, not equal one of them.
+    let before = session.sequence("main").unwrap();
     let line = rig
         .call(
             "sessions",
@@ -820,10 +824,11 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
             json!({"sessionId": id, "lineId": "main", "service": "timeline", "method": "sequence"}),
         )
         .await;
-    assert_eq!(
-        line["value"],
-        json!(session.sequence("main").unwrap()),
-        "{line}"
+    let after = session.sequence("main").unwrap();
+    let routed = line["value"].as_u64().unwrap_or_else(|| panic!("{line}"));
+    assert!(
+        (before..=after).contains(&routed),
+        "the routed head {routed} lies between {before} and {after}: {line}"
     );
     let unknown = rig
         .call(

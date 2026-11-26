@@ -29,7 +29,9 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     let mut session = Vec::new();
     let mut line = Vec::new();
     for (name, group) in registered(root)? {
-        if unroutable.contains(&name) {
+        // The Session's own scope resolves a line and the Session's faces; it
+        // is not one of the faces a routed call resolves.
+        if unroutable.contains(&name) || name == "sessionScope" {
             continue;
         }
         let Some(ty) = declared.iter().find(|ty| catalog_name(ty) == name).copied() else {
