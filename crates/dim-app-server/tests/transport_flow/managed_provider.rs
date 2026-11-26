@@ -1837,6 +1837,127 @@ async fn override_fixture() -> (RunningServer, Arc<Fixture>, std::path::PathBuf)
     (server, fixture, home)
 }
 
+fn stored(home: &std::path::Path) -> Value {
+    let store = rusqlite::Connection::open(home.join("rust").join("dimcode.sqlite")).unwrap();
+    dim_app_server::provider::testing::stored_provider(&store, "managed-fixture")
+        .unwrap()
+        .unwrap()
+}
+
+fn rewrite_stored(home: &std::path::Path, record: &Value) {
+    let store = rusqlite::Connection::open(home.join("rust").join("dimcode.sqlite")).unwrap();
+    dim_app_server::provider::testing::replace_provider(
+        &store,
+        "managed-fixture",
+        record["version"].as_u64().unwrap() as u32,
+        &record.to_string(),
+    )
+    .unwrap();
+}
+
+/// A regression for the upgrade silently discarding a capability the user
+/// edited (#2189): an override written before capability edits were marked is
+/// the same clone with only its limits marked, so the first read after the
+/// upgrade must still pin the edit, and a refresh that then rewrites the
+/// account's rows must keep it pinned while the fields the user never touched
+/// follow the refreshed declarations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pre_upgrade_capability_edit_is_pinned_on_the_first_read() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins reasoning off on a model whose catalog row declares it.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // The record the pre-#2189 edit path wrote is this same clone without the
+    // capability marks, so rewriting it without them is exactly what an
+    // upgrade reads, not an approximation of one.
+    let mut record = stored(&home);
+    let marks = &mut record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"];
+    *marks = json!(
+        marks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|field| !matches!(
+                field.as_str().unwrap(),
+                "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+            ))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(marks, &json!([]));
+    rewrite_stored(&home, &record);
+    // The first read after the upgrade, before any refresh: the pin must
+    // stand where the clone kept it.
+    let management = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":"managed-fixture"}),
+        )
+        .await;
+    assert_ok(&management);
+    let models = management["result"]["providers"][0]["models"]
+        .as_array()
+        .unwrap();
+    let at = models
+        .iter()
+        .position(|model| model["model"]["modelId"] == json!("fixture-model"))
+        .unwrap();
+    assert_eq!(
+        models[at]["model"]["capabilities"]["reasoning"], false,
+        "an unmarked capability edit must survive the first read of the upgrade: {}",
+        models[at]["model"]
+    );
+    // The refreshed catalog declares reasoning and image input. The pin wins
+    // over the first, and the capability the user never edited follows the
+    // second.
+    *fixture.limited.lock().unwrap() = Limited::Evolved;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the unmarked pin must win over the refreshed declaration too"
+    );
+    assert_eq!(
+        model["capabilities"]["vision"], true,
+        "a capability the edit never touched follows the refresh"
+    );
+    assert_eq!(
+        model["capabilities"]["modalities"],
+        json!(["text", "image"])
+    );
+    // The read that rewrote the rows also fastened the pin, so the stored
+    // override now carries the mark the pre-upgrade write could not.
+    let record = stored(&home);
+    let marks = record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the refresh must fasten the pin it carried across: {marks:?}"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
 
 /// A regression for the pin that a refreshed row without metadata dropped
 /// (#2189): the row keeps the capability but nothing to hang it on, and the

@@ -690,6 +690,12 @@ impl ProviderService {
                 if let Some(models) = models {
                     admitted.models = models;
                     admitted.remote_models = true;
+                    admitted.model_config_overrides = normalize_static_overrides(
+                        &owner.bundled,
+                        &provider_id,
+                        &record,
+                        &admitted,
+                    );
                 }
                 admitted.version = admitted
                     .version

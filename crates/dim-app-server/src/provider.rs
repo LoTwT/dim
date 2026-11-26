@@ -48,8 +48,8 @@ use crate::{
     model_catalog::{
         BundledCatalog, CatalogCapabilities, CatalogProvider, ModelEdit, ModelEntry, ModelMetadata,
         ModelSource, NewApiEndpoint, ProviderProjection, declarations_hold, declare,
-        declare_supplied_limits, declared_limit_values, drop_undeclared_limits, limit_valid,
-        limits_valid, rebase_override,
+        declare_supplied_limits, declared_limit_values, drop_undeclared_limits,
+        infer_capability_edits, limit_valid, limits_valid, rebase_override,
     },
     storage::SqliteStorage,
 };
@@ -570,7 +570,11 @@ impl ProviderRecord {
                     .iter()
                     .find(|entry| entry.model_id == source.entry.model_id);
                 let mut entry = match replacement {
-                    Some(replacement) => rebase_override(&source.entry, replacement),
+                    Some(replacement) => {
+                        let mut pinned = replacement.clone();
+                        infer_capability_edits(&source.entry, &mut pinned);
+                        rebase_override(&source.entry, &pinned)
+                    }
                     None => source.entry.clone(),
                 };
                 bundled.identify_entry(&projection, &mut entry);
@@ -1128,6 +1132,15 @@ fn static_entries(
     provider_id: &str,
     record: &StaticProviderRecord,
 ) -> Vec<ModelEntry> {
+    static_entries_with_overrides(bundled, provider_id, record, &record.model_config_overrides)
+}
+
+fn static_entries_with_overrides(
+    bundled: &BundledCatalog,
+    provider_id: &str,
+    record: &StaticProviderRecord,
+    overrides: &[ModelEntry],
+) -> Vec<ModelEntry> {
     let models: Vec<_> = record
         .models
         .iter()
@@ -1154,7 +1167,7 @@ fn static_entries(
                 ..Default::default()
             },
             &models,
-            &record.model_config_overrides,
+            overrides,
         )
         .into_iter()
         .filter(|entry| {
@@ -1165,6 +1178,62 @@ fn static_entries(
                 .any(|m| m.model_id == entry.model_id)
         })
         .collect()
+}
+
+/// The overrides a row-replacing write keeps, rebased onto the rows the write
+/// stores (#2189): what the user never edited follows the row it was written
+/// against, so the clone the record keeps is never older than the row itself.
+/// `before` is the effective base entries the replaced rows served and `after`
+/// the ones the replacement serves, in the same shape the read path rebases
+/// on. An override is compared against the entry it cloned before its marks
+/// are applied: a capability value that differs there can only be the user's
+/// edit, so it is pinned first, including one an override written before
+/// capability edits were marked carries without a mark. An override whose
+/// model the replacement does not list keeps what it had.
+fn normalize_overrides(
+    before: &[ModelEntry],
+    after: &[ModelEntry],
+    overrides: Vec<ModelEntry>,
+) -> Vec<ModelEntry> {
+    overrides
+        .into_iter()
+        .map(|mut pinned| {
+            let base = after.iter().find(|entry| entry.model_id == pinned.model_id);
+            let old = before
+                .iter()
+                .find(|entry| entry.model_id == pinned.model_id);
+            match (base, old) {
+                (Some(base), Some(old)) => {
+                    infer_capability_edits(old, &mut pinned);
+                    rebase_override(base, &pinned)
+                }
+                _ => pinned,
+            }
+        })
+        .collect()
+}
+
+/// The normalized overrides of a static record whose listed rows the write
+/// replaces, computed with the effective entries both sides of the
+/// replacement: the record's raw rows are not the base the edit cloned,
+/// because the edit starts from the entries identification and the bundle
+/// filled in.
+fn normalize_static_overrides(
+    bundled: &BundledCatalog,
+    provider_id: &str,
+    before: &StaticProviderRecord,
+    after: &StaticProviderRecord,
+) -> Vec<ModelEntry> {
+    if before.model_config_overrides.is_empty() {
+        return before.model_config_overrides.clone();
+    }
+    let before_entries = static_entries_with_overrides(bundled, provider_id, before, &[]);
+    let after_entries = static_entries_with_overrides(bundled, provider_id, after, &[]);
+    normalize_overrides(
+        &before_entries,
+        &after_entries,
+        before.model_config_overrides.clone(),
+    )
 }
 
 fn static_models(
@@ -2308,6 +2377,16 @@ impl ProviderService {
                                 .ok_or(ProviderError::Failed)?;
                             let old = old
                                 .filter(|record| same_account(&record.account, &catalog.account));
+                            let old_rows: Vec<ModelEntry> = old
+                                .as_ref()
+                                .map(|record| {
+                                    record
+                                        .models
+                                        .iter()
+                                        .map(|model| model.entry.clone())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             let (
                                 disabled_model_ids,
                                 model_config_overrides,
@@ -2337,6 +2416,17 @@ impl ProviderService {
                                     )
                                 },
                             );
+                            // The overrides the refresh keeps are rebased onto
+                            // the rows it writes, so the clone never falls
+                            // behind the row and an edit the clone cannot mark
+                            // is pinned before the row moves (#2189).
+                            let new_rows: Vec<ModelEntry> = catalog
+                                .models
+                                .iter()
+                                .map(|model| model.entry.clone())
+                                .collect();
+                            let model_config_overrides =
+                                normalize_overrides(&old_rows, &new_rows, model_config_overrides);
                             let record = ProviderRecord {
                                 kind: ManagedRecordKind::Managed,
                                 account: catalog.account,

@@ -1,5 +1,6 @@
 use dim_app_server::model_catalog::{
     BundledCatalog, ModelEdit, ModelEntry, ModelIdentification, ModelSource, ProviderProjection,
+    infer_capability_edits, rebase_override,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -2815,16 +2816,23 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
             ..Default::default()
         },
     );
-    // The refresh replaces the row with one that declares the capabilities.
+    // The refresh replaces the row with one that declares the capabilities,
+    // and the row-writing refresh rebases the stored override on it before the
+    // merge ever sees the pair: the inference the normalization runs treats the
+    // override as the clone of the row it edited, so only the capability the
+    // clone genuinely diverged on joins its marks.
     let v2 = row(true, vec!["low", "medium", "high", "xhigh"]);
     assert!(
         v2.capabilities.vision,
         "the fixture rows differ as a refresh does"
     );
+    let mut normalized = edited.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v2, &normalized);
     let merged = catalog.effective_models(
         &provider,
         std::slice::from_ref(&v2),
-        std::slice::from_ref(&edited),
+        std::slice::from_ref(&normalized),
     );
     assert_eq!(
         merged[0].capabilities.context_window,
@@ -2861,10 +2869,13 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
         },
     );
     let v3 = row(true, vec!["low", "high"]);
+    let mut normalized = pinned.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v3, &normalized);
     let merged = catalog.effective_models(
         &provider,
         std::slice::from_ref(&v3),
-        std::slice::from_ref(&pinned),
+        std::slice::from_ref(&normalized),
     );
     assert!(
         !merged[0].capabilities.vision,
@@ -2890,10 +2901,13 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
         v3.capabilities.tool_calling,
         "the refreshed row declares tool calling for this pin to override"
     );
+    let mut normalized = pinned.clone();
+    infer_capability_edits(&v1, &mut normalized);
+    let normalized = rebase_override(&v3, &normalized);
     let merged = catalog.effective_models(
         &provider,
         std::slice::from_ref(&v3),
-        std::slice::from_ref(&pinned),
+        std::slice::from_ref(&normalized),
     );
     assert!(
         !merged[0].capabilities.tool_calling,

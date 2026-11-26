@@ -841,7 +841,9 @@ impl BundledCatalog {
         for item in overrides {
             if let Some(pos) = models.iter().position(|m| m.model_id == item.model_id) {
                 let base = &models[pos];
-                let mut model = rebase_override(base, item);
+                let mut item = item.clone();
+                infer_capability_edits(base, &mut item);
+                let mut model = rebase_override(base, &item);
                 // The rebased entry's pins decide what identification may
                 // fill, so its record is recomputed here as the managed path
                 // does: the base row's fills are its own, and copying them
@@ -1289,13 +1291,73 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
     )
 }
 
+/// Marks the capability edits a stored override cannot help but carry
+/// (#2189). An override written before capability edits were marked is a
+/// clone of the row it edited plus the user's values, with only its limits
+/// marked, so a capability the user chose reads exactly like one the clone
+/// captured. Where the override differs from the row it was taken from, the
+/// difference can only be the user's edit, and pinning it keeps an upgrade
+/// from silently discarding it: the row itself only moves when a refresh or
+/// listing write replaces it, and those writes rebase the stored override
+/// onto the row they write, so the clone never falls behind the row. `base`
+/// is the entry the comparison is against — the row the record serves on a
+/// read, or the row being replaced on a write — and callers run this once
+/// per read or write, before `rebase_override`.
+pub fn infer_capability_edits(base: &ModelEntry, pinned: &mut ModelEntry) {
+    let marks: Vec<String> = pinned
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.capability_override_fields.clone())
+        .unwrap_or_default();
+    let marked = |field: &str| marks.iter().any(|name| name == field);
+    let reasoning_shape = |entry: &ModelEntry| {
+        (
+            entry.capabilities.reasoning,
+            entry
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.reasoning.as_ref())
+                .map(|reasoning| (reasoning.supported, reasoning.effort_options.clone())),
+        )
+    };
+    fn raw<'a>(entry: &'a ModelEntry, key: &str) -> Option<&'a Value> {
+        entry
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.raw.get(key))
+    }
+    let mut inferred = Vec::new();
+    if !marked("vision") && pinned.capabilities.vision != base.capabilities.vision {
+        inferred.push("vision");
+    }
+    if !marked("toolCalling") && pinned.capabilities.tool_calling != base.capabilities.tool_calling
+    {
+        inferred.push("toolCalling");
+    }
+    if !marked("reasoning") && reasoning_shape(pinned) != reasoning_shape(base) {
+        inferred.push("reasoning");
+    }
+    if !marked("modalityCapabilities")
+        && ["imageGeneration", "modalityCapabilities"]
+            .iter()
+            .any(|key| raw(pinned, key) != raw(base, key))
+    {
+        inferred.push("modalityCapabilities");
+    }
+    for field in inferred {
+        declare(pinned, field);
+    }
+}
+
 /// The override a record stores, rebased on the entry the current listing or
 /// catalog row serves (#2189). Everything the user never edited follows the
 /// base row, so a refresh that declares new capabilities serves them: the
 /// override was written as a clone of the row it edited, and its values are
 /// the old row's, not the user's. What the user edited is pinned, marked in
 /// `capabilityOverrideFields`; the display name is always the override's,
-/// because an unedited clone cannot be told from one the user typed.
+/// because an unedited clone cannot be told from one the user typed. A pin
+/// that lives in the metadata survives a base row that declares none, since
+/// the mark itself is what keeps the pin across the next refresh.
 pub fn rebase_override(base: &ModelEntry, pinned: &ModelEntry) -> ModelEntry {
     let mut merged = base.clone();
     merged.display_name = pinned.display_name.clone();
