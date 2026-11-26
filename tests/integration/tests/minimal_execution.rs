@@ -920,6 +920,73 @@ async fn a_call_after_the_occupying_command_ends_runs() {
     harness.shutdown().await;
 }
 
+/// A command that moves to the background keeps the exit status it ended with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handed_off_command_keeps_its_exit_code() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 0.3; sh -c 'exit 7'", "timeoutMs": 100}),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
+    let exit = end
+        .result
+        .structured_content
+        .as_ref()
+        .unwrap()
+        .get("exitCode")
+        .and_then(Value::as_i64);
+    assert_eq!(exit, Some(7));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A detached shell job keeps the exit status it ended with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_detached_job_keeps_its_exit_code() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sh -c 'exit 7'", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec started", |events| tool_results(events) == 1).await;
+    let task_id = task_of(&results(&events)[0]);
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
+    let exit = end
+        .result
+        .structured_content
+        .as_ref()
+        .unwrap()
+        .get("exitCode")
+        .and_then(Value::as_i64);
+    assert_eq!(exit, Some(7));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_background_task() {
     let harness = Harness::new(platform(&[]).await).await;

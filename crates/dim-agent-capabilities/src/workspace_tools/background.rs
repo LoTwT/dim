@@ -667,9 +667,11 @@ impl BackgroundExec {
         }
     }
 
-    /// Stops a task: cancels it while running, so it ends `cancelled` and
-    /// does not wake. Returns once its `exec/ended` is dispatched; a task that
-    /// already ended keeps its result and its wake.
+    /// Stops a task and answers the owner's terminal: a native command or a
+    /// background job ends `cancelled` and does not wake, while a shell command
+    /// is interrupted and ends with the interrupted line's own status, so it
+    /// wakes. Returns once its `exec/ended` is dispatched; a task that already
+    /// ended keeps its result and its wake.
     pub async fn stop(&self, task_id: String) -> Result<ExecEndedData, TaskError> {
         let current = {
             let mut state = self.state.lock().unwrap();
