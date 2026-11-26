@@ -90,6 +90,10 @@ pub enum RouteError {
     Owner {
         name: String,
         message: String,
+        /// The owner's failure as data, when its error type carries a serde
+        /// value: a caller can act on the same structure a direct call would
+        /// read, instead of parsing the message.
+        data: Option<Box<serde_json::Value>>,
         reloading: bool,
     },
 }
@@ -316,6 +320,7 @@ pub(crate) async fn call_face(
         .ok_or_else(|| RouteError::Owner {
             name: service.into(),
             message: format!("{service} is not provided now"),
+            data: None,
             reloading: false,
         })?;
     let args = BridgeValue::List(
@@ -334,6 +339,7 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
     RouteError::Owner {
         name: failure.name,
         message: failure.message,
+        data: failure.data,
         reloading: failure.reloading,
     }
 }
@@ -343,6 +349,7 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
 pub(crate) struct Failure {
     name: String,
     message: String,
+    data: Option<Box<serde_json::Value>>,
     reloading: bool,
 }
 
@@ -352,6 +359,7 @@ impl From<AgentError> for Failure {
             name: "AgentError".into(),
             reloading: matches!(error, AgentError::Reloading(_)),
             message: error.to_string(),
+            data: None,
         }
     }
 }
@@ -364,6 +372,7 @@ impl From<BridgeError> for Failure {
                 // service reports a reload as `Reloading` (`AgentError`'s variant
                 // code), and the wire keeps it in the error graph.
                 let reloading = error.code() == Some(RELOADING);
+                let data = error.data().map(Box::new);
                 let name = match &error {
                     BridgeError::Remote { name, .. } => name.clone(),
                     BridgeError::Binding { code, .. } => code.unwrap_or("BindingError").into(),
@@ -373,12 +382,14 @@ impl From<BridgeError> for Failure {
                     BridgeError::Remote { message, .. } | BridgeError::Binding { message, .. } => {
                         Self {
                             reloading,
+                            data,
                             name,
                             message,
                         }
                     }
                     other => Self {
                         reloading,
+                        data,
                         name,
                         message: other.to_string(),
                     },
@@ -387,6 +398,7 @@ impl From<BridgeError> for Failure {
             other => Self {
                 name: "BridgeError".into(),
                 message: other.to_string(),
+                data: None,
                 reloading: false,
             },
         }

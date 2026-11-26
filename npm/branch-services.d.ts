@@ -1466,7 +1466,7 @@ export type SessionsError =
   | { code: "session_reloading"; message: string }
   | { code: "session_unavailable"; message: string }
   | { code: "no_line"; message: string }
-  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; message: string; retryable: boolean }
+  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; message: string; data?: import('./plugin.js').BridgeJsonValue | null; retryable: boolean }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }

@@ -84,6 +84,7 @@ pub(super) async fn collect() -> Result<Table> {
         let ctx = ctx.ok_or("the catalog probe did not load")?;
         let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?;
         reach(&root_of(), agent.catalog(), agent.faces(), &table)?;
+        retired(&root_of(), agent.catalog())?;
         session.close().await?;
         Ok::<_, Box<dyn std::error::Error>>(table)
     }
@@ -92,6 +93,27 @@ pub(super) async fn collect() -> Result<Table> {
     server.join().await?;
     let _ = std::fs::remove_dir_all(&dir);
     table
+}
+
+/// Fails when a service name the access layer records as retired is registered
+/// again: the generated authoring types only cover names a route resolves, so a
+/// retired name coming back would otherwise go unnoticed
+/// (`xtask/access-layer.json`'s `removed` list).
+fn retired(root: &std::path::Path, catalog: &ServiceCatalog) -> Result<()> {
+    let layer = xtask_check::access::load(root)?;
+    let back: Vec<&String> = layer
+        .removed
+        .iter()
+        .filter(|name| catalog.key(name).is_some() || catalog.is_shared(name))
+        .collect();
+    if !back.is_empty() {
+        return Err(format!(
+            "{}: retired service names are registered again: {back:?}",
+            xtask_check::access::FILE
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The workspace root, from this crate's manifest directory.

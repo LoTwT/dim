@@ -315,6 +315,9 @@ pub enum SessionsError {
     Routed {
         name: String,
         message: String,
+        /// The owner's failure as data, when its error type carries a serde
+        /// value.
+        data: Option<Box<serde_json::Value>>,
         retryable: bool,
     },
     #[error("{message}")]
@@ -895,10 +898,14 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
         RouteError::SessionUnavailable { .. } => SessionsError::SessionUnavailable { message },
         RouteError::NoLine { .. } => SessionsError::NoLine { message },
         RouteError::Owner {
-            name, reloading, ..
+            name,
+            data,
+            reloading,
+            ..
         } => SessionsError::Routed {
             name,
             message,
+            data,
             retryable: reloading,
         },
         RouteError::NotDataFace { .. } | RouteError::WrongScope { .. } => {
