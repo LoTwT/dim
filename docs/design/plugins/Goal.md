@@ -273,3 +273,12 @@ active 协议文本与 guide 的变更必须用产品请求验证：重载后普
 ## Appendix G. Rust binding
 
 沿用 GoalSession/GoalBranch、原 Changes 身份路由、TypedPlugin、ctx.effect、TaskTracker、CancellationToken、Settings、Dispatcher::consume 和现有 TimelineQuery。一个 Goal 业务状态定义用于生产与读取；text.rs 负责唯一模型文本转换。append_batch 构造的内部输入在 Goal 边界校验并赋予 submission ID，不新增通用写入包装或数据库能力。具体文件拆分不构成新增需求。
+
+## Appendix H. Tool mode
+
+When the Session's mode becomes an effective `shell`, the `ModeTransition`
+settle pauses every active goal with a `reason=mode` state and pause text,
+withdraws the goal's unapplied Queue inputs (a `set`/`resume` trigger and a
+continuation) through `session.input.withdraw`, and refuses `set`/`resume`
+while shell is in force. A continuation decision reached under shell writes a
+pause instead of a continuation. A failed withdrawal fails the mode update.

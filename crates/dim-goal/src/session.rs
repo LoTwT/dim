@@ -137,14 +137,25 @@ impl DynPlugin for GoalSession {
                                     "branchId": key.branch_id,
                                     "inputId": input_id,
                                 });
-                                if let Ok(accepted) = provider.accept(
+                                match provider.accept(
                                     "session.input.withdraw".into(),
                                     params,
                                     None,
                                     CancellationToken::new(),
                                     |_| {},
                                 ) {
-                                    let _ = accepted.reply.await;
+                                    Ok(accepted) => match accepted.reply.await {
+                                        Ok(Ok(_)) => {}
+                                        Ok(Err(error)) => {
+                                            return Err(HostError::failed(format!("{error:?}")));
+                                        }
+                                        Err(error) => {
+                                            return Err(HostError::failed(format!("{error:?}")));
+                                        }
+                                    },
+                                    Err(error) => {
+                                        return Err(HostError::failed(format!("{error:?}")));
+                                    }
                                 }
                             }
                         }

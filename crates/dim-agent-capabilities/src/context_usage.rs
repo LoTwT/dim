@@ -1075,13 +1075,6 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
-        let (_, sources) = self.registry.snapshot();
-        let versions = fingerprint(
-            &sources
-                .iter()
-                .map(|source| (&source.key, &source.version))
-                .collect::<Vec<_>>(),
-        )?;
         let mut system = self
             .fields(&configuration.event_id, through, &["data.system"])
             .await?;

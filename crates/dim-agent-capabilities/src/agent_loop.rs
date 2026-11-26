@@ -442,7 +442,7 @@ impl AgentLoop {
             .unwrap()
             .as_ref()
             .map(|turn| turn.tool_mode)
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.binding.effective_mode());
         let Some(request) = configured_request(
             &crate::context_policy::PolicyContext::from_context(context.clone()),
             &history,

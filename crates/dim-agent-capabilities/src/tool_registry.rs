@@ -526,15 +526,13 @@ impl ToolRegistry {
     pub async fn settle_update_locked(&self, mode: ToolMode) -> Result<(), HostError> {
         self.transition.settle(mode, ModeChangeCause::Update).await
     }
-    /// Whether `mode`'s entry tool is declared, without reading providers.
+    /// Whether `mode`'s entry tool is declared; refreshes so a registration
+    /// is adopted before it is checked.
     fn entry_declared(&self, mode: ToolMode) -> bool {
         let Some(entry) = mode.entry_tool() else {
             return false;
         };
-        let sources = self.sources.lock().unwrap();
-        self.declared(&sources)
-            .iter()
-            .any(|tool| tool.name == entry)
+        self.snapshot().0.iter().any(|tool| tool.name == entry)
     }
     /// The mode in force: the chosen one, or `normal` when its entry tool is
     /// not mounted.

@@ -2421,3 +2421,65 @@ async fn an_effective_shell_update_pauses_the_goal_and_writes_the_mode_text() {
         "the mode pause text is written: {writes:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_effective_shell_update_withdraws_a_queued_resume_trigger() {
+    let mut fixture = Fixture::start().await;
+    let session = fixture
+        .new_session_with_mode(&["echo", "wait", "execute"], "normal")
+        .await;
+    fixture
+        .goal_on(&session, "set", json!({"objective": "keep going"}))
+        .await
+        .unwrap();
+    let submitted = fixture
+        .client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "tool:wait {\"millis\":3000}"}),
+        )
+        .await
+        .unwrap();
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    fixture
+        .goal_on(&session, "resume", json!({}))
+        .await
+        .unwrap();
+    let updated = fixture
+        .client
+        .rpc(
+            "session.tool_mode.update",
+            json!({"sessionId": session, "mode": "shell"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["effective"], "shell", "{updated}");
+    let idle = fixture
+        .client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    assert!(idle.get("error").is_none(), "{idle}");
+    let loaded = fixture
+        .server
+        .agent()
+        .unwrap()
+        .get_session(&session)
+        .unwrap();
+    let writes = support::goal_writes(&loaded, "main").await;
+    let resume = writes
+        .iter()
+        .find(|block| block.marker.contains("op=\"resume\""))
+        .expect("the resume trigger is written");
+    let events = branch_events(&loaded, "main", ..).await.unwrap();
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InputDeleted(data) if data.input_id == resume.id
+        )),
+        "the queued resume trigger is withdrawn: {events:?}"
+    );
+}

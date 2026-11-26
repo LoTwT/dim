@@ -915,6 +915,8 @@ impl Worker {
             object.remove("permissionPolicy");
             // Creation-only member: `session.model.preview` denies it.
             object.remove("worktree");
+            // Creation-only member: `session.model.preview` denies it.
+            object.remove("toolMode");
             self.client.typed("session.model.preview", params).await
         })
         .await??;

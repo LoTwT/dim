@@ -493,6 +493,8 @@ const PLUGIN_TOOL: &str = "plugin";
 /// served a keyed stub adapter and declare it, while the service is cleared
 /// before the run's own Sessions, which mount the name but do not declare or
 /// call it, so their judged Timeline carries no source adoption.
+/// Tools `RUN_TOOLS` mounts that a default (normal) probe never declares.
+const NORMAL_HIDDEN: [&str; 2] = ["codemode", "execute"];
 const RUN_TOOLS: &[&str] = &[
     "read",
     "write",
@@ -3700,7 +3702,10 @@ async fn child_drive(
             Some("the preflight phase is faulted by the test hook".to_owned()),
         )
     } else {
-        let expected = session_tools(scenario);
+        let expected: Vec<String> = session_tools(scenario)
+            .into_iter()
+            .filter(|name| !NORMAL_HIDDEN.contains(&name.as_str()))
+            .collect();
         match preflight_session(
             &mut client,
             params,
@@ -17291,7 +17296,7 @@ mod tests {
             let expected: Vec<&str> = RUN_TOOLS
                 .iter()
                 .copied()
-                .filter(|name| *name != "web_search")
+                .filter(|name| *name != "web_search" && !NORMAL_HIDDEN.contains(name))
                 .collect();
             assert_eq!(
                 offered, expected,

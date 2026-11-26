@@ -761,6 +761,11 @@ impl Owner {
                 };
                 break events;
             };
+            if let EventKind::InputMessage(data) = &events[1].kind
+                && queued_goal_input(data)
+            {
+                self.queued.lock().unwrap().push(events[1].id.clone());
+            }
             let sequence = events[1].sequence;
             let mut lock = self.state.lock().unwrap();
             lock.recorded = lock.recorded.max(sequence);
