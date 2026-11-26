@@ -58,7 +58,7 @@ current.at 是这份累计值对应的来源位置；source_through 是本份结
 
 六类是恢复源。model-start 不是持久进度源；打开输出的标记由请求控制事实按需取得。context/prepare、model/call、context/budget 用于有限实时关联，不读取它们的历史消息数组，不因为这些回调保存统计。
 
-固定 tools 已在配置中时直接采用它。否则使用原 ToolRegistry 当前声明及 source key/version。集合身份不变直接复用 fixed 数字，不重新序列化工具。读取注册表当前声明的复制成本仍按工具数量计，不冒充零成本；不调用 bind/bind_current。动态集合不产生额外 Timeline 事件。只在内存缓存 configuration ID、source key/version 摘要、实际控制内容身份和固定贡献；source 版本变化但内容相同则复用数字。当前读采用这份固定贡献，并仅采用身份匹配的 provider 基准；重载重新取得当前集合。数字已就绪时，显式 context/configured 变化按原规则保存；尚未就绪时等待实际请求。
+固定 tools 取 boundary 前最近一次 model request 实际声明的集合；还没有请求时回落到原 ToolRegistry 的当前声明。集合身份不变直接复用 fixed 数字，不重新序列化工具。读取注册表当前声明的复制成本仍按工具数量计，不冒充零成本；不调用 bind/bind_current。动态集合不产生额外 Timeline 事件。只在内存缓存 configuration ID、source key/version 摘要、实际控制内容身份和固定贡献；source 版本变化但内容相同则复用数字。当前读采用这份固定贡献，并仅采用身份匹配的 provider 基准；重载重新取得当前集合。数字已就绪时，显式 context/configured 变化按原规则保存；尚未就绪时等待实际请求。
 
 ## 4. 复用已经计算出的数值
 
