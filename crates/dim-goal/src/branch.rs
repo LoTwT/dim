@@ -1818,7 +1818,7 @@ impl Owner {
                     branch_id: self.branch_id.clone(),
                     sequence: after,
                 }),
-                through: None,
+                through: Some(self.timeline.committed()),
                 include_publishing: true,
                 query: QuerySpec {
                     filter: Some(QueryFilter::And {
@@ -1862,7 +1862,7 @@ impl Owner {
                     branch_id: self.branch_id.clone(),
                     sequence: turn_start,
                 }),
-                through: None,
+                through: Some(self.timeline.committed()),
                 include_publishing: true,
                 query: QuerySpec {
                     filter: Some(QueryFilter::And {

@@ -95,8 +95,6 @@ impl DynPlugin for ProbePart {
     }
 }
 
-/// Registers the `execute` entry tool, so a Session can run `shell`; the
-/// handler does nothing.
 /// One product home with Goal (unless a flow assembles without it) and the
 /// capabilities it depends on, one Session on it, and the probe over its
 /// branches.
@@ -279,28 +277,6 @@ impl Fixture {
                 json!({
                     "cwd": self.home,
                     "tools": tools,
-                    "permissionPolicy": {"allowedTools": tools},
-                }),
-            )
-            .await
-            .unwrap();
-        let id = created["sessionId"].as_str().unwrap().to_owned();
-        if self.goal {
-            wait_goal_ready(&mut self.client, &id).await;
-        }
-        id
-    }
-
-    /// Creates a Session in `mode` with `tools`.
-    pub async fn new_session_with_mode(&mut self, tools: &[&str], mode: &str) -> String {
-        let created = self
-            .client
-            .rpc(
-                "session.create",
-                json!({
-                    "cwd": self.home,
-                    "tools": tools,
-                    "toolMode": mode,
                     "permissionPolicy": {"allowedTools": tools},
                 }),
             )
