@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('rolling nightly installs only complete releases and retains the three highest versions', { skip: process.platform === 'win32' }, t => {
+test('rolling nightly installs only complete releases and retains only the latest version', { skip: process.platform === 'win32' }, t => {
   const root = mkdtempSync(path.join(tmpdir(), 'dim-nightly-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = (...parts) => path.join(root, ...parts);
@@ -56,12 +56,13 @@ esac\n`, { mode: 0o755 });
   writeFileSync(file('interrupt'), '');
   publish(12, false);
   assert.equal(release(), 'Nightly v1.2.3-nightly.8');
+  assert.equal(install().status, 0);
   rmSync(file('interrupt'));
   publish(9);
   publish(11);
   publish(10);
   assert.equal(release(), 'Nightly v1.2.3-nightly.11');
-  const expected = [9, 10, 11].flatMap(n => [...platforms.map(p => `dimcode-${p}-1.2.3-nightly.${n}.tar.gz`), `SHA256SUMS-1.2.3-nightly.${n}`]);
+  const expected = [...platforms.map(p => `dimcode-${p}-1.2.3-nightly.11.tar.gz`), 'SHA256SUMS-1.2.3-nightly.11'];
   assert.deepEqual(readdirSync(assets).sort(), [...expected, 'unrelated.txt'].sort());
   const tar = file('assets', `dimcode-${process.platform}-${process.arch}-1.2.3-nightly.11.tar.gz`);
   const bytes = readFileSync(tar);

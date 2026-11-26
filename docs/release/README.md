@@ -59,7 +59,7 @@ Run the platform matrix with `fail-fast: true`. On the first platform failure, c
 
 Updates stay within the installation's channel. The npm alpha client keeps checking npm. The nightly client does not check npm; users rerun the same curl installer to upgrade. The installer reads the promoted version from the rolling release, verifies that version's platform archive, and switches only the nightly installation. If either channel is unavailable, it does not fall back to the other.
 
-Serve `scripts/install-nightly.sh` from `main`. Give archives and checksums version-specific names. Serialize publication: upload the complete set before updating the advertised version, never promote an older build over a newer one, and prune only obsolete nightly assets after promotion. Keep the three highest complete nightly versions on the rolling release and retain their source tags, including tags for pruned builds. The [nightly release skill](../../.agents/skills/publishing-dim-nightlies/SKILL.md) covers preparation and publication.
+Serve `scripts/install-nightly.sh` from `main`. Give archives and checksums version-specific names. Serialize publication: upload the complete set before updating the advertised version, never promote an older build over a newer one, and prune only obsolete nightly assets after promotion. Keep only the latest complete nightly version on the rolling release, and retain source tags for all builds, including pruned builds. The [nightly release skill](../../.agents/skills/publishing-dim-nightlies/SKILL.md) covers preparation and publication.
 
 ## Version preparation
 
