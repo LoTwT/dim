@@ -8794,6 +8794,126 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
     check_row_entries(&record, "pristine target");
 }
 
+/// #2189: a written file never states the completion flag — it is the
+/// server's own record of a normalized override — so the conversion clears it
+/// out of the row's models, the user models they seed and the overrides, and
+/// out of the seed the record adopts.
+#[test]
+fn legacy_import_clears_the_completion_flag_from_every_list() {
+    let bundled = BundledCatalog::load().unwrap();
+    let limits = |context: u64, output: u64| {
+        json!({"modalities":["text"],"toolCalling":true,"streaming":true,
+            "structuredOutput":true,"vision":false,"audio":false,"reasoning":false,
+            "contextWindow":context,"maxOutputTokens":output})
+    };
+    let row = || LegacyRow {
+        id: "openai".into(),
+        version: 1,
+        digest: "digest".into(),
+        fields: [
+            ("accountUsageSettings".to_string(), Value::Null),
+            ("activeModelId".into(), Value::Null),
+            (
+                "auth".into(),
+                Value::String(
+                    json!({"type":"api_key","headerName":"Authorization","prefix":"Bearer "})
+                        .to_string(),
+                ),
+            ),
+            (
+                "baseUrl".into(),
+                Value::String("https://api.openai.com/v1".into()),
+            ),
+            ("capabilityDefaults".into(), Value::Null),
+            (
+                "credential".into(),
+                Value::String(
+                    json!({"type":"apiKey","apiKey":"legacy-openai-fixture-key"}).to_string(),
+                ),
+            ),
+            ("defaultBaseUrl".into(), Value::Null),
+            ("displayName".into(), Value::String("OpenAI".into())),
+            (
+                "driverKind".into(),
+                Value::String("openai-responses".into()),
+            ),
+            ("enabled".into(), Value::from(1)),
+            ("headers".into(), Value::Null),
+            ("metadata".into(), Value::String("{}".into())),
+            (
+                "modelConfigOverrides".into(),
+                Value::String(
+                    json!([{"modelId":"override-model","displayName":"Override model",
+                        "status":"active","normalizedOverride":true,
+                        "capabilities":limits(200_000, 20_000)}])
+                    .to_string(),
+                ),
+            ),
+            (
+                "models".into(),
+                Value::String(
+                    json!([{"modelId":"user-model","displayName":"User model",
+                        "status":"active","normalizedOverride":true,
+                        "capabilities":limits(64_000, 4_000)}])
+                    .to_string(),
+                ),
+            ),
+            ("modelsSource".into(), Value::String("user".into())),
+            ("proxy".into(), Value::Null),
+            ("retryConfig".into(), Value::Null),
+            ("source".into(), Value::String("builtin".into())),
+            ("timeoutMs".into(), Value::Null),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let stored = |conversion: &dim_app_server::provider::LegacyConversion| {
+        serde_json::to_value(&conversion.record).unwrap()
+    };
+    let check_flag_free = |record: &Value, case: &str| {
+        for (list, expected) in [
+            ("userModels", "user-model"),
+            ("modelConfigOverrides", "override-model"),
+        ] {
+            let entries = record[list].as_array().unwrap();
+            assert!(
+                entries.iter().any(|entry| entry["modelId"] == expected),
+                "{case}: the row input did not reach {list}: {entries:?}"
+            );
+            for entry in entries {
+                assert!(
+                    entry.get("normalizedOverride").is_none(),
+                    "{case}: the conversion keeps no completion flag in {list}: {entry}"
+                );
+            }
+        }
+    };
+    // Without a target the row's inputs are the only flagged entries.
+    let seeded = convert_legacy_provider(&row(), None, &bundled).unwrap();
+    let record = stored(&seeded);
+    check_flag_free(&record, "no target");
+    // Over a pristine target the seed is that record's models; the flag is
+    // cleared out of the seed the conversion adopts too.
+    let mut pristine = record.clone();
+    pristine["version"] = json!(1);
+    for entry in pristine["models"].as_array_mut().unwrap() {
+        entry["normalizedOverride"] = json!(true);
+    }
+    let pristine =
+        dim_app_server::provider::parse_static("openai", 1, &pristine.to_string()).unwrap();
+    let targeted = convert_legacy_provider(&row(), Some(pristine), &bundled).unwrap();
+    let record = stored(&targeted);
+    let models = record["models"].as_array().unwrap();
+    assert!(!models.is_empty(), "the adopted seed lost its entries");
+    for entry in models {
+        assert!(
+            entry.get("normalizedOverride").is_none(),
+            "the conversion keeps no completion flag in the adopted seed: {entry}"
+        );
+    }
+    check_flag_free(&record, "pristine target");
+}
+
 /// #522: a builtin `user` row's `models` is the store's own seed — the
 /// previous record's models or, without a target, the bundled definition's.
 /// The import keeps it exactly as the store states it, and the next start
