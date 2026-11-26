@@ -14,7 +14,7 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, InputBlock,
-    InputMessageData, InterruptScope, TurnEndData, TurnOutcome,
+    InputMessageData, InputMode, InterruptScope, TurnEndData, TurnOutcome,
 };
 use dim_app_server::settings::{Settings, SettingsScope};
 use rutis::Ctx;
@@ -116,6 +116,16 @@ impl Changes {
             .and_then(Weak::upgrade)
             .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
         owner.change(change).await
+    }
+    /// The input ids this branch's Goal wrote that may still be queued.
+    pub(crate) fn queued(&self, key: &TimelineKey) -> Vec<String> {
+        self.owners
+            .lock()
+            .unwrap()
+            .get(key)
+            .and_then(Weak::upgrade)
+            .map(|owner| owner.queued.lock().unwrap().clone())
+            .unwrap_or_default()
     }
     /// Registers `owner` for its branch; the returned handle withdraws it.
     fn register(&self, key: TimelineKey, owner: &Arc<Owner>) -> Weak<Owner> {
@@ -252,6 +262,7 @@ impl DynPlugin for GoalBranch {
                 stepped,
                 ready,
                 write_status,
+                queued: Mutex::default(),
                 state: Mutex::new(State::default()),
                 write: tokio::sync::Mutex::new(()),
             });
@@ -490,6 +501,7 @@ struct Owner {
     phase: Arc<BranchLifecycle>,
     session: Arc<SessionLifecycle>,
     tools: Arc<ToolRegistry>,
+    queued: Mutex<Vec<String>>,
     stop: CancellationToken,
     tasks: TaskTracker,
     work: TaskTracker,
@@ -526,7 +538,11 @@ impl Owner {
     /// Commits one Goal input on this branch and remembers it as the branch's
     /// newest Goal write (R5).
     async fn write(&self, input: InputMessageData) -> Result<Arc<AgentEvent>, AgentError> {
+        let tracked = queued_goal_input(&input);
         let event = self.tree.input(self.branch_id.clone(), input).await?;
+        if tracked {
+            self.queued.lock().unwrap().push(event.id.clone());
+        }
         let mut state = self.state.lock().unwrap();
         state.last_write = state.last_write.max(event.sequence);
         drop(state);
@@ -541,10 +557,14 @@ impl Owner {
         input: InputMessageData,
         head: u64,
     ) -> Result<Option<Arc<AgentEvent>>, AgentError> {
+        let tracked = queued_goal_input(&input);
         let event = self
             .tree
             .input_if_head(self.branch_id.clone(), input, head)
             .await?;
+        if tracked && let Some(event) = &event {
+            self.queued.lock().unwrap().push(event.id.clone());
+        }
         if let Some(event) = &event {
             let mut state = self.state.lock().unwrap();
             state.last_write = state.last_write.max(event.sequence);
@@ -2780,4 +2800,12 @@ pub(crate) fn live_inputs(condition: QueryFilter) -> QueryFilter {
             },
         ],
     }
+}
+
+fn queued_goal_input(input: &InputMessageData) -> bool {
+    input.mode == Some(InputMode::Queue)
+        && input
+            .submission_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("goal:"))
 }

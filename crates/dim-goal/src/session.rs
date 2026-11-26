@@ -97,11 +97,13 @@ impl DynPlugin for GoalSession {
             )?;
             let settle_tree = tree.clone();
             let settle_changes = self.changes.clone();
+            let settle_methods = methods.clone();
             let settle_session = identity.session_id.clone();
             let settle =
                 transition.register(Arc::new(move |mode: ToolMode, _cause: ModeChangeCause| {
                     let tree = settle_tree.clone();
                     let changes = settle_changes.clone();
+                    let methods = settle_methods.clone();
                     let session_id = settle_session.clone();
                     Box::pin(async move {
                         if mode != ToolMode::Shell {
@@ -123,6 +125,27 @@ impl DynPlugin for GoalSession {
                             }
                             if let Err(error) = changes.change(&key, Change::PauseMode).await {
                                 return Err(HostError::failed(error.to_string()));
+                            }
+                            let queued = changes.queued(&key);
+                            for input_id in queued {
+                                let Some(provider) = methods.provider("session.input.withdraw")
+                                else {
+                                    break;
+                                };
+                                let params = json!({
+                                    "sessionId": session_id,
+                                    "branchId": key.branch_id,
+                                    "inputId": input_id,
+                                });
+                                if let Ok(accepted) = provider.accept(
+                                    "session.input.withdraw".into(),
+                                    params,
+                                    None,
+                                    CancellationToken::new(),
+                                    |_| {},
+                                ) {
+                                    let _ = accepted.reply.await;
+                                }
                             }
                         }
                         Ok(())
