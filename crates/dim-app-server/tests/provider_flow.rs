@@ -11503,7 +11503,9 @@ async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
 
     let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
     assert!(
-        !serde_json::to_string(&record).unwrap().contains("normalizedOverride"),
+        !serde_json::to_string(&record)
+            .unwrap()
+            .contains("normalizedOverride"),
         "a provider create's client descriptors store nothing of the flag: {record}"
     );
     let catalog = provider
@@ -11519,7 +11521,9 @@ async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
 
     let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
     assert!(
-        !serde_json::to_string(&record).unwrap().contains("normalizedOverride"),
+        !serde_json::to_string(&record)
+            .unwrap()
+            .contains("normalizedOverride"),
         "a models.create client descriptor stores nothing of the flag: {record}"
     );
     let view = serde_json::to_value(
@@ -11530,7 +11534,9 @@ async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
     )
     .unwrap();
     assert!(
-        !serde_json::to_string(&view).unwrap().contains("normalizedOverride"),
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("normalizedOverride"),
         "the management read publishes no completion flag: {view}"
     );
 
@@ -11559,7 +11565,9 @@ async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
     )
     .unwrap();
     assert!(
-        !serde_json::to_string(&view).unwrap().contains("normalizedOverride"),
+        !serde_json::to_string(&view)
+            .unwrap()
+            .contains("normalizedOverride"),
         "not even the server's own override echoes the flag: {view}"
     );
 
