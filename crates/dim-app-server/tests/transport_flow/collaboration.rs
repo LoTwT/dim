@@ -1124,6 +1124,13 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
                 .as_str()
                 .unwrap()
                 .to_owned();
+            let updated = client
+                .rpc(
+                    "session.tool_mode.update",
+                    json!({"sessionId": lead, "mode": "codemode"}),
+                )
+                .await;
+            assert_ok(&updated);
             say(
                 &mut client,
                 &lead,
@@ -1140,6 +1147,13 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
             returned(&mut client, &lead, &lead_session, 1).await;
             let member = next_member(&lead_session, 0).await;
             let member_session = poll("member session", async || agent.get_session(&member)).await;
+            let member_mode = client
+                .rpc("session.tool_mode.get", json!({"sessionId": member}))
+                .await;
+            assert_eq!(
+                member_mode["result"]["mode"], "codemode",
+                "the member inherits the leader's live choice: {member_mode}"
+            );
             let member_tools = model_tools(&member_session).await;
             assert!(
                 declares(&member_tools, "echo"),
