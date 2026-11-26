@@ -928,7 +928,7 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
     terminal.until("on the line");
     terminal.write(b"\r");
     switch_seen.recv_timeout(PATIENCE).unwrap();
-    terminal.until("Earlier content not loaded");
+    terminal.until("Earlier messages · /earlier");
     // A composer echo proves the interface applied what the reply queued
     // before it, the limitation notice among it.
     terminal.write(b"probe");
@@ -968,6 +968,8 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
         assert!(attempts < 25, "the earlier read never started");
         terminal.write(b"/earlier\r");
     }
+    terminal.until("Full conversation history");
+    terminal.until("older page");
     terminal.write(b"/timeline\r");
     terminal.until("#1  older page");
     assert_eq!(

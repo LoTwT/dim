@@ -1586,7 +1586,7 @@ impl Worker {
                 None,
                 "The centre moved before /usage ran; no report was printed",
             ),
-            Command::Earlier { line, session } => (
+            Command::Earlier { line, session, .. } => (
                 session,
                 Some(line),
                 None,
@@ -2028,7 +2028,14 @@ impl Worker {
                 }
             }
             Command::Rename(title) => self.rename(title).await,
-            Command::Earlier { line, .. } => self.earlier(&line),
+            Command::Earlier { line, all, .. } => {
+                if !self.earlier_member() {
+                    if let Some(history) = self.task_history.get_mut(&line) {
+                        history.replay_all |= all;
+                    }
+                    self.earlier(&line);
+                }
+            }
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
             Command::CheckUpdate if self.options.endpoint.is_some() => {

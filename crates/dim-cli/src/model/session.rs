@@ -411,6 +411,7 @@ pub enum Command {
     Earlier {
         line: String,
         session: Origin,
+        all: bool,
     },
     Export(crate::export::Format),
     /// `/compact`: ask the line the command was typed on to compact its
@@ -1334,6 +1335,7 @@ impl DeleteOutcome {
 }
 
 pub enum Update {
+    ReplayHistory,
     Reportable {
         error: crate::report::Captured,
         show_error: bool,

@@ -788,6 +788,12 @@ pub(crate) fn render_block(
         Block::Failure(message) => vec![tf("Error: {message}", &[("message", message)])],
         Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
         Block::Note(text) => vec![fg(&truncate_cells(text, width), &p.muted)],
+        Block::LoadMore(hidden) if !interactive || *hidden == 0 => gutter_text(
+            LOAD_MORE_MARK,
+            &tf("Earlier messages · {key}", &[("key", "/earlier")]),
+            width,
+            &p.accent,
+        ),
         Block::LoadMore(hidden) => {
             let label = tf(
                 "{count} earlier messages · Enter or click to load",

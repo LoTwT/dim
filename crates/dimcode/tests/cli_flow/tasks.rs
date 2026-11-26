@@ -767,10 +767,10 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.write(b"draft during history");
         terminal.until("draft during history");
         proceed.send(()).unwrap();
+        terminal.until("Earlier messages · /earlier");
         terminal.until("paged-message-150");
         terminal.until("resumed paged");
         terminal.until("75 messages");
-        terminal.until("Earlier content not loaded");
         // The window title names the session's first message; only the
         // screen is windowed.
         let screen = terminal
@@ -784,12 +784,13 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             "resume_on_launch={resume_on_launch}: {}",
             terminal.transcript
         );
-        // A `/timeline` jump to the first message draws the earlier history.
         terminal.write(b"\r/earlier\r");
+        terminal.until("Full conversation history");
+        for index in 1..=150 {
+            terminal.until(&format!("paged-message-{index:03}"));
+        }
         terminal.write(b"/timeline\r");
         terminal.until("#150");
-        terminal.write(b"\x1b[H\r");
-        terminal.until("paged-message-001");
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();

@@ -1360,18 +1360,28 @@ their last validated cursor. Loading or failed history disables stop-all while
 known individual targets remain usable. A failure reading main history is a visible
 connection failure: submission is disabled and the unsent draft stays in the current UI.
 Recovery requires exiting and resuming the Session.
-Resuming waits for main's complete initial history before drawing the latest
-100 messages and its boundary. Fullscreen tops them with a load-more row: a
-click, or `Tab` up to it and `Enter`, draws the previous 100 above and keeps the
-oldest drawn message at the top of the view. Scrollback reaches earlier messages
-through a `/timeline` jump; a draft typed meanwhile stays editable.
+Resuming draws up to 100 messages from main's initial history window. Both modes
+mark unread history above the oldest message, never below the transcript. In fullscreen a
+click, or `Tab` up to it and `Enter`, shows the preceding page at the join. Scrolling
+up or pressing PageUp at the top does the same. `/earlier` reveals one page in fullscreen.
+In scrollback it reprints the entire shown branch in order below a separator, in the
+same terminal. The draft stays editable and the next reply follows the reprinted history.
+`/timeline` still jumps to a specific message; a draft typed meanwhile stays editable.
 
 ```text
+↑ Earlier messages · /earlier
 > paged-message-051
 ...
 > paged-message-150
---- resumed paged · 100 messages · earlier history: /timeline ---
-[ draft typed while history was loading                         ]
+--- resumed paged · 100 messages ---
+[ Ask anything... ]
+
+/earlier (scrollback)
+--- Full conversation history ---
+> paged-message-001
+...
+> paged-message-150
+[ Ask anything... ]
 ```
 
 Child-branch failures remain local to the task history and release buffered

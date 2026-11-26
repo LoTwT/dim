@@ -36,6 +36,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "y confirm · Esc cancel" => "y 确认 · Esc 取消",
         "Enter save · Esc cancel" => "Enter 保存 · Esc 取消",
+        "Beginning of conversation" => "已到对话开头",
+        "Full conversation history" => "完整历史",
         "Tab / Enter complete" => "Tab / Enter 补全",
         "Queue" => "队列",
         "Export session" => "导出会话",
@@ -337,7 +339,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Only in fullscreen (/tui)" => "仅在全屏界面可用（/tui）",
         "new session" => "新会话",
         "resumed {id} · {count} messages" => "已恢复 {id} · {count} 条消息",
-        " · earlier history: /timeline" => " · 更早历史：/timeline",
+        "Earlier messages · {key}" => "还有更早的消息 · {key}",
         "Error: {message}" => "错误：{message}",
         "working…  {elapsed}" => "处理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",

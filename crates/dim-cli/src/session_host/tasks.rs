@@ -24,6 +24,7 @@ pub(super) struct BranchHistory {
     inventory_cursor: Option<serde_json::Value>,
     goal_stale: bool,
     earlier: EarlierRead,
+    pub(super) replay_all: bool,
     pub running: Option<bool>,
     pub latest_reply: u64,
     pub seen_reply: u64,
@@ -281,9 +282,6 @@ impl Worker {
     }
 
     pub(super) fn earlier(&mut self, line: &str) {
-        if self.earlier_member() {
-            return;
-        }
         let Some(history) = self.task_history.get_mut(line) else {
             return;
         };
@@ -291,7 +289,12 @@ impl Worker {
             return;
         }
         if history.window.before.is_none() {
-            self.send(Update::Notice("Beginning of conversation".into()));
+            if std::mem::take(&mut history.replay_all) {
+                self.publish();
+                self.send(Update::ReplayHistory);
+            } else {
+                self.send(Update::Notice("Beginning of conversation".into()));
+            }
             return;
         }
         history.earlier = EarlierRead::Reading;
@@ -644,7 +647,6 @@ impl Worker {
                 .map_err(|error| error.to_string())
         });
         let window_ready = matches!(result, Ok(true));
-        let mut missing_prefix = false;
         match result {
             Err(error) => {
                 if fatal {
@@ -666,7 +668,7 @@ impl Worker {
                     .expect("current history");
                 history.window_error = None;
                 let events = history.window.take();
-                missing_prefix =
+                let missing_prefix =
                     history.window.dropped_pages() || history.window.before.is_some() && !at_start;
                 history.window_complete = true;
                 if history.earlier == EarlierRead::Reading {
@@ -732,15 +734,20 @@ impl Worker {
                 self.send(Update::NoModel);
             }
         }
-        if window_ready {
+        if window_ready && !self.continue_replay(&request.branch_id) {
             self.publish();
         }
-        if missing_prefix {
-            self.send(Update::Notice(
-                "Earlier content not loaded; /earlier to read it".into(),
-            ));
-        }
         Ok(())
+    }
+
+    fn continue_replay(&mut self, branch: &str) -> bool {
+        let history = self.task_history.get_mut(branch).expect("loaded history");
+        history.replay_all &= self.focus == branch && self.members.selected.is_none();
+        if history.done && history.replay_all {
+            self.earlier(branch);
+            return true;
+        }
+        false
     }
 
     /// Records a failed history read. A first window that never loaded is a
@@ -749,6 +756,7 @@ impl Worker {
     fn fail_history(&mut self, branch: &str, error: String) {
         let history = self.task_history.get_mut(branch).expect("a line's history");
         history.error = Some(error.clone());
+        history.replay_all = false;
         if history.earlier == EarlierRead::Reading {
             history.earlier = EarlierRead::Failed;
         } else if !history.done && !history.window_complete {
@@ -793,9 +801,7 @@ impl Worker {
                 self.task_event(branch, event);
             }
         }
-        if let Some(projection) = transcript_mut(&mut self.projection, &mut self.lines, branch) {
-            projection.trim(300);
-        }
+        self.continue_replay(branch);
         self.changed();
     }
 
@@ -1994,13 +2000,8 @@ mod tests {
         );
     }
 
-    /// A window whose page left out earlier content says so in a notice. The
-    /// notice is sent after the snapshot that carries the page, so the
-    /// interface's next frame draws the page's rows before the notice that
-    /// reports them missing. Both updates share one channel, and the interface
-    /// applies whatever it drains in that order.
     #[tokio::test]
-    async fn a_missing_prefix_notice_follows_the_page_it_reports() {
+    async fn a_page_with_missing_history_marks_its_snapshot_unread() {
         let (mut worker, receiver, _sent) =
             crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
         worker.session_id = "s1".into();
@@ -2016,25 +2017,8 @@ mod tests {
         )
         .await;
 
-        let updates: Vec<Update> = receiver.try_iter().collect();
-        let page = updates
-            .iter()
-            .position(|update| {
-                matches!(update, Update::Snapshot(view)
-                    if view.rows.iter().any(|row| row.text.contains("the loaded page")))
-            })
-            .expect("the page published its rows");
-        let notice = updates
-            .iter()
-            .position(|update| {
-                matches!(update, Update::Notice(text)
-                    if text == "Earlier content not loaded; /earlier to read it")
-            })
-            .expect("the page reports the earlier content it left out");
-        assert!(
-            page < notice,
-            "the page's snapshot is sent before the notice that reports the missing earlier content"
-        );
+        assert!(receiver.try_iter().any(|update| matches!(update, Update::Snapshot(view)
+            if view.earlier == Earlier::Unread && view.rows.iter().any(|row| row.text.contains("the loaded page")))));
     }
 
     /// A creation that fails while the line's first window is in flight

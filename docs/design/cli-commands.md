@@ -3809,9 +3809,11 @@ the turn settled, while a result read before its call asks nothing.
 
 ### Loading earlier conversation
 
-`/earlier` reads the next bounded older window for the shown branch, retaining its original
-cutoff and advancing its backward cursor. Fullscreen PageUp at the loaded top runs the same
-action. TUI prepends projected rows; line mode prints a labelled older segment. Neither changes
+`/earlier` reads bounded older windows for the shown branch, retaining its original
+cutoff and advancing its backward cursor. Scrollback reads to the beginning and prints the
+whole conversation oldest first under a new label, without switching screens. Fullscreen
+reveals one page at the join; scrolling up or pressing PageUp at the drawn top does the same.
+Line mode prints a labelled older segment. None changes
 live event/state cutoffs or resubmits an input. Opening uses the separate read-stop
 and whole-page retention budgets in the [client window contract](clients.md#opening-a-conversation-with-a-bounded-window);
 additional older rows are retained only when the user explicitly loads them. Raw pages are released
