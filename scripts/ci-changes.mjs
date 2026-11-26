@@ -1,14 +1,16 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
+export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','debug','web','scripts','macos_scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
 const cargoManifest=/(?:^|\/)Cargo\.toml$/;
 // The Windows-only boundary flows no other platform compiles (#2065): the
 // product files behind crates/dim-agent-capabilities/tests/file_storage_flow.rs,
 // tests/host_platform_windows_flow.rs and crates/dim-app-server/tests/named_pipe_flow.rs,
-// the test targets that include them, and the runner that selects them. A file
+// the worktree removal refusal in crates/dim-app-server/src/worktrees.rs and its
+// flow in crates/dim-app-server/tests/worktree_removal_flow.rs, the test targets
+// that include them, and the runner that selects them. A file
 // missing here still reaches the Windows step on the daily sweep, so add it when
 // a Windows branch of those flows moves or gains another file.
 // The same tests are named in scripts/test-windows-native.mjs's `flows`, which
@@ -19,16 +21,15 @@ const cargoManifest=/(?:^|\/)Cargo\.toml$/;
 const windowsNative=[
   /^crates\/dim-agent-capabilities\/src\/(?:file_storage\.rs|file_storage\/|host_platform\.rs|host_platform\/)/,
   /^crates\/dim-agent-capabilities\/tests\/(?:capabilities_flow|file_storage_flow|host_platform_windows_flow)\.rs$/,
-  /^crates\/dim-app-server\/src\/(?:lib|transport|pipe_client|cli)\.rs$/,
-  /^crates\/dim-app-server\/tests\/(?:app_server_flow|named_pipe_flow)\.rs$/,
+  /^crates\/dim-app-server\/src\/(?:lib|transport|pipe_client|cli|worktrees)\.rs$/,
+  /^crates\/dim-app-server\/tests\/(?:app_server_flow|named_pipe_flow|worktree_removal_flow)\.rs$/,
   /^scripts\/test-windows-native\.mjs$/,
 ];
 
 const rules=[
   [/^benchmarks\/baselines\/[^/]+\.json$/,[]],
   [/^\.agents\/|^skills\/|^\.github\/(?:ISSUE_TEMPLATE\/|pull_request_template\.md$|PULL_REQUEST_TEMPLATE\.md$)/,[]],
-  [/^docs\/architecture\/rust-agent\/generated\/catalog\.md$/,['xtask']],
-  [/^docs\/architecture\/rust-agent\/(plugins|generated)\//,['static']],
+  [/^docs\/architecture\/rust-agent\/plugins\//,['xtask']],
   [/^docs\/design\/appserver\/native-storage-format\.md$/,['rust']],
   // scripts/tui-tmux.test.mjs reads this page and checks every scenario is documented.
   [/^docs\/architecture\/tui-e2e\.md$/,['scripts']],
@@ -49,12 +50,24 @@ const rules=[
   [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','macos_scripts']],
   [/^scripts\//,['scripts']],
   [/^docker\//,['scripts']],
+  // The startup, replacement and update paths these acceptances protect.
+  [/^crates\/dim-cli\/src\/(?:client\.rs|update(?:\.rs|\/))/,['rust','windows','debug']],
+  [/^crates\/dim-cli\/src\/(?:lib\.rs|plugins\.rs|session_host(?:\.rs|\/)|ui\/)/,['rust','windows','debug']],
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
+  // Debug-build acceptances (#2218) leave ordinary workspace tests. The owning
+  // test files and the production paths they protect select the dedicated step.
+  [/^crates\/dimcode\/tests\/(?:cli_flow|cli_daemon_flow)\.rs$/,['rust','debug']],
+  [/^crates\/dimcode\/tests\/cli_flow\/(?:daemon_startup_progress|daemon_replace|staged_update)\.rs$/,['rust','debug']],
+  [/^crates\/dimcode\/tests\/support\/(?:cli_harness|daemon)\.rs$/,['rust','node','debug']],
+  [/^crates\/dimcode\/(?:Cargo\.toml|src\/main\.rs)$/,['rust','debug']],
   [/^crates\/dimcode\//,['rust']],
+  [/^crates\/dim-agent-capabilities\/src\/build\.rs$/,['rust','node','debug']],
+  [/^crates\/dim-app-server\/src\/transport\.rs$/,['rust','node','debug']],
   [/^crates\/dim-app-server\/src\/protocol\.rs$/,['rust','node','web','scripts']],
-  [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts']],
+  [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts','debug']],
+  [/^crates\/dim-app-server\/src\/cli\.rs$/,['rust','node','debug']],
   [/^crates\/dim-app-server\/resources\//,['rust','node','scripts']],
   [/^crates\/dim-agent-capabilities\/src\/(workspace_tools\/(background|exec)|host_platform)/,['rust','node','execution']],
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],

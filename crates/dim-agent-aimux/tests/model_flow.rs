@@ -448,7 +448,7 @@ async fn native_http_text_usage_tools_and_continuation_follow_agent_events() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent.create_session(session_config(), Default::default()).await.unwrap();
         session.submit("text".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -512,7 +512,7 @@ async fn native_http_text_usage_tools_and_continuation_follow_agent_events() {
             "sessionId": "stale-session", "turnId": "stale-turn", "requestId": "stale-request",
             "runId": "caller-run", "traceId": "caller-trace", "experiment": "selected"
         })).unwrap());
-        let selected = agent.create_session(explicit).await.unwrap();
+        let selected = agent.create_session(explicit, Default::default()).await.unwrap();
         selected.submit("text".into(), InputMode::Queue, "main").await.unwrap();
         selected.idle("main").await.unwrap();
         let events = chain_events(&selected, "main", ..).await.unwrap();
@@ -545,7 +545,10 @@ async fn chat_usage_without_details_records_cache_read_as_unknown() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-nodetails".into(), InputMode::Queue, "main")
             .await
@@ -577,7 +580,10 @@ async fn chat_reasoning_tokens_reach_the_recorded_usage() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-reasoning".into(), InputMode::Queue, "main")
             .await
@@ -623,7 +629,10 @@ async fn protocol_session(
     };
     let models = Arc::new(AimuxModels::from_config(configuration_of(&base, kind)).unwrap());
     let agent = model_agent(models, None).await;
-    let session = agent.create_session(session_config()).await.unwrap();
+    let session = agent
+        .create_session(session_config(), Default::default())
+        .await
+        .unwrap();
     (agent, session)
 }
 
@@ -645,7 +654,10 @@ async fn chat_without_details_records_no_reasoning_count() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-nodetails".into(), InputMode::Queue, "main")
             .await
@@ -667,7 +679,10 @@ async fn chat_with_a_zero_reasoning_count_records_zero() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("usage-zero".into(), InputMode::Queue, "main")
             .await
@@ -735,7 +750,7 @@ async fn interrupt_releases_native_request_and_keeps_other_branches_usable() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent.create_session(session_config(), Default::default()).await.unwrap();
         session.submit("wait".into(), InputMode::Queue, "main").await.unwrap();
         // Streaming text is progress until its block ends (agent-029).
         while !session.get::<dim_agent_runtime::ModelProgress>("main").unwrap().is_some_and(|progress| !progress.text.is_empty()) {
@@ -758,7 +773,7 @@ async fn failed_native_outputs_do_not_execute_tools_or_invent_usage() {
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
         for prompt in ["unauthorized", "truncated", "length"] {
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent.create_session(session_config(), Default::default()).await.unwrap();
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -777,7 +792,12 @@ async fn model_configuration_rejects_unknown_models_before_session_start() {
     let agent = model_agent(server.models(), None).await;
     let mut config = session_config();
     config.model.model_id = "not-registered".into();
-    assert!(agent.create_session(config).await.is_err());
+    assert!(
+        agent
+            .create_session(config, Default::default())
+            .await
+            .is_err()
+    );
     assert!(agent.sessions().is_empty());
     assert!(server.endpoint.requests.lock().unwrap().is_empty());
     agent.close().await.unwrap();
@@ -872,6 +892,93 @@ fn configured_top_k_on_the_openai_chat_protocol_names_the_setting_and_the_altern
     AimuxModels::from_config(configuration("openai-compatible", Some(1.0))).unwrap();
 }
 
+/// The development file's `network` block states the same connection facts a
+/// product record does, and refuses the values the transport cannot use.
+#[test]
+fn a_network_block_refuses_values_the_transport_cannot_use() {
+    let configuration = |network: Value| {
+        serde_json::from_value::<ModelConfigFile>(json!({
+            "defaultModel": {"providerId": "local", "modelId": "test-model"},
+            "providers": [{"id": "local", "kind": "openai-compatible",
+                "baseUrl": "http://127.0.0.1:9/v1",
+                "network": network,
+                "models": [{"id": "test-model", "contextWindow": 128_000,
+                    "maxOutputTokens": 4096, "config": {"maxTokens": 4096}}]}]
+        }))
+        .unwrap()
+    };
+    for network in [
+        json!({"proxy": "socks5://localhost:1080"}),
+        json!({"proxy": "https://host/path"}),
+        json!({"proxy": "https://host?secret=value"}),
+    ] {
+        let error = AimuxModels::from_config(configuration(network.clone()))
+            .expect_err("a proxy the transport cannot use");
+        assert_eq!(
+            error.to_string(),
+            "Invalid proxy for local: an HTTP or HTTPS root URL is required",
+            "{network}"
+        );
+    }
+    for network in [
+        json!({"timeoutMs": 0}),
+        json!({"timeoutMs": 9_007_199_254_740_992u64}),
+    ] {
+        let error = AimuxModels::from_config(configuration(network.clone()))
+            .expect_err("a timeout outside the safe integer range");
+        assert_eq!(
+            error.to_string(),
+            "Invalid network timeout for local: a positive safe integer is required",
+            "{network}"
+        );
+    }
+    for network in [
+        json!({"proxy": "https://proxy.example.test/"}),
+        json!({"timeoutMs": 30_000}),
+        json!({}),
+    ] {
+        AimuxModels::from_config(configuration(network)).unwrap();
+    }
+}
+
+/// The block reaches the connection every request of the provider resolves, so
+/// a development configuration can set the connection's proxy and timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_network_block_reaches_the_connection_a_request_resolves() {
+    let server = TestServer::start().await;
+    let config: ModelConfigFile = serde_json::from_value(json!({
+        "defaultModel": {"providerId": "local", "modelId": "test-model"},
+        "providers": [{"id": "local", "kind": "openai-compatible",
+            "baseUrl": server.url,
+            "network": {"proxy": "http://127.0.0.1:9/", "timeoutMs": 45},
+            "models": [{"id": "test-model", "contextWindow": 128_000,
+                "maxOutputTokens": 4096, "config": {"maxTokens": 4096}}]}]
+    }))
+    .unwrap();
+    let agent = model_agent(Arc::new(AimuxModels::from_config(config).unwrap()), None).await;
+    let resolver = agent.root().get::<ProviderConnectionResolver>().unwrap();
+    let request = Arc::new(ModelRequest::new(
+        "local",
+        "test-model",
+        vec![Message::text(Role::User, "hi")],
+    ));
+    let resolved = resolver
+        .0
+        .resolve(request, CancellationToken::new())
+        .await
+        .unwrap();
+    let ModelConnection::Http(connection) = resolved.connection else {
+        panic!("the development profile resolves an HTTP connection")
+    };
+    assert_eq!(
+        connection.network.proxy.as_deref(),
+        Some("http://127.0.0.1:9/")
+    );
+    assert_eq!(connection.network.timeout_ms, Some(45));
+    agent.close().await.unwrap();
+    server.close().await;
+}
+
 struct OverrideRequest {
     remove_tools: bool,
     timeline: rutis::host::Key<Timeline>,
@@ -924,6 +1031,7 @@ async fn before_committed_request_controls_model_settings_and_tool_admission() {
             kind: dim_agent_aimux::config::ProviderKind::OpenaiCompatible,
             api_key_env: None,
             base_url: selected.url.clone(),
+            network: Default::default(),
             headers: Default::default(),
             compatible: None,
             models: vec![dim_agent_aimux::config::ModelEntry {
@@ -942,7 +1050,7 @@ async fn before_committed_request_controls_model_settings_and_tool_admission() {
             let mut builder = builder(models.clone(), Arc::new(MockTools));
             builder.require_feature(Feature::new("test.final-model-request").branch("test.final-model-request", move |names| Ok(Box::new(OverrideRequest { remove_tools, timeline: names.key()? }))));
             let agent = model_agent(models.clone(), Some(builder)).await;
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent.create_session(session_config(), Default::default()).await.unwrap();
             session.submit("tool".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
@@ -1146,7 +1254,10 @@ async fn recorded_requests_write_their_wire_exchange() {
         let recording = Recording::start().await;
         let server = TestServer::start().await;
         let agent = model_agent(server.models(), None).await;
-        let session = agent.create_session(session_config()).await.unwrap();
+        let session = agent
+            .create_session(session_config(), Default::default())
+            .await
+            .unwrap();
         session
             .submit("text".into(), InputMode::Queue, "main")
             .await
@@ -1516,7 +1627,10 @@ async fn a_same_origin_307_or_308_redirect_completes_the_turn_at_its_target() {
         ] {
             let server = RedirectServer::start(status, "/v1b/chat/completions").await;
             let agent = model_agent(server.models(), None).await;
-            let session = agent.create_session(session_config()).await.unwrap();
+            let session = agent
+                .create_session(session_config(), Default::default())
+                .await
+                .unwrap();
             session
                 .submit("text".into(), InputMode::Queue, "main")
                 .await
@@ -1647,6 +1761,79 @@ async fn a_same_origin_redirect_chain_stops_at_the_limit() {
     })
     .await
     .unwrap();
+}
+
+/// A provider that accepts the request and never sends the response headers
+/// fails as a network failure once the idle allowance has passed, like a
+/// stream that stops delivering parts.
+#[tokio::test]
+async fn a_wait_for_response_headers_past_the_idle_allowance_fails_as_a_network_failure() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (accepted, received) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "the client closed before sending its request");
+            head.extend_from_slice(&buffer[..count]);
+            if head.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        accepted.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let driver = host.0.clone();
+    let request = ModelRequest::new("local", "test-model", vec![Message::text(Role::User, "hi")]);
+    let connection = ModelConnection::Http(HttpModelConnection {
+        protocol: ModelProtocol::OpenaiCompatible,
+        base_url: base,
+        network: Default::default(),
+        headers: Default::default(),
+        bearer: None,
+        api_key: None,
+        preset: None,
+    });
+    let invoke = tokio::spawn(async move {
+        driver
+            .invoke(Arc::new(request), connection, CancellationToken::new())
+            .await
+    });
+    received.await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(300)).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(2), invoke)
+        .await
+        .expect("a request whose response headers never arrive must fail")
+        .expect("the request must not panic");
+    let error = match outcome {
+        Ok(_) => panic!("the wait for the response headers must fail"),
+        Err(error) => error,
+    };
+    let HostError::Failed {
+        kind,
+        model: Some(model),
+        ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(*kind, HostErrorKind::Transport);
+    assert_eq!(model.kind, ModelFailureKind::Network);
+    assert_eq!(
+        model.reason.as_deref(),
+        Some("no response headers arrived within 300 seconds of sending the request")
+    );
+    server.abort();
+    root.shutdown().await.unwrap();
 }
 
 #[path = "model_flow/native.rs"]

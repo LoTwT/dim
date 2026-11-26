@@ -25,25 +25,34 @@
 | Goal and Shell admission → timelineTree | `directory({id})` returns the matching directory entry or the unknown-branch error using a single-branch lookup. Goal reads ended history through `query`; writes retain the ended/unknown errors. |
 | InputQueue and Collaboration approvals → target branch | `timelineTree.input`, `inputQueue.withdraw` after submission checks, and `approval.pending/decide` on the selected branch. |
 | PromptSuggestion → ContextUsage; Report and Agent configuration → Prompt | `contextUsage.read`, `prompt.adoptedConfiguration({}) → adopted configuration or null`. Report also uses `timelineTree.query` at the selected head for evidence. |
-| Prompt and ToolBinding → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. |
+| Prompt, ToolBinding, EnvironmentClients and EnvironmentSettings → `branchLifecycle` | `registerOpening(completion) → void`. Opening waits for admitted completions under its existing deadline and propagates their errors. On a branch that opens without an opening input, the environment completions append their snapshot and wait for the branch to dispatch it, so the snapshot and the `input/applied` the queue writes for it are inside the sealed opening; a child line's identity input is written after the opening, so those completions append nothing there and the published branch's first pass appends instead. |
 | Fault producers and Session observers → `sessionLifecycle` | `reportFault(error) → void`, `failure({}) → SessionFault or null`, `observeFault(listener) → id`, `release(id) → boolean`. The listener receives the current failure (initially null) and subsequent reports. Caller unload releases the observation. The first fault wins until a storage failure supersedes it; the first storage failure wins. |
 | Check providers and input admission → SubmitChecks | `register(name, check) → void`; `check({entry, branchId, user?, mode}, cancelled) → proceed{blocks, warnings} or block{message}`. Run in name order through the first block. Interrupted checks write nothing. |
 | Compaction, stop and activity callers → `agentLoop` | `agentLoop.compact({}) → sequence`, `stopTurn({turnId, reason}) → sequence or null`; `agentLoop.state({}) → {phase, turnId?}`, `observe(listener)` delivers that snapshot. |
 
 ### Calls from a Session to a selected branch
 
-Within a branch, inject its owner face directly. For Session callers the existing
-`timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
-TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
-Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
-Ended and unknown branches retain their original errors. Calls admitted before close stay
-with that generation. Tree history, directory and batch input continue to use the tree's
-own methods.
+Within a branch, inject its owner face directly. A Session caller names the line and the
+owner's face, and the owner of the line's index resolves it
+([#2127](https://github.com/arcships/dim/issues/2127),
+[ADR 027](../../adr/027-cross-scope-access-by-id.md)): `sessionScope.lineCall` reaches a
+line of the caller's own Session, `sessions.call` a Session and a line of it for the
+process, and both pass the owner's arguments, reply and error through. The two surfaces spell
+the same failure differently: the `sessions` envelope answers snake_case codes, and a Session
+part's scope throws `RouteError`, whose variants are camelCase and whose owner variant carries
+the owner's name, message, data and reloading flag. A routed method that replies nothing answers
+`null` through `sessionScope` (the bridge maps an absent value to JSON null), and the `sessions`
+envelope leaves `value` out so a process caller reads `undefined`; a direct call answers nothing
+(`undefined`) either way. Agents loads the
+Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
+selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
+`session_unavailable` (report the reason) or `no_line` (final for that line), before the
+target's operation runs. Tree history, directory and batch input continue to use the
+tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. The `compactAndWait` variant runs the existing compact RPC handler: it calls `agentLoop.compact` and waits for the compaction fact matching that command sequence and returns the existing completed/skipped/failed reply. The committed sequence watch and bounded query run inside the selected branch for that wait. |
+| Context RPC / PromptSuggestion | `contextUsage.read`, a direct call inside the Session's own face. A compaction that waits stays in the existing compact RPC handler: it takes its `Branch`, calls `AgentLoop::compact` there and waits on the branch's own `publication()`/`query`, then returns the existing completed/skipped/failed reply. These handlers are reached by the Session's own code today; routing them is written here only once `agentLoop`, `contextUsage`, `prompt` and `timelineTree` are routable faces with a wait operation, which they are not (`route::face` refuses them as internal). |
 | Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
 | InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
 

@@ -1,6 +1,9 @@
 mod content;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use aimux_core::{
     AbortSignal, AiMuxError, ApiCallErrorOrigin, ErrorCause,
@@ -24,6 +27,25 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::request::ToolNames;
+
+/// How long a request waits for each step of the reply before the connection
+/// counts as lost.
+///
+/// Five minutes matches the allowance other harnesses give a slow model step.
+/// It bounds three waits: from sending the request until the response headers
+/// arrive (the request body and any redirects count against it), from the
+/// headers until the stream starts (a provider that peeks reads one stream
+/// event before it returns; the OpenAI Responses SDK reads response metadata
+/// first), and from one stream part to the next. The header wait ends, and the
+/// second wait begins, at the instant the transport produces the headers, not
+/// at the driver's next poll. Each wait gets the full allowance, so a slow
+/// reply is never cut, however long it takes, while a half-open connection
+/// fails as a network failure instead of holding the turn until an external
+/// deadline; that failure is retried in place while the attempt committed
+/// nothing. It also bounds reading the body of a non-2xx response, which is a
+/// short diagnostic: that read gets the allowance once in total, because an
+/// idle bound would let a trickle of bytes extend it.
+pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) fn convert(
     result: StreamResult,
@@ -80,6 +102,12 @@ pub(crate) fn convert(
                     }
                     _ = cancel.cancelled() => {
                         break Some(Err(HostError::Cancelled("Model request cancelled".into())));
+                    }
+                    _ = tokio::time::sleep(STREAM_IDLE_TIMEOUT) => {
+                        break Some(Err(idle_failure(format!(
+                            "the stream delivered nothing for {} seconds",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        ))));
                     }
                     next = stream.next() => next,
                 }
@@ -527,6 +555,35 @@ fn empty_reply() -> HostError {
     )
 }
 
+/// The failure of a request that waited [`STREAM_IDLE_TIMEOUT`] without the
+/// reply starting or continuing.
+///
+/// A connection that stays silent this long is treated as a lost transport, not
+/// as a malformed reply: the request was never answered, so the retry policy
+/// retries it like any other network failure while the attempt committed
+/// nothing, and nothing published is replayed.
+pub(crate) fn idle_failure(reason: String) -> HostError {
+    HostError::Failed {
+        message: ModelFailureKind::Network.line(Some(&reason)),
+        budget: None,
+        kind: HostErrorKind::Transport,
+        model: Some(Box::new(ModelFailureFacts {
+            kind: ModelFailureKind::Network,
+            reason: Some(reason),
+            status: None,
+            provider_code: None,
+            request_id: None,
+            cause: Vec::new(),
+            retry_after: None,
+            attempts: 1,
+            waited: Duration::ZERO,
+            retry_after_stop: None,
+            retry_forbidden: false,
+        })),
+        presentation: None,
+    }
+}
+
 fn content_filter_failure() -> HostError {
     reply_failure(
         ModelFailureKind::ContentFiltered,
@@ -599,14 +656,24 @@ fn classify(failure: &AiMuxError, locally_refused: bool) -> (HostErrorKind, Mode
                 let value = value.trim();
                 (!value.is_empty()).then(|| value.to_ascii_lowercase())
             };
-            let code = field("code").and_then(normalize);
+            let origin = detail.origin;
+            let raw_code = view.and_then(|value| value.get("code"));
+            // A stream event may report the failing status as a JSON integer
+            // or as an exactly three-digit decimal string. Only this value is
+            // a status: a numeric `type` or provider code is an opaque label.
+            let code_status = (origin == ApiCallErrorOrigin::StreamEvent)
+                .then(|| raw_code.and_then(stream_event_status))
+                .flatten();
+            let code = match raw_code {
+                Some(Value::String(text)) => normalize(text),
+                _ => code_status.map(|code| code.to_string()),
+            };
             let error_type = field("type").and_then(normalize);
             let provider_code = detail
                 .provider_code
                 .as_deref()
                 .and_then(normalize)
                 .and_then(|code| one_line(&code, FAILURE_CAUSE_CHARS));
-            let origin = detail.origin;
             let codes = [
                 code.as_deref(),
                 error_type.as_deref(),
@@ -615,7 +682,7 @@ fn classify(failure: &AiMuxError, locally_refused: bool) -> (HostErrorKind, Mode
             let kind = if locally_refused {
                 ModelFailureKind::InvalidRequest
             } else {
-                classify_kind(origin, detail.status_code, &codes)
+                classify_kind(origin, detail.status_code, code_status, &codes)
             };
             let chain = cause_chain(detail);
             let reason = if codes.contains(&Some("subscription_sharing_usage_limit_exceeded")) {
@@ -703,6 +770,21 @@ fn classify(failure: &AiMuxError, locally_refused: bool) -> (HostErrorKind, Mode
     }
 }
 
+/// The status a stream event reports as its own `code`: a JSON integer or an
+/// exactly three-digit decimal string, inside 400 to 599.
+fn stream_event_status(code: &Value) -> Option<u16> {
+    let status = match code {
+        Value::Number(_) => code.as_u64().and_then(|code| u16::try_from(code).ok()),
+        Value::String(text)
+            if text.len() == 3 && text.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            text.parse::<u16>().ok()
+        }
+        _ => None,
+    }?;
+    (400..=599).contains(&status).then_some(status)
+}
+
 /// The reason of a failure with no provider boundary. A JSON parse error
 /// carries the serde diagnosis as its cause; its message embeds the response
 /// text, so the cause is the only safe source and a missing cause means no
@@ -743,15 +825,17 @@ fn source_diagnosis(cause: &ErrorCause) -> Option<String> {
 ///
 /// A condition code decides at any status, a non-retried condition before a
 /// retried one; then a transport failure is `network`; then an error status on
-/// the response decides; then a class label, in practice for a stream event,
-/// whose status is the provider's mapping of the event's own strings.
+/// the response decides; then a class label decides, either the status a
+/// stream event wrote as its own code or a provider's named label; then the
+/// kind is unknown.
 fn classify_kind(
     origin: ApiCallErrorOrigin,
     status: Option<u16>,
+    code_status: Option<u16>,
     codes: &[Option<&str>],
 ) -> ModelFailureKind {
     let mut condition = None;
-    let mut label = None;
+    let mut label = code_status.and_then(status_kind);
     for role in codes.iter().flatten().filter_map(|code| code_role(code)) {
         match role {
             CodeRole::Condition(kind) if !kind.retried() => return kind,

@@ -57,6 +57,11 @@ impl Branch {
     pub fn is_closing(&self) -> bool {
         self.0.is_closing()
     }
+    /// Whether this line's own `branch/end` has committed: from then on it
+    /// takes no new input.
+    pub fn ended(&self) -> bool {
+        self.0.ended()
+    }
     /// Reloading while Loop is being replaced.
     pub fn state(&self) -> Result<BranchStatus> {
         self.0.state()
@@ -77,6 +82,18 @@ impl Branch {
     /// writes nothing and returns that input.
     pub async fn input(&self, data: InputMessageData) -> Result<Arc<AgentEvent>> {
         self.0.input(data).await
+    }
+    /// [`Self::input`] only while the branch's last assigned sequence is still
+    /// `head`: a fact behind `head` writes nothing and answers `None`, even for
+    /// a submission id already committed. Otherwise it answers as
+    /// [`Self::input`] does: the committed event, or the input already
+    /// committed with its submission id.
+    pub async fn input_if_head(
+        &self,
+        data: InputMessageData,
+        head: u64,
+    ) -> Result<Option<Arc<AgentEvent>>> {
+        self.0.input_if_head(data, head).await
     }
     /// [`Self::input`], also saying whether this call wrote the input. The
     /// append under the commit lock decides, so concurrent duplicates cannot
@@ -134,6 +151,9 @@ impl Branch {
     /// Reads the current capability service, including after a reload.
     pub fn service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
         self.0.public::<T>()
+    }
+    pub fn service_opt<T: ?Sized + PublicService>(&self) -> Result<Option<Arc<T>>> {
+        self.0.public_opt::<T>()
     }
     /// The branch scope and the capabilities it installed.
     pub fn diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics {

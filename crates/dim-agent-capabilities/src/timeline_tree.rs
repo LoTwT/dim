@@ -7,11 +7,11 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
-    BranchRefusal, Dispatcher, Names, OpeningReporter, QueryComparison, QueryFilter, QueryOperand,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result, SessionIdentity,
-    StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory, TimelineIdentity,
-    TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply, TimelineQueryScope,
-    TimelineStore, TimelineTreeControl,
+    BranchRefusal, Dispatcher, Names, OpeningKind, OpeningReporter, QueryComparison, QueryFilter,
+    QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
+    SessionIdentity, StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory,
+    TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryReply,
+    TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -513,6 +513,18 @@ impl TreeCommands {
         input: InputMessageData,
     ) -> std::result::Result<Arc<AgentEvent>, AgentError> {
         self.get(&id)?.input(input).await
+    }
+    /// Commits `input` to branch `id` only while its last assigned sequence is
+    /// still `head`: a fact behind `head` writes nothing and answers `null`,
+    /// even for a submission id already committed. At `head` it answers the
+    /// committed event, or the input already committed with its submission id.
+    pub async fn input_if_head(
+        &self,
+        id: String,
+        input: InputMessageData,
+        head: u64,
+    ) -> std::result::Result<Option<Arc<AgentEvent>>, AgentError> {
+        self.get(&id)?.input_if_head(input, head).await
     }
     /// Commits `inputs` to branch `id` as one atomic batch through its
     /// validating `Branch::inputs`: the given order, contiguous sequences and
@@ -1274,6 +1286,11 @@ impl TimelineTree {
                     .get_mut(&id)
                     .expect("building branch")
                     .context = Some(context.clone());
+                let kind = match &opening {
+                    Opening::Start { start, .. } if start.parent.is_some() => OpeningKind::Child,
+                    Opening::Start { .. } => OpeningKind::Root,
+                    Opening::Resume => OpeningKind::Resume,
+                };
                 let (opening, mut first) = match opening {
                     Opening::Start { start, first } => (EventKind::BranchStart(start), first),
                     Opening::Resume => (EventKind::BranchResume(BranchResumeData {}), None),
@@ -1313,6 +1330,7 @@ impl TimelineTree {
                     result = context.finish_opening(
                         opened.sequence,
                         owner.factory.startup_timeout(),
+                        kind,
                     ) => result?,
                     _ = owner.cancel.cancelled() =>
                         return Err(AgentError::Cancelled("branch creation".into())),

@@ -1,6 +1,7 @@
 mod allocation;
 mod app_server;
 mod catalog;
+mod plugin_docs;
 mod plugins;
 mod prompt_eval;
 mod rule;
@@ -62,7 +63,8 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("prompt-eval") => prompt_eval::run().await?,
         Some("check") => {
             xtask_check::check_all(&root())?;
-            catalog::check(&root()).await?;
+            catalog::collect().await?;
+            plugin_docs::check(&root(), &plugins::local_graph().await?)?;
         }
         Some("types") => xtask_check::types::write(&root())?,
         _ => {
@@ -281,7 +283,7 @@ fn mermaid(graphs: &BTreeMap<&str, Value>) -> String {
 }
 async fn graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (agent, config, native) = configured_agent().await?;
-    let session = agent.create_session(config).await?;
+    let session = agent.create_session(config, Default::default()).await?;
     let session_diagnostics = session.diagnostics()?;
     let main_diagnostics = session.branch_diagnostics("main")?;
     let instance = |d: &RuntimeDiagnostics, name: &str| {
@@ -308,7 +310,7 @@ async fn graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
         graphs.insert("process", diagnostics(process_rows(agent.root()), &scopes));
     }
     let mermaid = mermaid(&graphs);
-    let mut out = root().join("docs/architecture/rust-agent/generated");
+    let mut out = root().join("target/architecture");
     if native {
         out = out.join("aimux");
     }
@@ -347,11 +349,11 @@ async fn graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
     instances(&session, &out)?;
     agent.close().await?;
     if !native {
-        plugins::write(&root(), &plugins::local_graph().await?)?;
-        app_server::write(&root(), app_server::graph().await?)?;
-        catalog::write(&root()).await?;
+        plugins::write(&out, &plugins::local_graph().await?)?;
+        app_server::write(&out, app_server::graph().await?)?;
+        std::fs::write(out.join("catalog.md"), catalog::collect().await?.render())?;
     }
-    xtask_check::boundaries::write(&root())?;
+    xtask_check::boundaries::write(&root(), &out)?;
     println!("generated {}", out.display());
     Ok(())
 }
@@ -366,7 +368,11 @@ async fn measure() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let mut sessions = vec![];
         for _ in 0..count {
-            sessions.push(agent.create_session(config.clone()).await?);
+            sessions.push(
+                agent
+                    .create_session(config.clone(), Default::default())
+                    .await?,
+            );
         }
         let create_ms = start.elapsed().as_secs_f64() * 1000.;
         let bytes_active = allocation::live();
@@ -383,7 +389,9 @@ async fn measure() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let mut concurrent = Vec::new();
     for count in [1usize, 16, 64].into_iter().filter(|_| !native) {
-        let session = agent.create_session(config.clone()).await?;
+        let session = agent
+            .create_session(config.clone(), Default::default())
+            .await?;
         let mut branches = vec!["main".to_owned()];
         for index in 1..count {
             branches.push(
@@ -463,7 +471,9 @@ async fn context_replay() -> std::result::Result<(), Box<dyn std::error::Error>>
     let agent = agent_with_store(store).await?;
     let live_agent = allocation::live();
     let rss_agent = rss_kb();
-    let session = agent.create_session(SessionConfig::default()).await?;
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await?;
     let live_session = allocation::live();
     let rss_session = rss_kb();
     let mut steps = Vec::new();
@@ -558,7 +568,9 @@ async fn context_breakdown() -> std::result::Result<(), Box<dyn std::error::Erro
     let db = dim_app_server::storage::SqliteStorage::open(database)?;
     let store = dim_app_server::storage::SqliteTimelineStore::new(db.clone());
     let agent = agent_with_store(store).await?;
-    let session = agent.restore_session(session_id.clone()).await?;
+    let session = agent
+        .restore_session(session_id.clone(), Default::default())
+        .await?;
     let through = session.sequence("main")?;
     let mut phases = Vec::new();
     let read_start = allocation::live();
@@ -671,7 +683,9 @@ async fn restore_replay() -> std::result::Result<(), Box<dyn std::error::Error>>
     let live_agent = allocation::live();
     let rss_agent = rss_kb();
     let start = Instant::now();
-    let session = agent.restore_session(session_id.clone()).await?;
+    let session = agent
+        .restore_session(session_id.clone(), Default::default())
+        .await?;
     let restore_ms = start.elapsed().as_secs_f64() * 1000.;
     let live_restored = allocation::live();
     let peak_restored = allocation::peak();

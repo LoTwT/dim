@@ -7,10 +7,11 @@ use crate::{
 };
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
 use dim_agent_runtime::{
-    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
-    NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QueryRow, QuerySelect,
-    QuerySpec, QueryValue, Session, SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope,
-    TimelineReadScope, TimelineReadSegment,
+    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, CreateSessionOptions, InUse,
+    Modules, Names, NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
+    QueryRow, QuerySelect, QuerySpec, QueryValue, RestoreSessionOptions, RouteError, Session,
+    SessionConfig, TimelineKey, TimelineQuery, TimelineQueryScope, TimelineReadScope,
+    TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ROOT_BRANCH_ID, TimelinePosition};
@@ -1163,7 +1164,10 @@ impl AgentIndex {
                 tokio::spawn(async move {
                     let session = host
                         .agent
-                        .restore_session_for_version(restoring.clone(), version)
+                        .restore_session(
+                            restoring.clone(),
+                            RestoreSessionOptions::default().protocol_version(version),
+                        )
                         .await?;
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
@@ -1626,11 +1630,7 @@ impl AgentIndex {
         leader: Option<&str>,
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
-    ) -> Option<(
-        String,
-        BoxFuture<'static, dim_agent_runtime::Result<()>>,
-        Option<ProjectOwnership>,
-    )> {
+    ) -> Option<(String, CreateSessionOptions, Option<ProjectOwnership>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
         let agent_id = host.agent_id.clone();
@@ -1653,31 +1653,28 @@ impl AgentIndex {
             }),
         )
     }
-    /// A new Session id, the prepare step of its prepared creation, and the
+    /// A new Session id, the options for its prepared creation, and the
     /// ownership guard of the project its `cwd` names: the project is
     /// authorized, then `step` writes the Session's rows. Creation, `launch`
     /// and a fork share it (S5c §9). The guard ends the ownership if the load
     /// fails or is abandoned before the Session reaches the process; a loaded
     /// Session hands it to its close.
-    fn prepared(
+    fn prepared<F>(
         &self,
         cwd: String,
         agent: &str,
-        step: impl FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>>,
-    ) -> (
-        String,
-        BoxFuture<'static, dim_agent_runtime::Result<()>>,
-        Option<ProjectOwnership>,
-    ) {
+        step: F,
+    ) -> (String, CreateSessionOptions, Option<ProjectOwnership>)
+    where
+        F: FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>> + Send + 'static,
+    {
         let id = uuid::Uuid::new_v4().to_string();
-        let step = step(id.clone());
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
         let ownership = settings
             .as_ref()
             .map(|_| self.directory.own(&id, agent, &cwd));
-        (
-            id,
+        let options = CreateSessionOptions::default().prepare(id.clone(), move |id: String| {
             Box::pin(async move {
                 if let Some(settings) = settings {
                     settings
@@ -1687,10 +1684,10 @@ impl AgentIndex {
                             AgentError::fault("project authorization", error.to_string())
                         })?;
                 }
-                step.await
-            }),
-            ownership,
-        )
+                step(id).await
+            })
+        });
+        (id, options, ownership)
     }
 
     pub(crate) async fn create_with_worktree(
@@ -1766,15 +1763,16 @@ impl AgentIndex {
             .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
-            Some((id, prepare, ownership)) => {
-                let creation = host
-                    .agent
-                    .create_prepared_session(id.clone(), config, prepare);
+            Some((id, options, ownership)) => {
+                let creation = host.agent.create_session(config, options);
                 self.admit(&id, &host.agent_id, version, creation, ownership)
                     .await
             }
             None => {
-                let session = host.agent.create_session(config).await?;
+                let session = host
+                    .agent
+                    .create_session(config, Default::default())
+                    .await?;
                 self.insert_version(session.id(), &host.agent_id, version);
                 Ok(session)
             }
@@ -1819,6 +1817,78 @@ impl AgentIndex {
         }
         created
     }
+    /// Calls a data face of the live Session `id`, or of one of its lines
+    /// ([#2127](https://github.com/arcships/dim/issues/2127),
+    /// [ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D1, D5):
+    /// the Session is loaded for the call and held while it runs, its own scope
+    /// resolves a line, and the target's reply and error come back unchanged.
+    /// A target that cannot be selected answers `NoSession`,
+    /// `SessionClosing`, `SessionReloading`, `SessionUnavailable` or `NoLine`
+    /// before the target's operation runs.
+    pub(crate) async fn call(
+        &self,
+        request: crate::agents::sessions::CallRequest,
+    ) -> std::result::Result<Option<serde_json::Value>, RouteError> {
+        let id = request.session_id.clone();
+        // A replaced or stopping index is transient: the caller retries the
+        // Session it knows against the next generation (#2127).
+        if self.stopping.is_cancelled() {
+            return Err(RouteError::SessionReloading(id));
+        }
+        let used = self.acquire(&id).await.map_err(|error| match error {
+            AgentError::Reloading(_) => RouteError::SessionReloading(id.clone()),
+            // The index stopped between the check above and the acquire: the
+            // same transient answer, not a missing Session.
+            AgentError::Closed(closed) if self.stopping.is_cancelled() => {
+                RouteError::SessionReloading(closed)
+            }
+            AgentError::Closed(_) => RouteError::NoSession(id.clone()),
+            error => RouteError::SessionUnavailable {
+                session: id.clone(),
+                reason: error.to_string(),
+            },
+        })?;
+        let session = &used.session;
+        if session.is_closing() {
+            return Err(RouteError::SessionClosing(id));
+        }
+        // The router comes from the owning instance: the runtime hands out a
+        // handle it alone can build, so a bare `Session` has no path to it.
+        let Some(routed) = used.host.agent.routed_session(&id) else {
+            // The scope goes away when the Session closes, so a close in this
+            // window is that answer rather than an unavailable Session.
+            return Err(if session.is_closing() {
+                RouteError::SessionClosing(id)
+            } else {
+                RouteError::SessionUnavailable {
+                    session: id,
+                    reason: "the Session's scope is not provided".into(),
+                }
+            });
+        };
+        let scope = routed.scope().clone();
+        match request.line_id {
+            Some(line_id) => {
+                scope
+                    .line_call(dim_agent_runtime::LineCall::new(
+                        line_id,
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+            None => {
+                scope
+                    .call(dim_agent_runtime::SessionCall::new(
+                        request.service,
+                        request.method,
+                        request.args,
+                    ))
+                    .await
+            }
+        }
+    }
     /// `session.delete` ([S5c §3.2](../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)):
     /// holds S's admission gate, so nothing loads or builds S meanwhile,
     /// closes S if it is loaded, has SessionStore remove what it stores of
@@ -1839,7 +1909,7 @@ impl AgentIndex {
             .activity
             .take_hold()
             .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         let removed = self.remove_locked(id, &slot).await?;
@@ -1861,7 +1931,7 @@ impl AgentIndex {
         &self,
         id: &str,
     ) -> dim_agent_runtime::Result<DeleteOutcome> {
-        crate::protocol::check_session_id(id)?;
+        dim_agent_runtime::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         // One match yields both the outcome and what there is to announce, so
@@ -2215,14 +2285,11 @@ impl AgentIndex {
                 .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
         }
         let source = source.to_owned();
-        let (id, prepare, ownership) =
+        let (id, options, ownership) =
             self.prepared(config.cwd.clone(), &usage.host.agent_id, move |fork| {
                 Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
             });
-        let creation = usage
-            .host
-            .agent
-            .create_prepared_session(id.clone(), config, prepare);
+        let creation = usage.host.agent.create_session(config, options);
         let fork = self
             .admit(&id, &usage.host.agent_id, version, creation, ownership)
             .await?;

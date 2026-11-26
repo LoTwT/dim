@@ -33,7 +33,7 @@ During migration, an existing entry may carry `internal(reason)`:
 
 ### 2.3 Checks
 
-`xtask graph` and `check` classify the current catalog:
+`xtask check` classifies the current catalog:
 
 - shared + dispatcher → `data`;
 - shared without dispatcher → failure;
@@ -71,7 +71,7 @@ Preserve the owner's cancellation, ordering and lifecycle semantics when moving 
 
 ## 3. 盘点（#1300）
 
-Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/generated/catalog.md) 为准。以下按迁移工作分组，每个名字只在盘点表中列一处。批次进度见 [#1292](https://github.com/arcships/dim/issues/1292)。
+以下按迁移工作分组，每个名字只在盘点表中列一处。批次进度见 [#1292](https://github.com/arcships/dim/issues/1292)。
 
 ### 3.1 基础数据面与上游登记
 
@@ -123,7 +123,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 
 | 名字 | 现在的对象 | 目标操作 |
 | --- | --- | --- |
-| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`settle`/`output`/`tail`/`removeOutputDirectory`/`shell`/`write`/`resize`/`info`/`confined`/`configured`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
+| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 服务自身的方法就是公开操作：`info`、`execShell`、`persistentShell`、`sandboxBackend`、`execRoot`、`spawn`/`wait`/`kill`/`settle`/`output`/`retainOutput`/`tail`、`shell`/`write`/`resize`、`spawnWithStdin`/`spawnConfined`/`removeOutputDirectory`/`childPath`；`spawn_tree`/`spawn_with_stdin_process`/`spawn_pty`/`build_process_spec`/`child_path_process` 保持 `#[service(skip)]`。不建 `execHost`（[resource and store services](resource-faces.md) §3，#1295） |
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | Session 行走 `store`；原生 Agent、Provider 和 Settings 的记录操作直接调用 `sqliteStorage`，连接与事务由 SQLite 插件持有。`sqliteStorage.storageReport({})` 返回 SQLite 文件和 WAL 的容量指标（[存储契约](appserver/native-storage-format.md)） |
 | `timelineStore` | 连接与批次 | Session 作用域的 `timelineStore` 数据面（resource-faces §9 允许与仓储族分名）：`createSession`/`sessionConfig`/`releaseSession`/`rollbackSession`/`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
@@ -153,14 +153,14 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | 名字 | 数据面 | 所有者把什么留在内部 |
 | --- | --- | --- |
 | `mcpSession` | `state()`、`refresh()`、`widget(published)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
-| `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、活进程、输出采集与唤醒 |
+| `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、task id/路径、事实与唤醒；不持有活进程或采集 |
 
 形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
 [WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)（`backgroundExec`）。
-`backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
+`backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`BackgroundExec` 只保存 branch task id、host task id 和 output path，实时读取走 `hostPlatform.tail`/`output`。`backgroundExec.stop` 是 kill。持久 PTY 由 `HostPlatform` 拥有，`ShellSession` 持有策略；公共 PTY 操作只有 `shell`/`write`/`resize`。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
-`hostPlatform`、`fileStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store`、`timelineStore` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
+`hostPlatform`、`fileStorage`、`timelineStore` 不按对象分类保留：服务本身就是公开契约；一个 service 的公开方法就是它的接口，没有单独的 face 对象，也没有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform` 的公开方法包括 `info`、`execShell`、`persistentShell`、`sandboxBackend`、`execRoot`，以及命令任务和持久 shell 的操作（见 §3.4）；`toolHost`、`backgroundExec`、`sessionMethods.shell` 通过该数据面调用它们。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store services](resource-faces.md) §6）。
 
 ### 3.5 热路径与顺序：待操作化
 
@@ -388,11 +388,9 @@ providerService.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
 
 ## 5. 验证
 
-- `xtask check`：按 §2.3 验证当前 catalog，拒绝缺少 dispatcher 的公共 shared 名称。
-- `xtask graph`：catalog 的 `face` 列与真实装配一致；`catalog.md` 的 diff 作为评审材料。
+- 运行 `cargo run --locked -p xtask -- check`，按 §2.3 校验实际装配中的服务面。生成的 catalog 仅供本地查阅。
 - 每个服务：现有 flow 测试 + 一个 loopback session 的跨边界用例；不新增 mock-only 测试。
 - 数量：不改 `cargo test` 的总量要求；按受影响 crate 跑，最终 `cargo test --workspace --locked`。
-- 改装配后跑 `cargo run --locked -p xtask -- check` 与 `graph`。
 
 ## 6. 风险与开放问题
 
@@ -400,4 +398,4 @@ providerService.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
 
 ## 7. 交付顺序
 
-[#1292](https://github.com/arcships/dim/issues/1292) 按 §3.2 的首批操作和各 owner 推进 §2.6 的迁移，包含 §3.1 的公共名称与私有装配边界。各实现批次随代码更新生成的 catalog 及自己负责的操作契约。
+[#1292](https://github.com/arcships/dim/issues/1292) 按 §3.2 的首批操作和各 owner 推进 §2.6 的迁移，包含 §3.1 的公共名称与私有装配边界。每批随代码更新对应 owner 的操作契约，并按 §5 验证。

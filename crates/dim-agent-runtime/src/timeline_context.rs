@@ -56,6 +56,8 @@ pub struct TimelineContext {
     stop_operation: Mutex<Option<StopOperation>>,
     /// Where the facade reads which group a name is in.
     catalog: Arc<rutis_loader::ServiceCatalog>,
+    /// The names the assembly marked internal.
+    faces: Arc<Faces>,
 }
 /// How often a wait looks for a reloading Loop's successor.
 const LOOP_RETURN_POLL: std::time::Duration = std::time::Duration::from_millis(10);
@@ -67,7 +69,12 @@ impl TimelineContext {
     /// Dispatches the opening through `through`, seals registration and waits
     /// for capability receipts and their committed fence. First activations,
     /// dispatch advancement and receipt completion renew the inactivity limit.
-    pub async fn finish_opening(&self, through: u64, timeout: std::time::Duration) -> Result<()> {
+    pub async fn finish_opening(
+        &self,
+        through: u64,
+        timeout: std::time::Duration,
+        opening: crate::OpeningKind,
+    ) -> Result<()> {
         let mut progress = StartupProgress::new(&self.ctx, timeout)?;
         progress
             .wait(
@@ -86,7 +93,9 @@ impl TimelineContext {
                             .await
                             .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
                     }
-                    let receipts = self.lifecycle.finish_opening(&self.ctx, self.view.id);
+                    let receipts = self
+                        .lifecycle
+                        .finish_opening(&self.ctx, self.view.id, opening);
                     tokio::pin!(receipts);
                     loop {
                         if let Some(error) = dispatch.borrow_and_update().failure.clone() {
@@ -139,9 +148,11 @@ impl TimelineContext {
         lifecycle: BranchLifecycle,
         faults: FaultReporter,
         catalog: Arc<rutis_loader::ServiceCatalog>,
+        faces: Arc<Faces>,
     ) -> Arc<Self> {
         let this = Arc::new(Self {
             catalog,
+            faces,
             id,
             ctx,
             view,
@@ -317,6 +328,10 @@ impl TimelineContext {
         crate::names::in_group::<T>(&self.catalog, crate::BRANCH_GROUP)?;
         self.port::<T>(std::any::type_name::<T>())
     }
+    pub(crate) fn public_opt<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Option<Arc<T>>> {
+        crate::names::in_group::<T>(&self.catalog, crate::BRANCH_GROUP)?;
+        Ok(self.ctx.get_at::<T>(&self.scope.key::<T>()))
+    }
     pub(crate) fn port<T: ?Sized + Send + Sync + 'static>(&self, name: &str) -> Result<Arc<T>> {
         self.ctx
             .get_at::<T>(&self.scope.key::<T>())
@@ -333,6 +348,23 @@ impl TimelineContext {
     /// This branch's scope view.
     pub(crate) fn scope_view(&self) -> &FiberView {
         &self.view
+    }
+    /// The branch instance's context, for reads of its data faces by id
+    /// ([`crate::route::SessionScope`]).
+    pub(crate) fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+    /// The catalog this branch's group names come from.
+    pub(crate) fn catalog(&self) -> &rutis_loader::ServiceCatalog {
+        &self.catalog
+    }
+    /// The names the assembly marked internal.
+    pub(crate) fn faces(&self) -> &Faces {
+        &self.faces
+    }
+    /// The branch group instance this line runs in.
+    pub(crate) fn scope_instance(&self) -> rutis::host::InstanceId {
+        self.scope.instance
     }
     /// The loader row ids this branch's profile requires.
     pub(crate) fn required_rows(&self) -> &[String] {
@@ -364,6 +396,27 @@ impl TimelineContext {
     pub(crate) async fn input(&self, data: InputMessageData) -> Result<Arc<AgentEvent>> {
         self.input_commit(data).await.map(|(event, _)| event)
     }
+    /// The checks every externally committed input passes before it reaches
+    /// the Timeline: the Dispatcher and the Session generation are healthy,
+    /// and the input carries well-formed blocks.
+    fn check_input(&self, data: &InputMessageData) -> Result<()> {
+        if let Some(error) = self.dispatcher.failure() {
+            return Err(error);
+        }
+        if self.close.started() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        data.validate()
+            .map_err(|reason| AgentError::InvalidInput(reason.into()))
+    }
+    /// The admission every input append runs under the Timeline's commit
+    /// lock: a branch that has ended refuses new input.
+    fn admit_input(&self) -> Result<()> {
+        if self.ended() {
+            return Err(AgentError::BranchEnded(self.id.clone()));
+        }
+        Ok(())
+    }
     /// [`Self::input`], also saying whether this call wrote the input. The
     /// answer comes from the append that decides the duplicate under the
     /// commit lock, so of two concurrent duplicates exactly one is
@@ -372,28 +425,43 @@ impl TimelineContext {
         &self,
         data: InputMessageData,
     ) -> Result<(Arc<AgentEvent>, InputCommit)> {
-        if let Some(error) = self.dispatcher.failure() {
-            return Err(error);
-        }
-        if self.close.started() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        data.validate()
-            .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
+        self.check_input(&data)?;
         let result = self
             .timeline
-            .input_checked(data, || {
-                if self.ended() {
-                    return Err(AgentError::BranchEnded(self.id.clone()));
-                }
-                Ok(())
-            })
+            .input_checked(data, None, || self.admit_input())
             .await?;
         match result {
             crate::core::Appended::Written(event) => Ok((event, InputCommit::Written)),
             crate::core::Appended::Existing(sequence) => {
                 Ok((self.committed_input(sequence).await?, InputCommit::Existing))
             }
+            crate::core::Appended::Moved => Err(AgentError::fault(
+                "timeline.input",
+                "an unconditional input moved",
+            )),
+        }
+    }
+    /// [`Self::input`] only while the branch's last assigned sequence is still
+    /// `head`. `None` means a fact committed behind `head`: nothing was
+    /// written, no sequence was assigned and the caller decides again, even
+    /// for a submission id already committed; otherwise it answers as
+    /// [`Self::input`] does.
+    pub(crate) async fn input_if_head(
+        &self,
+        data: InputMessageData,
+        head: u64,
+    ) -> Result<Option<Arc<AgentEvent>>> {
+        self.check_input(&data)?;
+        let result = self
+            .timeline
+            .input_checked(data, Some(head), || self.admit_input())
+            .await?;
+        match result {
+            crate::core::Appended::Written(event) => Ok(Some(event)),
+            crate::core::Appended::Existing(sequence) => {
+                Ok(Some(self.committed_input(sequence).await?))
+            }
+            crate::core::Appended::Moved => Ok(None),
         }
     }
     /// Validates a batch of input from outside the branch and appends it as

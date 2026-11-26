@@ -141,7 +141,8 @@ The call path from a consumer to a Session (a call path, not an assembly graph):
 | --- | --- |
 | Identity | Name `sessions`, process scope, control node only, no instance key |
 | Provider | Agents' directory part. Each call looks up the current `AgentIndex`; while there is none, the call fails `reloading`. Index reload ends cancellable calls, preserves own-outcome calls (§8.3), and never reloads a consumer (D1) |
-| Calls | All methods are async. Each takes one request object, carried as `[request]` by rutis, and returns one envelope: `{ok: true, value}` or `{ok: false, error: SessionsError}`. The error carries `retryable` beside its `code` and `message`. An unknown method, a missing or extra argument, an unknown field or a wrong type replies `rejected` |
+| Calls | All methods are async. Each takes one request object, carried as `[request]` by rutis, and returns one envelope: `{ok: true, value}` or `{ok: false, error: SessionsError}`. A routed method
+that replies nothing omits `value` (`{ok: true}`), so a caller reads it as `undefined`. The error carries `retryable` beside its `code` and `message`. An unknown method, a missing or extra argument, an unknown field or a wrong type replies `rejected` |
 | Errors | `SessionsError {code, message, retryable}` (§9) |
 | Cancellation | The consumer drops the call. Dropping a Rust future ends cancellable work and releases its lease. A dropped `launch` still finishes creation (§6.1); admitted `input` retains its task and lease (§6.2) |
 | Rust consumers | Look up `AgentIndex` on each use, as Rpc looks up Provider, and call the typed methods in Appendix A. They may also use the named service |
@@ -795,8 +796,7 @@ was stubbed (roadmap §3.6).
    in the assembly lane).
 3. Done. Lookup is the branch's (`Session::lookup`, §6.3); `sessions.lookup` and Rpc's `session.input_lookup` both
    call it.
-4. Done. `xtask graph` records the new module and the `sessions` binding; `xtask check` passes.
-5. Done. `sessions.delete` forwards to S5c's `AgentIndex::delete` ([#97](https://github.com/arcships/dim/pull/97))
+4. Done. `sessions.delete` forwards to S5c's `AgentIndex::delete` ([#97](https://github.com/arcships/dim/pull/97))
    and has its row in A.1 (§6.8).
 
 The flow tests are in

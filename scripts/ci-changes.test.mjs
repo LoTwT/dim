@@ -39,9 +39,7 @@ test('documentation and non-code repository metadata need no build group',()=>{
 });
 
 test('documents that code reads keep their checks',()=>{
-  assert.deepEqual(classify(['docs/architecture/rust-agent/plugins/goal.md']),only('static'));
-  assert.deepEqual(classify(['docs/architecture/rust-agent/generated/crates.mmd']),only('static'));
-  assert.deepEqual(classify(['docs/architecture/rust-agent/generated/catalog.md']),only('xtask'));
+  assert.deepEqual(classify(['docs/architecture/rust-agent/plugins/ModelProvider.md']),only('xtask'));
   assert.deepEqual(classify(['docs/design/appserver/native-storage-format.md']),only('rust'));
   assert.deepEqual(classify(['docs/architecture/tui-e2e.md']),only('scripts'));
   assert.deepEqual(classify(['docs/design/plugins/EventHub.md']),only('rust'));
@@ -70,7 +68,7 @@ test('source areas select their groups',()=>{
   assert.deepEqual(classify(['docker/Dockerfile']),only('scripts'));
   assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust','node','windows_native'));
   assert.deepEqual(classify(['crates/dim-app-server/src/protocol.rs']),only('rust','node','web','scripts'));
-  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts','debug'));
   assert.deepEqual(classify(['crates/dim-app-server/resources/default-catalog.json']),only('rust','node','scripts'));
   assert.deepEqual(classify(['crates/dim-cli/src/main.rs']),only('rust','windows'));
   assert.deepEqual(classify(['crates/dim-client/src/lib.rs']),only('rust','windows','node'));
@@ -90,8 +88,10 @@ test('Windows-native flows follow their storage, host and named pipe paths',()=>
     'crates/dim-app-server/src/transport.rs',
     'crates/dim-app-server/src/pipe_client.rs',
     'crates/dim-app-server/src/cli.rs',
+    'crates/dim-app-server/src/worktrees.rs',
     'crates/dim-app-server/tests/app_server_flow.rs',
     'crates/dim-app-server/tests/named_pipe_flow.rs',
+    'crates/dim-app-server/tests/worktree_removal_flow.rs',
     'scripts/test-windows-native.mjs',
   ]) assert.equal(classify([file]).windows_native,true,file);
   for (const file of [
@@ -111,8 +111,36 @@ test('native macOS CI follows its runner, packaging and Mach-O layout sources',(
   }
 });
 
+test('debug-only CLI tests follow their owning modules',()=>{
+  for (const file of [
+    'crates/dimcode/tests/cli_flow/daemon_startup_progress.rs',
+    'crates/dimcode/tests/cli_flow/daemon_replace.rs',
+    'crates/dimcode/tests/cli_flow/staged_update.rs',
+  ]) assert.deepEqual(classify([file]),only('rust','debug'),file);
+  assert.deepEqual(classify(['crates/dimcode/tests/cli_daemon_flow.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/cli_flow.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/support/cli_harness.rs']),only('rust','node','debug'));
+  assert.deepEqual(classify(['crates/dimcode/Cargo.toml']),only('rust','debug','dependencies'));
+  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust','debug'));
+  for (const file of [
+    'crates/dim-cli/src/client.rs',
+    'crates/dim-cli/src/update.rs',
+    'crates/dim-cli/src/update/staged.rs',
+    'crates/dim-cli/src/lib.rs',
+    'crates/dim-cli/src/plugins.rs',
+    'crates/dim-cli/src/ui/tui.rs',
+  ]) assert.deepEqual(classify([file]),only('rust','windows','debug'),file);
+  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts','debug'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/cli.rs']),only('rust','node','debug','windows_native'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/transport.rs']),only('rust','node','debug','windows_native'));
+  assert.deepEqual(classify(['crates/dim-agent-capabilities/src/build.rs']),only('rust','node','debug'));
+  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/support/daemon.rs']),only('rust','node','debug'));
+  assert.deepEqual(classify(['crates/dim-cli/src/session_host.rs']),only('rust','windows','debug'));
+});
+
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
-  assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
+  assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows','debug'));
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));
   assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'));
   assert.deepEqual(classify(['xtask/check/src/literal_main.rs']),only('static','xtask'));
@@ -184,13 +212,13 @@ test('main push checks use the whole push range in a shallow checkout',{skip:!ha
   git(checkout,'commit','-q','-m','skill doc');
   assert.deepEqual(runSelector(checkout,'push',head),only(),'non-code metadata pushes skip all build groups');
 
-  const generatedBase=git(checkout,'rev-parse','HEAD').trim();
-  const generated=path.join(checkout,'docs/architecture/rust-agent/generated');
-  mkdirSync(generated,{recursive:true});
-  writeFileSync(path.join(generated,'catalog.md'),'# Catalog\n');
+  const pluginBase=git(checkout,'rev-parse','HEAD').trim();
+  const plugins=path.join(checkout,'docs/architecture/rust-agent/plugins');
+  mkdirSync(plugins,{recursive:true});
+  writeFileSync(path.join(plugins,'ModelProvider.md'),'# ModelProvider\n');
   git(checkout,'add','-A');
-  git(checkout,'commit','-q','-m','generated architecture');
-  assert.deepEqual(runSelector(checkout,'push',generatedBase),only(...groups),'checked architecture documents keep the full main run');
+  git(checkout,'commit','-q','-m','document the model provider plugin');
+  assert.deepEqual(runSelector(checkout,'push',pluginBase),only(...groups),'checked architecture documents keep the full main run');
 
   const clientBase=git(checkout,'rev-parse','HEAD').trim();
   mkdirSync(path.join(checkout,'crates/dim-client/src'),{recursive:true});

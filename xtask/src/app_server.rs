@@ -1,5 +1,5 @@
 //! `graph` assembles the App Server product profile through `serve` and
-//! records its process plugins in `generated/app-server/`.
+//! records its process plugins in `target/architecture/app-server/`.
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
     context_model::ProductContextModel,
@@ -221,6 +221,7 @@ pub async fn serve_home(
         startup_timeout: Duration::from_secs(60),
         ..Default::default()
     };
+    config.platform_home = Some(home.clone());
     config.session_defaults.cwd = cwd.to_string_lossy().into_owned();
     dim_app_server::cli::product_session_defaults(&mut config.session_defaults);
     if let Some(defaults) = &run.defaults {
@@ -407,8 +408,8 @@ pub fn process_layer(mut snapshot: RuntimeDiagnostics) -> RuntimeDiagnostics {
 }
 
 /// Writes the process graph of the product profile.
-pub fn write(root: &Path, graph: Value) -> Result<()> {
-    let out = root.join("docs/architecture/rust-agent/generated/app-server");
+pub fn write(out: &Path, graph: Value) -> Result<()> {
+    let out = out.join("app-server");
     std::fs::create_dir_all(&out)?;
     let graphs = BTreeMap::from([("process", graph)]);
     std::fs::write(

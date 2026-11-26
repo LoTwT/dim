@@ -89,7 +89,7 @@ pub(crate) async fn write_held(session_id: &str, branch_id: &str, after: u64) {
     }
 }
 
-/// A turn-end step of one branch a test can hold open.
+/// A decision step of one branch a test can hold open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// Before `do_turn_end` reads the fold.
@@ -99,8 +99,37 @@ pub enum Stage {
     Cutoff,
     /// After the evaluation decision and before `treeCommands.create`.
     Create,
-    /// After `do_turn_end` took every decision it carries.
+    /// After a `continue` conclusion took its action, before its settings read.
+    Continue,
+    /// After a turn-end or conclusion decision took every decision it
+    /// carries.
     Done,
+    /// After the closing pause read the fold it states and before it composes
+    /// and appends that record.
+    Closing,
+    /// After a state record reached its writer and before it took the write
+    /// guard.
+    Writer,
+    /// After the state record writer took the write guard and settled the
+    /// decisions, before it composes the record it answers `after` with.
+    Record,
+    /// After a state record released the settlement it held, before it answers
+    /// its caller.
+    Released,
+    /// After the failure of a write whose caller is gone reached the branch's
+    /// write status.
+    Published,
+    /// After the change writer took the write guard and settled the decisions,
+    /// before it composes the record it commits with its trigger.
+    Change,
+    /// After a change waited for the publication of the cutoff it loads the
+    /// branch's current work from, before it queries that work.
+    Query,
+    /// After a change composed its record from the fold and before it commits
+    /// that record and its trigger.
+    Batch,
+    /// After a state record read the fold and before its append commits.
+    Append,
 }
 
 type StageHold = (
@@ -122,7 +151,7 @@ pub struct HeldStage {
 }
 
 impl HeldStage {
-    /// Resolves when the held step is reached, with the turn end it follows.
+    /// Resolves when the held step is reached, with the sequence it follows.
     pub async fn arrived(&mut self) -> u64 {
         self.arrived.recv().await.unwrap_or(0)
     }
@@ -145,8 +174,8 @@ impl Drop for HeldStage {
     }
 }
 
-/// Holds a turn-end step of `branch_id` in `session_id`: the next step at
-/// `stage` whose `after` is at least `min` (and equals `after` when given).
+/// Holds a decision step of `branch_id` in `session_id`: the next step at
+/// `stage` whose sequence is at least `min` (and equals `after` when given).
 pub fn hold_stage(
     session_id: &str,
     branch_id: &str,

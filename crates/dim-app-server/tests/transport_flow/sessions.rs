@@ -192,6 +192,16 @@ struct Setup {
 struct PendingDispatchGate {
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    /// Also hold an `input/message` whose first Raw block starts with this.
+    marker: Option<String>,
+}
+impl PendingDispatchGate {
+    fn holding(marker: &str) -> Self {
+        Self {
+            marker: Some(marker.to_owned()),
+            ..Self::default()
+        }
+    }
 }
 
 struct PendingDispatchPart {
@@ -229,6 +239,29 @@ impl rutis::host::DynPlugin for PendingDispatchPart {
                     })
                 },
             )?;
+            let marker = self.gate.marker.clone();
+            let snapshot = self.gate.clone();
+            if let Some(marker) = marker {
+                ctx.require_at(&self.dispatcher)?.subscribe(
+                    ctx,
+                    "pending-snapshot-gate",
+                    &["input/message"],
+                    move |event| {
+                        let marker = marker.clone();
+                        let snapshot = snapshot.clone();
+                        Box::pin(async move {
+                            if matches!(&event.kind, EventKind::InputMessage(data)
+                                if data.blocks.first().is_some_and(|block| matches!(block,
+                                    InputBlock::Raw { text, .. } if text.starts_with(&marker))))
+                            {
+                                snapshot.entered.notify_one();
+                                snapshot.release.notified().await;
+                            }
+                            Ok(())
+                        })
+                    },
+                )?;
+            }
             Ok(rutis::host::Effect::Done)
         })
     }
@@ -941,23 +974,13 @@ async fn idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop() 
         second >= cutoff,
         "the idle branch never goes back: {second} < {cutoff}"
     );
-    let presence = format!(
-        "<dim-state source=\"{}\">",
-        dim_agent_capabilities::environment_clients::CLIENTS
-    );
-    let snapshot = |kind: &EventKind| {
-        matches!(kind, EventKind::InputMessage(data)
-            if data.user.is_none()
-                && matches!(data.blocks.as_slice(), [InputBlock::Raw { text, .. }]
-                    if text.starts_with(&presence)))
-    };
     let extra = branch_events(&session, "main", (cutoff + 1)..=second)
         .await
         .unwrap();
     assert!(
         extra.is_empty()
             || (extra.len() == 2
-                && snapshot(&extra[0].kind)
+                && client_presence(&extra[0].kind)
                 && matches!(extra[1].kind, EventKind::InputApplied(_))),
         "the idle branch only takes the client presence snapshot: {:?}",
         extra
@@ -1218,23 +1241,47 @@ async fn a_consumer_launches_writes_waits_and_withdraws_by_input_id() {
     server.join().await.unwrap();
 }
 
-/// Waits for the branch's event after `after` to be published and returns it.
+/// Whether `kind` is the client-presence snapshot the EnvironmentClients
+/// branch part appends once after publication (EnvironmentClients §5).
+fn client_presence(kind: &EventKind) -> bool {
+    let presence = format!(
+        "<dim-state source=\"{}\">",
+        dim_agent_capabilities::environment_clients::CLIENTS
+    );
+    matches!(kind, EventKind::InputMessage(data)
+        if data.user.is_none()
+            && matches!(data.blocks.as_slice(), [InputBlock::Raw { text, .. }]
+                if text.starts_with(&presence)))
+}
+
+/// Waits for the branch's first published event after `after` that is not the
+/// client-presence snapshot, and returns it. That snapshot comes from the
+/// part's own task, so it can take any sequence after `after`; every other
+/// event is returned in order.
 async fn published_after(session: &Session, after: u64) -> Arc<AgentEvent> {
     let publication = session.publication("main").unwrap();
     let mut watch = publication.watch();
-    let published = tokio::time::timeout(
-        Duration::from_secs(5),
-        watch.wait_for(|&(published, _)| published > after),
-    )
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut cursor = after;
+        loop {
+            let sequence = watch
+                .wait_for(|&(published, _)| published > cursor)
+                .await
+                .expect("the branch's timeline is open")
+                .0;
+            let next = branch_events(session, "main", (cursor + 1)..=sequence)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|event| !client_presence(&event.kind));
+            if let Some(event) = next {
+                return event;
+            }
+            cursor = sequence;
+        }
+    })
     .await
     .expect("the next event is published")
-    .expect("the branch's timeline is open");
-    let sequence = published.0;
-    branch_events(session, "main", sequence..=sequence)
-        .await
-        .unwrap()
-        .pop()
-        .unwrap()
 }
 
 /// Sessions §6.6: a withdraw whose command was written before a close starts
@@ -2720,6 +2767,113 @@ async fn temporary_route_adoption_requires_inputs_to_finish_dispatching() {
     gate.release.notify_one();
     session.idle("main").await.unwrap();
     assert_ok(&routed.rpc("session.attach", attach).await);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The execution-settings snapshots `branch` holds.
+async fn settings_snapshots(session: &Session, branch: &str) -> usize {
+    let marker = "<dim-state source=\"dim/settings/execution\">";
+    branch_events(session, branch, ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind, EventKind::InputMessage(data)
+                if data.blocks.iter().any(|block| matches!(block,
+                    InputBlock::Raw { text, .. } if text.starts_with(marker))))
+        })
+        .count()
+}
+
+/// A settings source that misses a branch's opening read leaves the snapshot
+/// to the published branch. The branch publishes it before it dispatches it,
+/// so a temporary route adoption that arrives in that window is refused with
+/// `provider_route_conflict`; the branch dispatches the snapshot next and the
+/// same call is adopted (#2165).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_temporary_route_is_adopted_once_a_missed_snapshot_is_dispatched() {
+    let store = Store::new();
+    // The document is invalid, so the opening read fails and leaves `pending`
+    // set without waiting for the read's bound.
+    let execution = store.0.join("execution.json");
+    std::fs::write(&execution, "{").unwrap();
+    let gate = Arc::new(PendingDispatchGate::holding(
+        "<dim-state source=\"dim/settings/execution\">",
+    ));
+    let Served {
+        server,
+        agent,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        dispatch_gate: Some(gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let session = client_session(&mut client, &agent, host_policy()).await;
+    assert_eq!(
+        settings_snapshots(&session, "main").await,
+        0,
+        "the opening read failed, so create returns without the snapshot"
+    );
+    let provider = session.config().model.provider_id.clone();
+    let model = session.config().model.model_id.clone();
+    let mut routed = Client::new_version(&server, false, 4).await;
+    assert_ok(
+        &routed
+            .rpc(
+                "provider.routes.set",
+                json!({"providerId":provider,
+                    "connection":{"apiFormat":"openai-compatible","baseUrl":"http://localhost/routed/v1"}}),
+            )
+            .await,
+    );
+
+    // The source answers now: the first pass after activation appends the
+    // snapshot, and the dispatcher holds it here, published but not applied.
+    std::fs::write(&execution, "{\"sandbox\":true,\"network\":false}\n").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+        .await
+        .expect("the published branch appends the missed snapshot");
+    let publication = session.publication("main").unwrap().sequence();
+    let dispatched = session.dispatch_watch("main").unwrap().borrow().sequence;
+    assert!(
+        dispatched < publication,
+        "the snapshot is published before it is dispatched: {dispatched} < {publication}"
+    );
+
+    let update = json!({"sessionId":session.id(),"branchId":"main",
+        "providerId":provider,"modelId":model});
+    let refused = routed.rpc("session.model.update", update.clone()).await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "provider_route_conflict",
+        "{refused}"
+    );
+
+    gate.release.notify_one();
+    let settled = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let publication = session.publication("main").unwrap();
+            let dispatched = session.dispatch_watch("main").unwrap().borrow().clone();
+            if !publication.has_pending() && dispatched.sequence >= publication.sequence() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(settled.is_ok(), "the branch dispatches the snapshot");
+    let adopted = routed.rpc("session.model.update", update).await;
+    assert_ok(&adopted);
+    assert_ne!(
+        adopted["result"]["model"]["providerId"],
+        json!(provider),
+        "the temporary route is the execution identity: {adopted}"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

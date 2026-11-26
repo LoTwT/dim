@@ -74,17 +74,17 @@ dependencies = [
 
 [[package]]
 name = "aimux-core"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa641cecf2a70d9cd1e96eaf0aae4c7af4da15dbd7fb0b58f0c9f52379d0aa5"
+checksum = "0460e414dd98abf5a4f6883e313d907d8c8bb4cd36826ce0565a392b1cd62cdc"
 dependencies = [
  "async-stream",
  "async-trait",
  "base64 0.22.1",
- "chrono",
  "futures",
  "httpdate",
  "indexmap 2.14.1",
+ "jiff",
  "jsonschema",
  "rand 0.8.8",
  "regex",
@@ -101,9 +101,9 @@ dependencies = [
 
 [[package]]
 name = "aimux-provider-utils"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "902e4842e25b4e6b07dcd7ba5fe9a7e5a8caee52edc7512e3e6032e88b6d1441"
+checksum = "3dfc9f79e7792a011b7fdf8e273089c685a48f3eeee7f8a29152668bc9323817"
 dependencies = [
  "aimux-core",
  "aimux-stream",
@@ -111,12 +111,12 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "chrono",
  "futures",
  "hex",
  "hmac",
  "http",
  "indexmap 2.14.1",
+ "jiff",
  "reqwest 0.12.28",
  "rustls",
  "schemars 1.2.2",
@@ -134,9 +134,9 @@ dependencies = [
 
 [[package]]
 name = "aimux-providers"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e83a12b55088392e9963dcd7410ae129e54be0369fef0e89e371f30efed771e"
+checksum = "0f7fcb84629b94c6c035297a6e163f85d1bad46cdf6bed2a7f481f8418437fbc"
 dependencies = [
  "aimux-core",
  "aimux-provider-utils",
@@ -145,9 +145,9 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "chrono",
  "futures",
  "indexmap 2.14.1",
+ "jiff",
  "percent-encoding",
  "regex",
  "reqwest 0.12.28",
@@ -162,9 +162,9 @@ dependencies = [
 
 [[package]]
 name = "aimux-stream"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70177c3581792eec565226f4275b808f569c663884d8cc02d777ef077386e593"
+checksum = "7949cba0110ac681c285658a1e1648550b9cc1db75fc249e7f4586a492f4a4d4"
 dependencies = [
  "bytes",
  "futures",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "dim-acp"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-aimux"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "aimux-core",
  "aimux-provider-utils",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-attachments"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-capabilities"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.23.1",
  "dim-agent-capabilities",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-integration-tests"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-questions"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-runtime"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-runtime",
  "dim-agent-types",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "dim-agent-scheduler"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "croner",
  "dim-agent-capabilities",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "dim-app-server"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "async-trait",
  "axum",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "dim-cli"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "dim-client"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-types",
  "libc",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "dim-codemode"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-questions",
@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "dim-event-hub"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "dim-goal"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-aimux",
  "dim-agent-capabilities",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "dim-image-understanding"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "dim-migration"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "dim-modality"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "dim-modality-aimux"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "aimux-core",
  "aimux-provider-utils",
@@ -1481,14 +1481,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.29.0",
  "tokio-util",
- "tungstenite 0.24.0",
  "url",
  "uuid",
 ]
 
 [[package]]
 name = "dim-oauth"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1516,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "dim-ocr"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "libc",
  "objc2",
@@ -1533,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "dim-report"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "base64 0.22.1",
  "dim-agent-capabilities",
@@ -1558,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "dim-session-title"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "axum",
  "dim-agent-aimux",
@@ -1583,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "dimcode"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "agent-client-protocol-schema",
  "base64 0.22.1",
@@ -4972,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "test-extension-a"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-runtime",
  "rutis",
@@ -4980,7 +4979,7 @@ dependencies = [
 
 [[package]]
 name = "test-extension-b"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "dim-agent-runtime",
  "rutis",
@@ -6077,7 +6076,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "axum",
  "dim-agent-aimux",
@@ -6110,10 +6109,11 @@ dependencies = [
 
 [[package]]
 name = "xtask-check"
-version = "0.1.0-alpha.28"
+version = "0.1.0-alpha.29"
 dependencies = [
  "proc-macro2",
  "rutis-types",
+ "serde",
  "serde_json",
  "syn 2.0.119",
 ]

@@ -3,11 +3,11 @@
 //!
 //! `graph` serves the App Server product profile, sharing the names `serve`
 //! shares when it hosts foreign parts (`session_typescript::share_names`), opens
-//! one Session and writes `generated/catalog.md` from that assembly: every
+//! one Session and writes `target/architecture/catalog.md` from that assembly: every
 //! catalog name one of its parts provides or injects, with its group, provider,
 //! its face and the methods its dispatcher serves, and the
 //! parts that are Capabilities because they inject `dispatcher` or `timeline`.
-//! `check` builds the same assembly and fails when the file differs.
+//! `check` validates the faces in the same assembly.
 use crate::app_server;
 use dim_agent_runtime::{FACE_REASONS, Faces, Feature, SessionConfig, names::name_of_type};
 use rutis::host::diagnostics::RuntimeDiagnostics;
@@ -19,7 +19,6 @@ use rutis_loader::{LoaderError, ServiceCatalog};
 use std::{
     any::TypeId,
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -32,31 +31,6 @@ const CAPABILITY_NAMES: [&str; 2] = ["dispatcher", "timeline"];
 const EXPORT_PREFIX: &str = "rutis-export:";
 /// Groups in the order the table lists them.
 const GROUPS: [&str; 3] = ["process", "session", "branch"];
-
-fn file(root: &Path) -> PathBuf {
-    root.join("docs/architecture/rust-agent/generated/catalog.md")
-}
-
-/// Writes the catalog table of the product profile.
-pub async fn write(root: &Path) -> Result<()> {
-    std::fs::write(file(root), collect().await?)?;
-    Ok(())
-}
-
-/// Fails when the written catalog table is not the product profile's.
-pub async fn check(root: &Path) -> Result<()> {
-    let path = file(root);
-    let written = std::fs::read_to_string(&path).unwrap_or_default();
-    if written != collect().await? {
-        return Err(format!(
-            "{}: catalog table is stale; run `cargo run -p xtask -- graph`",
-            path.display()
-        )
-        .into());
-    }
-    println!("service catalog passed");
-    Ok(())
-}
 
 /// A branch part that keeps its context, to read the dispatchers the
 /// assembly serves names with. It names and provides nothing.
@@ -74,7 +48,7 @@ impl Plugin for Probe {
 }
 
 /// The catalog table of the product profile with one Session.
-async fn collect() -> Result<String> {
+pub(super) async fn collect() -> Result<Table> {
     let dir = app_server::scratch("catalog")?;
     let probe = Probe::default();
     let server = app_server::serve_product(&dir, |builder| {
@@ -92,11 +66,14 @@ async fn collect() -> Result<String> {
             .agent()
             .ok_or("the product profile has no default Agent")?;
         let session = agent
-            .create_session(SessionConfig {
-                cwd: dir.to_string_lossy().into_owned(),
-                tools: None,
-                ..Default::default()
-            })
+            .create_session(
+                SessionConfig {
+                    cwd: dir.to_string_lossy().into_owned(),
+                    tools: None,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
             .await?;
         let layers = [
             ("process", app_server::process_layer(server.diagnostics())),
@@ -105,7 +82,9 @@ async fn collect() -> Result<String> {
         ];
         let ctx = probe.0.lock().unwrap().take();
         let ctx = ctx.ok_or("the catalog probe did not load")?;
-        let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?.render();
+        let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?;
+        reach(&root_of(), agent.catalog(), agent.faces(), &table)?;
+        retired(&root_of(), agent.catalog())?;
         session.close().await?;
         Ok::<_, Box<dyn std::error::Error>>(table)
     }
@@ -114,6 +93,131 @@ async fn collect() -> Result<String> {
     server.join().await?;
     let _ = std::fs::remove_dir_all(&dir);
     table
+}
+
+/// Fails when a service name the access layer records as retired is registered
+/// again: the generated authoring types only cover names a route resolves, so a
+/// retired name coming back would otherwise go unnoticed
+/// (`xtask/access-layer.json`'s `removed` list).
+fn retired(root: &std::path::Path, catalog: &ServiceCatalog) -> Result<()> {
+    let layer = xtask_check::access::load(root)?;
+    // A catalog name is known at the process, as a shared name, or inside an
+    // instance group: `key_in` answers `OutsideInstance` for the last.
+    let known = |name: &str| {
+        catalog.key(name).is_some()
+            || catalog.is_shared(name)
+            || matches!(
+                catalog.key_in(name, &rutis_loader::resolve::Build::default()),
+                Err(rutis_loader::LoaderError::OutsideInstance { .. })
+            )
+    };
+    let back: Vec<&String> = layer.removed.iter().filter(|name| known(name)).collect();
+    if !back.is_empty() {
+        return Err(format!(
+            "{}: retired service names are registered again: {back:?}",
+            xtask_check::access::FILE
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The workspace root, from this crate's manifest directory.
+fn root_of() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Checks the generated authoring types against what the runtime resolves: every
+/// name `npm/branch-services.d.ts` offers for a scope is a data face the route
+/// accepts there. A name the route refuses, or a face of the other scope, must
+/// not be offered, so this compares the two lists with the runtime's own rule
+/// ([`dim_agent_runtime::route::resolves`]).
+fn reach(
+    root: &std::path::Path,
+    catalog: &ServiceCatalog,
+    faces: &Faces,
+    table: &Table,
+) -> Result<()> {
+    let text = std::fs::read_to_string(root.join("npm/branch-services.d.ts"))?;
+    let mut offered: Vec<(&str, &str)> = Vec::new();
+    for (section, group) in [
+        ("export type SessionFaces = {", "session"),
+        ("export type LineFaces = {", "branch"),
+    ] {
+        let Some(start) = text.find(section) else {
+            return Err(format!("npm/branch-services.d.ts: no {section}").into());
+        };
+        for line in text[start + section.len()..].lines() {
+            let line = line.trim();
+            if line == "}" {
+                break;
+            }
+            let Some(name) = line.split(':').next().map(str::trim) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            offered.push((name, group));
+        }
+    }
+    let mut refused = Vec::new();
+    for (name, group) in &offered {
+        if !dim_agent_runtime::resolves(catalog, faces, name, group) {
+            refused.push(format!("{name} ({group})"));
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the route refuses: {}",
+            refused.join(", ")
+        )
+        .into());
+    }
+    let unknown: Vec<&str> = offered
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !table.services.contains_key(*name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts offers names the assembly does not provide: {}",
+            unknown.join(", ")
+        )
+        .into());
+    }
+    // The other direction: a data face the route resolves and the file declares
+    // an interface for must be offered, or an author cannot write the call.
+    let mut missing = Vec::new();
+    for (name, service) in &table.services {
+        let group: &str = match service.group {
+            group @ ("session" | "branch") => group,
+            _ => continue,
+        };
+        if service.face != "data" || !dim_agent_runtime::resolves(catalog, faces, name, group) {
+            continue;
+        }
+        let declared = text.lines().any(|line| {
+            line.strip_prefix("export interface ")
+                .or_else(|| line.strip_prefix("export type "))
+                .and_then(|rest| rest.split([' ', '<', '{', '=']).next())
+                .is_some_and(|ty| dim_agent_runtime::names::name_of_type(ty) == *name)
+        });
+        if declared && !offered.iter().any(|(offered, _)| *offered == name) {
+            missing.push(format!("{name} ({group})"));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "npm/branch-services.d.ts does not offer routable data faces: {}",
+            missing.join(", ")
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The face of one catalog name (#1289).
@@ -147,7 +251,7 @@ struct Capability {
     injects: BTreeSet<String>,
 }
 
-struct Table {
+pub(super) struct Table {
     services: BTreeMap<String, Service>,
     capabilities: Vec<Capability>,
 }
@@ -257,14 +361,14 @@ impl Table {
         })
     }
 
-    fn render(&self) -> String {
+    pub(super) fn render(&self) -> String {
         let mut out = String::from(
             "# Service catalog\n\n<!-- Generated by `cargo run -p xtask -- graph`; do not edit. -->\n\n\
 Generated from the real assembly: the App Server product profile (`serve` with a product home, sharing the names it shares when it hosts foreign parts) with one Session and its `main` branch. \
-`cargo run -p xtask -- check` fails when this file is stale. \
-The rules for names are in [How Dim uses rutis §3](../../../design/rutis-usage.md#3-services-by-name).\n\n\
+`cargo run -p xtask -- check` validates the assembled service faces. \
+The rules for names are in [How Dim uses rutis §3](../../docs/design/rutis-usage.md#3-services-by-name).\n\n\
 ## Services\n\n\
-Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross; `shared-no-dispatcher` is shared but a leaf cannot call it. Methods are `sync` or `async` (TypeScript callers receive a direct value for `sync` and a Promise for `async`). \
+Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross. Methods are `sync` or `async` (TypeScript callers receive a direct value for `sync` and a Promise for `async`). \
 A non-data name is reached by Rust parts at its type's key.\n\n\
 | Name | Group | Provider | Face | Methods |\n| --- | --- | --- | --- | --- |\n",
         );
@@ -298,7 +402,7 @@ A non-data name is reached by Rust parts at its type's key.\n\n\
             );
         }
         out += "\n## Capabilities\n\n\
-The parts that inject `dispatcher` or `timeline` ([plugin contract §6](../../../design/plugin-contract.md#6-capability)). \
+The parts that inject `dispatcher` or `timeline` ([plugin contract §6](../../docs/design/plugin-contract.md#6-capability)). \
 Every other part is not a Capability.\n\n\
 | Part | Group | Injects |\n| --- | --- | --- |\n";
         for capability in &self.capabilities {
@@ -442,11 +546,14 @@ mod face_tests {
             .unwrap();
             let agent = server.agent().unwrap();
             let session = agent
-                .create_session(SessionConfig {
-                    cwd: dir.to_string_lossy().into_owned(),
-                    tools: None,
-                    ..Default::default()
-                })
+                .create_session(
+                    SessionConfig {
+                        cwd: dir.to_string_lossy().into_owned(),
+                        tools: None,
+                        ..Default::default()
+                    },
+                    Default::default(),
+                )
                 .await
                 .unwrap();
             let layers = [
@@ -461,22 +568,19 @@ mod face_tests {
                     matches!(result, Err(error) if error.to_string().contains("catalogMissing: shared but has no dispatcher"))
                 );
             } else {
-                let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)
-                    .unwrap()
-                    .render();
-                assert!(
-                    table.contains(
-                        "| `catalogEcho` | process | CatalogBindings | data | `ping` async |"
-                    ),
-                    "{table}"
-                );
+                let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx).unwrap();
+                let echo = &table.services["catalogEcho"];
+                assert_eq!(echo.group, "process");
+                assert!(echo.providers.contains("CatalogBindings"));
+                assert_eq!(echo.face, "data");
+                assert_eq!(echo.methods["ping"], "async");
                 for private in ["catalogPrivate", "loaderService", "pluginMounter"] {
                     assert!(
-                        !table.contains(&format!("| `{private}` |")),
+                        !table.services.contains_key(private),
                         "{private} is a private key, not a public face"
                     );
                 }
-                assert!(table.contains("| `rutis/loader` |"));
+                assert!(table.services.contains_key("rutis/loader"));
                 let reply: String =
                     rutis_bridge::session::call_service(&ctx, "catalogEcho", "ping", ())
                         .await
@@ -512,5 +616,26 @@ mod face_tests {
         assert!(face("x", false, false, None).is_err());
         assert!(face("x", true, false, None).is_err());
         assert!(face("x", false, false, Some("hotpath")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retired_tests {
+    use super::*;
+
+    #[test]
+    fn a_retired_instance_name_is_refused() {
+        let directory = std::env::temp_dir().join(format!("dim-retired-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("xtask")).unwrap();
+        // `sessionConfig` is registered inside the Session group only.
+        std::fs::write(
+            directory.join("xtask/access-layer.json"),
+            r#"{"allow": [], "removed": ["sessionConfig"]}"#,
+        )
+        .unwrap();
+        let catalog = dim_agent_runtime::names::catalog();
+        let error = retired(&directory, &catalog).expect_err("an instance name is covered");
+        assert!(error.to_string().contains("sessionConfig"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

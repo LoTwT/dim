@@ -261,6 +261,12 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
 export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionFault, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
+  HostPlatform, HostInfo, ShellStatus, SandboxBackend, ExecShellRuntime, Os, ShellEdition,
+  ShellSource, OutputEncoding, OutputPage, OutputTail, OutputPathReply,
+  SpawnRequest, SpawnReply, WaitRequest, WaitReply, TaskRequest, OutputRequest, HostPlatformError,
+  ShellRequest, ShellWrite, ShellCommandStart, ShellJobStart, ShellResize, OutputLimits,
+  SpawnWithStdinRequest, SpawnWithStdinReply, ConfinedRequest, ConfinedReply, ChildPathRequest,
+  RemoveOutputDirectoryRequest,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
@@ -274,7 +280,10 @@ export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
 export type SessionsErrorCode = import('./branch-services.js').SessionsErrorThrown['code'];
-export interface SessionsError { code: SessionsErrorCode; message: string; retryable: boolean }
+/** The failure a `sessions` call reports: the generated union, so each code carries
+ * the details the server sends (`reason`, `line`, `service`, `name`, `data`), plus
+ * the envelope's own `retryable`, which every code answers. */
+export type SessionsError = import('./branch-services.js').SessionsError & { retryable: boolean };
 export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: SessionsError };
 
 /** Process service `sessions`; these methods are not terminal RPC methods. */
@@ -295,6 +304,15 @@ export interface Sessions {
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
+  /** Calls a data face of a live Session, or of one of its lines, by id
+   * (#2127). Agents loads and holds the Session for the call. A target that
+   * cannot be selected answers `no_session`, `session_closing`,
+   * `session_reloading` (retry later), `session_unavailable` (report the
+   * reason) or `no_line`; the target owner's own failure is `routed` with its
+   * name and message. */
+  call<C extends import('./branch-services.js').SessionsCall>(
+    request: C,
+  ): Promise<SessionsResult<import('./branch-services.js').ReplyOf<C>>>;
 }
 
 /** One type an `eventHub` source declares (design A.1). */

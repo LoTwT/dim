@@ -265,7 +265,7 @@ async fn a_stream_cut_before_any_committed_event_retries_in_place() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -369,7 +369,7 @@ async fn a_stream_cut_after_a_committed_event_ends_the_turn_without_retrying() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -424,7 +424,7 @@ async fn a_usage_fact_before_a_cut_stops_the_retry() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -478,6 +478,151 @@ async fn a_usage_fact_before_a_cut_stops_the_retry() {
     .unwrap();
 }
 
+/// The failure the aimux stream builds when no part arrives inside its idle
+/// allowance: a network failure with no provider response behind it.
+fn idle_timeout() -> HostError {
+    let reason = "the stream delivered nothing for 300 seconds";
+    HostError::Failed {
+        message: ModelFailureKind::Network.line(Some(reason)),
+        budget: None,
+        kind: HostErrorKind::Transport,
+        model: Some(Box::new(ModelFailureFacts {
+            kind: ModelFailureKind::Network,
+            reason: Some(reason.into()),
+            status: None,
+            provider_code: None,
+            request_id: None,
+            cause: Vec::new(),
+            retry_after: None,
+            attempts: 1,
+            waited: Duration::ZERO,
+            retry_after_stop: None,
+            retry_forbidden: false,
+        })),
+        presentation: None,
+    }
+}
+
+/// An idle timeout before the attempt committed anything is replaced in place,
+/// as any network failure is: one request, two attempts, one reply.
+#[tokio::test(start_paused = true)]
+async fn an_idle_timeout_before_any_committed_event_retries_in_place() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (cut, cut_stream) = mpsc::unbounded_channel();
+        let (retry, retry_stream) = mpsc::unbounded_channel();
+        let model = Arc::new(ScriptedModel::new(vec![cut_stream, retry_stream]));
+        let agent = MinimalHost::start(&builder(model.clone(), Arc::new(MockTools)))
+            .await
+            .unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
+        session
+            .submit("go".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        send(
+            &cut,
+            vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "cut".into(),
+                }),
+                Ok(ModelChunk::Thinking("partial thought".into())),
+                Err(idle_timeout()),
+            ],
+        );
+        drop(cut);
+
+        let ended = tokio::select! {
+            _ = model.second_attempt.notified() => None,
+            outcome = turn_end(&session) => Some(outcome),
+        };
+        assert!(
+            ended.is_none(),
+            "an idle timeout before any committed output retries in place; the turn ended with {ended:?}"
+        );
+
+        send(&retry, reply("retry"));
+        drop(retry);
+        model.release.notify_one();
+        session.idle("main").await.unwrap();
+
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::ModelCall(_)))
+                .count(),
+            1,
+            "the retry belongs to the same request"
+        );
+        assert_eq!(text_events(&events), ["answer"]);
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Completed { .. },
+                ..
+            })
+        )));
+        agent.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// An idle timeout after committed text is not replayed: the turn ends with the
+/// network failure and resending is the user's call.
+#[tokio::test(start_paused = true)]
+async fn an_idle_timeout_after_a_committed_event_ends_the_turn_without_retrying() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (cut, cut_stream) = mpsc::unbounded_channel();
+        let model = Arc::new(ScriptedModel::new(vec![cut_stream]));
+        let agent = MinimalHost::start(&builder(model.clone(), Arc::new(MockTools)))
+            .await
+            .unwrap();
+        let session = agent
+            .create_session(SessionConfig::default(), Default::default())
+            .await
+            .unwrap();
+        session
+            .submit("go".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        let committed = "x".repeat(4096);
+        send(
+            &cut,
+            vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "cut".into(),
+                }),
+                Ok(ModelChunk::Text(committed.clone())),
+                Err(idle_timeout()),
+            ],
+        );
+        drop(cut);
+        session.idle("main").await.unwrap();
+
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        assert_eq!(text_events(&events), [committed]);
+        let failure = model_end_failure(&events);
+        assert_eq!(failure["kind"], "network", "{failure}");
+        assert_eq!(failure["attempts"], 1, "committed text stops the retry");
+        assert!(matches!(
+            events.iter().find_map(|event| match &event.kind {
+                EventKind::TurnEnd(data) => Some(&data.outcome),
+                _ => None,
+            }),
+            Some(TurnOutcome::Failed { .. })
+        ));
+        agent.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn thinking_progress_is_shown_once_per_interval() {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -487,7 +632,7 @@ async fn thinking_progress_is_shown_once_per_interval() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -588,7 +733,7 @@ async fn a_text_delta_shows_buffered_thinking_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -652,7 +797,7 @@ async fn a_tool_start_shows_buffered_thinking_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -713,7 +858,7 @@ async fn buffered_thinking_is_shown_within_one_interval_without_another_delta() 
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -779,7 +924,7 @@ async fn a_thinking_block_end_shows_the_buffer_at_once() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -851,7 +996,7 @@ async fn a_pending_thinking_buffer_is_not_shown_after_a_retry() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1030,7 +1175,7 @@ async fn a_steer_during_the_retry_backoff_replaces_the_attempt() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1117,7 +1262,7 @@ async fn a_steer_during_a_terminal_failure(kind: ModelFailureKind, retry_after: 
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1350,7 +1495,7 @@ async fn a_credential_refresh_clears_the_attempt_only_once_it_succeeds() {
         });
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1478,7 +1623,7 @@ async fn thinking_progress_volume_is_throttled() {
         .await
         .unwrap();
     let session = agent
-        .create_session(SessionConfig::default())
+        .create_session(SessionConfig::default(), Default::default())
         .await
         .unwrap();
     session
@@ -1546,7 +1691,7 @@ async fn a_retry_that_emits_no_output_names_its_boundary_on_the_terminal() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1623,7 +1768,7 @@ async fn a_retry_that_shows_its_own_thought_names_that_block_on_the_terminal() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session
@@ -1708,7 +1853,7 @@ async fn a_failure_without_a_retry_omits_the_retry_boundary() {
             .await
             .unwrap();
         let session = agent
-            .create_session(SessionConfig::default())
+            .create_session(SessionConfig::default(), Default::default())
             .await
             .unwrap();
         session

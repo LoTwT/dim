@@ -30,6 +30,49 @@ A timeout of the HTTP connection or of the stream reaches the bridge as a
 transport `ApiCall` and is `network`. `AiMuxError::Timeout` has no producer in a
 chat call; if it ever reaches the bridge it is `unknown` and is not retried.
 
+A status the table names decides the same kind when a stream event writes it
+as a JSON integer or as an exactly three-digit decimal string in the event's
+own `code`: `502` or `504` is a `server_error`, `429` a `rate_limited`, `401`
+or `403` an `auth_rejected`, and so on through the table.
+
+The bridge also bounds its own waits: a stream that delivers nothing for five
+minutes is `network`, with the reason `the stream delivered nothing for 300
+seconds`. The bound is per wait, not per request, so a reply that keeps
+streaming is never cut; an expired bound outranks a part that is ready at the
+same moment, and cancelling the request outranks both. A wait whose event has a
+producer-reported instant is judged against that instant: the transport reports
+the moment it produced the response headers, so headers written inside the
+allowance are on time even when the driver next polls after it, and headers
+written after the allowance are late even when the report is read before the
+timer that ends it fires. A wait with no
+such instant, the provider returning the stream and one stream part, keeps the
+deadline-first order.
+
+Three waits carry the bound. The wait for the response headers starts when the
+request is sent, so sending the body and following redirects count against it,
+and expires with the reason `no response headers arrived within 300 seconds of
+sending the request`. The wait for the stream to start begins when the
+transport produces the response headers. It expires with the reason `the
+response headers arrived, but no stream event followed within 300 seconds` for
+a provider that reads one stream event before it returns the stream (OpenAI
+Chat, Anthropic, Gemini, xAI Responses). It expires with the reason `the
+response headers arrived, but the stream did not start within 300 seconds` for
+the OpenAI Responses provider: its pinned SDK reads response metadata before it
+returns the stream, so that wait ends at the stream's start, not at an event
+the driver can see. The compatible and Bedrock providers return at the headers,
+so their first event falls under the wait between parts. That wait expires with
+the reason `the stream delivered nothing for 300 seconds`. A non-2xx response is
+handled differently: its body is a short diagnostic, and its read has its own
+total five-minute allowance, so a stalled error body cannot hold the request
+open, and the request still fails with the HTTP status and the kind that status
+names instead of an idle network failure. The connection's optional total
+timeout is unchanged and is still separate from these bounds.
+
+Only decoded stream parts renew the wait between parts. The provider parser
+drops SSE comments and Anthropic `ping` events before they reach the bridge, so
+a connection kept alive only by keep-alives still fails after five minutes
+without parts.
+
 Codes are compared trimmed and ASCII-lowercased.
 
 ### The two roles of a provider string
@@ -49,6 +92,15 @@ gateway forwards either under any status.
   response carries an error status, the label can only agree with it or
   contradict it, and when it contradicts, the status is the fact.
 
+A three-digit status written as a JSON integer or as an exactly three-digit
+decimal string in a stream event's own `code` is a class label too, and the
+status table above says which class it names: the event reports the failure it
+hit, while the status aimux maps the event to is its own reading and is never
+taken as the fact. A three-digit number or a three-digit string in any other
+field, such as a `type` or the adapter's provider code, is an opaque label: it
+participates through the named conditions and classes above and is never read
+as a status.
+
 ### The rule
 
 A Transport-origin failure with no response status or headers that the
@@ -61,7 +113,8 @@ rule decides every protocol's failure:
 2. otherwise a Transport-origin failure is `network`;
 3. otherwise an error status, 4xx or 5xx, on the response decides, by the
    table above;
-4. otherwise a class label decides, which in practice is a stream event;
+4. otherwise a class label decides, which in practice is a stream event: the
+   status it writes as its own code, or a provider's named label;
 5. otherwise the kind is `unknown`.
 
 A status outside 4xx and 5xx is not an error status and says nothing about
@@ -76,11 +129,14 @@ carries one and otherwise guesses from the event's code and type, where a
 provider that matches nothing gets 500. Dim cannot tell an explicit status
 from a guessed one, so a stream event skips step 3 and steps 1 and 4 decide
 it; reading that status would turn every unrecognized event into a retried
-`server_error`. 501 and 505 are `invalid_request` by step 3 because the status
-table says so, not by an exception to this rule, and a condition code beside
-them still decides. Two kinds change from the rule: a 4xx answer that carries
-only a server-class label is no longer retried, and a 5xx carrying
-`invalid_request_error` is a `server_error` and is retried.
+`server_error`. A three-digit integer or exactly three-digit string in the
+event's own `code` decides as a class label, and a value outside 400 to 599
+decides nothing; a three-digit `type` or provider code is not a status. 501
+and 505 are `invalid_request` by step 3 because the status table says so, not
+by an exception to this rule, and a condition code beside them still decides.
+Two kinds change from the rule: a 4xx answer that carries only a server-class
+label is no longer retried, and a 5xx carrying `invalid_request_error` is a
+`server_error` and is retried.
 
 Every `HostError::Failed` the bridge produces carries facts, including
 `AiMuxError::Timeout`, `InvalidResponseData`/`JsonParse`, `InvalidArgument`/

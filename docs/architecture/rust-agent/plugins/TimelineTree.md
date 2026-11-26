@@ -12,7 +12,7 @@ only active lines read their opening source. Parent-child adjacency orders the d
 A Session with one line is on its root without a query; a Session with more reads the root's
 newest `branch/default` or `session/forked` through the kind index to find the default branch.
 The App Server only maps these owner-produced properties into its wire fields.
-`TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding. The default branch's answer and its write are `TreeCommands` methods too: `default_branch()` answers the line the Session's conversation is on, restored from the root's newest `branch/default` or `session/forked`, and `set_default_branch(id, source)` admits an open conversation line whose chain is not ending, then writes `branch/default` on the root. Its refusals are `branch_already_default`, `branch_not_selectable` and `branch_target_protected`, and it writes nothing for any of them. A move queues its transition on every participant that is not the root, so a line owes its note from the moment it can take part, and signals every line; each line's own BranchLine drains its queue and writes the one status note its role earns; a load whose latest `branch:line` block disagrees with the tree writes the missing note once, and on the tree's current default branch a block whose text differs from the note this code writes is replaced once.
+`TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding. The default branch's answer and its write are `TreeCommands` methods too: `default_branch()` answers the line the Session's conversation is on, restored from the root's newest `branch/default` or `session/forked`, and `set_default_branch(id, source)` admits an open conversation line whose chain is not ending, then writes `branch/default` on the root. Its refusals are `branch_already_default`, `branch_not_selectable` and `branch_target_protected`, and it writes nothing for any of them. `input_if_head(id, input, head)` commits an input only while the line's last assigned sequence is still `head`; a fact behind it writes nothing and answers `null`, even for a submission id already committed, and at its head it answers the committed event or the input already committed with its submission id. A move queues its transition on every participant that is not the root, so a line owes its note from the moment it can take part, and signals every line; each line's own BranchLine drains its queue and writes the one status note its role earns; a load whose latest `branch:line` block disagrees with the tree writes the missing note once, and on the tree's current default branch a block whose text differs from the note this code writes is replaced once.
 
 ## TimelineTree
 
@@ -99,15 +99,6 @@ Session close, and closing is not deletion of persisted history.
 `each_tree_generation_resolves_its_own_reporting_identity`,
 `a_row_reload_resolves_the_new_tree_reporting_identity`.
 
-<!-- generated:plugin TimelineTree — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
-| 项 | 值 |
-| --- | --- |
-| 作用域 | Session |
-| 注入 | `S:GuideEntries`、`S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
-| 提供 | `S:TimelineTree`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
-| 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`InputQueue`、`LoopMethods`、`PromptSuggestion`、`Questions`、`Recall`、`ShellInput`、`ToolMethods`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
-<!-- /generated -->
-
 ## TreeTimeline
 
 Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
@@ -139,12 +130,3 @@ An accepted creation need not survive parent or Session close.
 [branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
 `parent_close_waits_for_dispatch_before_releasing_branch_reservations`,
 `close_releases_an_unconsumed_create_without_waiting_for_dispatch`.
-
-<!-- generated:plugin TreeTimeline — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
-| 项 | 值 |
-| --- | --- |
-| 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
-| 提供 | — |
-| 被注入于 | — |
-<!-- /generated -->
