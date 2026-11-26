@@ -169,8 +169,9 @@ A running shell keeps the boundary it started with; changing the switches applie
 process. macOS permits only the needed terminal ioctl commands.
 A persistent shell's first command is the init wrapper, and the shell may spend its first
 input on a startup consumer instead — zsh's newuser module runs a wizard when the user has no
-startup files. `ShellSession` writes that wrapper again until its end marker reaches the shell's
-tail, so no startup consumer can lose the initialization; the wrapper uses the same marker
+startup files. `ShellSession` writes that wrapper again until one copy's start marker and then
+its end marker reached the shell's tail, so no startup consumer can lose the initialization; an
+end marker a consumer emitted by itself does not count. The wrapper uses the same marker
 fragments as every command, so its echoed text cannot pass for the marker.
 
 ## Command construction

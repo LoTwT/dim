@@ -3554,7 +3554,7 @@ impl PtyProcessTree {
     /// Signals the terminal's foreground process group, where an interactive
     /// shell runs the command it is executing, and answers its leader when that
     /// group is not the shell's own.
-    pub fn kill_foreground_group(&self) -> Option<u32> {
+    pub(crate) fn kill_foreground_group(&self) -> Option<u32> {
         #[cfg(unix)]
         {
             let leader = self.master.process_group_leader()?;

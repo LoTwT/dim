@@ -1047,22 +1047,31 @@ async fn stopping_a_command_that_ignores_the_interrupt_leaves_no_process() {
     harness.shutdown().await;
 }
 
-/// A startup consumer cannot skip the initialization: the shell's `.zshrc`
-/// reads the first wrapper line, and the next copy must run it.
+/// A startup consumer cannot skip the initialization. The `.zshrc` lives in the
+/// shell's home, consumes the wrapper line up to the boundary before the final
+/// `printf`, and leaves the shell to run that `printf`: the end marker alone
+/// reaches the tail while the init never ran. `/bin/zsh` absent skips the case.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_startup_consumer_cannot_skip_the_init() {
-    let home = scratch("zsh-consumer");
-    std::fs::write(
-        home.join(".zshrc"),
-        "HISTFILE=/tmp/dim-consumer-history
-read -r __dim_init_line
-",
-    )
-    .unwrap();
-    let Some(platform) = zsh_platform(&home) else {
+    let Some(platform) = zsh_platform() else {
         return;
     };
     let harness = Harness::new(platform).await;
+    // The harness makes its cwd the shell's HOME.
+    std::fs::write(
+        harness.cwd.join(".zshrc"),
+        r#"HISTFILE=/tmp/dim-consumer-history
+__dim_buf=
+while true; do
+  read -k 1 __dim_ch || break
+  __dim_buf+=$__dim_ch
+  if [[ $__dim_buf == *"eval $'"* && $__dim_buf == *"'; " ]]; then
+    break
+  fi
+done
+"#,
+    )
+    .unwrap();
     let session = harness.session().await;
     harness
         .run(
@@ -1081,26 +1090,22 @@ read -r __dim_init_line
     harness.shutdown().await;
 }
 
-fn zsh_platform(home: &Path) -> Option<HostPlatform> {
+fn zsh_platform() -> Option<HostPlatform> {
     let zsh = "/bin/zsh";
     if !Path::new(zsh).is_file() {
         return None;
     }
-    let mut env: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    env.retain(|(key, _)| key != "HOME" && key != "SHELL");
-    env.push((OsString::from("HOME"), home.as_os_str().to_owned()));
-    env.push((OsString::from("SHELL"), OsString::from(zsh)));
     let runtime = ExecShellRuntime {
         executable_path: zsh.into(),
         edition: ShellEdition::Zsh,
         source: ShellSource::Fallback,
         output_encoding: OutputEncoding::Utf8,
     };
-    let mut platform = HostPlatform::current(ShellStatus::Available(runtime))
-        .unwrap()
-        .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default()));
-    platform.env = env;
-    Some(platform)
+    Some(
+        HostPlatform::current(ShellStatus::Available(runtime))
+            .unwrap()
+            .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default())),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
