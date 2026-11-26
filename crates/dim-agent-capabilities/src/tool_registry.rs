@@ -249,62 +249,6 @@ struct Offered {
     set: Arc<ToolSourceSet>,
 }
 
-/// Why a tool-mode transition settles: the operator changed the mode, or a
-/// registration made the chosen mode effective.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModeChangeCause {
-    Update,
-    Registration,
-}
-
-type ModeSettleHandler =
-    Arc<dyn Fn(ToolMode, ModeChangeCause) -> HostFuture<'static, ()> + Send + Sync>;
-
-/// The Session's internal mode-transition service: Goal registers a handler
-/// that settles a transition before the mode changes or is published.
-pub struct ModeTransition {
-    handlers: Mutex<Vec<(u64, ModeSettleHandler)>>,
-    next: std::sync::atomic::AtomicU64,
-}
-
-impl Default for ModeTransition {
-    fn default() -> Self {
-        Self {
-            handlers: Mutex::new(Vec::new()),
-            next: std::sync::atomic::AtomicU64::new(1),
-        }
-    }
-}
-
-impl ModeTransition {
-    /// Registers a handler until its returned id is removed.
-    pub fn register(&self, handler: ModeSettleHandler) -> u64 {
-        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.handlers.lock().unwrap().push((id, handler));
-        id
-    }
-    pub fn remove(&self, id: u64) {
-        self.handlers
-            .lock()
-            .unwrap()
-            .retain(|(held, _)| *held != id);
-    }
-    /// Runs every registered handler in registration order.
-    pub async fn settle(&self, mode: ToolMode, cause: ModeChangeCause) -> Result<(), HostError> {
-        let handlers: Vec<_> = self
-            .handlers
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(_, handler)| handler.clone())
-            .collect();
-        for handler in handlers {
-            handler(mode, cause).await?;
-        }
-        Ok(())
-    }
-}
-
 pub struct ToolRegistry {
     /// Every host tool, in the host's order; a part cannot register one of
     /// these names.
@@ -324,15 +268,6 @@ pub struct ToolRegistry {
     /// The operator's chosen mode; the effective one may fall back to
     /// `normal` when its entry tool is not mounted.
     mode: Mutex<ToolMode>,
-    /// The mode an entry registration is settling; turns pinned to it wait
-    /// before their first request.
-    settling: watch::Sender<Option<ToolMode>>,
-    /// A registration whose settle failed: the mode stays `normal` until a
-    /// later settle succeeds.
-    settle_failed: Mutex<Option<ToolMode>>,
-    /// Serializes mode updates and registration settlements.
-    mode_gate: tokio::sync::Mutex<()>,
-    transition: Arc<ModeTransition>,
     session_id: String,
     config: Arc<SessionConfig>,
     /// Serializes refreshes from read to commit, so an earlier read never
@@ -471,16 +406,7 @@ impl ToolRegistry {
             .collect()
     }
     /// The mode in force if `mode` were chosen now.
-    pub fn settling(&self) -> Option<ToolMode> {
-        *self.settling.borrow()
-    }
     pub fn effective_of_mode(&self, mode: ToolMode) -> ToolMode {
-        if *self.settle_failed.lock().unwrap() == Some(mode) {
-            return ToolMode::Normal;
-        }
-        if *self.settling.borrow() == Some(mode) {
-            return mode;
-        }
         let declared = self.snapshot().0;
         match mode.entry_tool() {
             Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
@@ -490,60 +416,6 @@ impl ToolRegistry {
     /// The operator's chosen mode.
     pub fn tool_mode(&self) -> ToolMode {
         *self.mode.lock().unwrap()
-    }
-    /// Marks an entry tool as registering: a turn that pins `mode` now waits
-    /// for the registration's settle before its first request.
-    pub fn begin_entry(&self, mode: ToolMode) {
-        *self.settle_failed.lock().unwrap() = None;
-        if self.tool_mode() == mode {
-            self.settling.send_replace(Some(mode));
-        }
-    }
-    /// Settles the registration `begin_entry` announced, then lets pinned
-    /// turns continue.
-    pub async fn settle_entry(&self, mode: ToolMode) -> Result<(), HostError> {
-        if *self.settling.borrow() != Some(mode) {
-            return Ok(());
-        }
-        let _gate = self.mode_gate.lock().await;
-        if self.tool_mode() != mode || !self.entry_declared(mode) {
-            self.settling.send_replace(None);
-            return Ok(());
-        }
-        let result = self
-            .transition
-            .settle(mode, ModeChangeCause::Registration)
-            .await;
-        *self.settle_failed.lock().unwrap() = result.as_ref().err().map(|_| mode);
-        let _ = self.snapshot();
-        self.settling.send_replace(None);
-        result
-    }
-    /// Waits until `mode`'s registration settlement finishes.
-    pub async fn await_entry(&self, mode: ToolMode) {
-        let mut settling = self.settling.subscribe();
-        while *settling.borrow_and_update() == Some(mode) {
-            if settling.changed().await.is_err() {
-                break;
-            }
-        }
-    }
-    /// Holds the mode gate: a Goal change that reads the mode waits for a
-    /// concurrent update settlement.
-    pub async fn lock_mode(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mode_gate.lock().await
-    }
-    /// Settles an operator update under a gate the caller already holds.
-    pub async fn settle_update_locked(&self, mode: ToolMode) -> Result<(), HostError> {
-        self.transition.settle(mode, ModeChangeCause::Update).await
-    }
-    /// Whether `mode`'s entry tool is declared; refreshes so a registration
-    /// is adopted before it is checked.
-    fn entry_declared(&self, mode: ToolMode) -> bool {
-        let Some(entry) = mode.entry_tool() else {
-            return false;
-        };
-        self.snapshot().0.iter().any(|tool| tool.name == entry)
     }
     /// The mode in force: the chosen one, or `normal` when its entry tool is
     /// not mounted.
@@ -561,9 +433,6 @@ impl ToolRegistry {
     }
     fn effective_of(&self, declared: &[ToolDefinition]) -> ToolMode {
         let mode = self.tool_mode();
-        if *self.settle_failed.lock().unwrap() == Some(mode) {
-            return ToolMode::Normal;
-        }
         match mode.entry_tool() {
             Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
             _ => ToolMode::Normal,
@@ -572,7 +441,6 @@ impl ToolRegistry {
     /// Replaces the live mode. It does not re-adopt a tool set: the next
     /// request projects the same callable set under the new mode.
     pub fn set_tool_mode(&self, mode: ToolMode) {
-        *self.settle_failed.lock().unwrap() = None;
         *self.mode.lock().unwrap() = mode;
     }
     /// The declarations of `mode`'s visible tools in their mounted order.
@@ -1045,7 +913,7 @@ fn visible_under(mode: ToolMode, name: &str) -> bool {
     match mode {
         ToolMode::Normal => !matches!(name, "codemode" | "execute"),
         ToolMode::Codemode => matches!(name, "codemode" | "skill"),
-        ToolMode::Shell => matches!(name, "execute" | "ask_user" | "recall"),
+        ToolMode::Shell => matches!(name, "execute" | "ask_user" | "goal_update" | "recall"),
     }
 }
 
@@ -1092,7 +960,6 @@ pub fn definition(name: &str, description: &str, schema: serde_json::Value) -> T
 pub struct ToolRegistryPlugin {
     session: InstanceId,
     registry: Key<ToolRegistry>,
-    transition: Key<ModeTransition>,
     view: Key<ToolSourcesView>,
     host: Key<ToolHost>,
     config: Key<SessionConfig>,
@@ -1104,7 +971,6 @@ impl ToolRegistryPlugin {
         Ok(Self {
             session: names.instance(dim_agent_runtime::SESSION_GROUP)?,
             registry: names.key()?,
-            transition: names.key()?,
             view: names.key()?,
             host: names.key()?,
             config: names.key()?,
@@ -1160,10 +1026,6 @@ impl DynPlugin for ToolRegistryPlugin {
                 offered: Mutex::default(),
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
-                settling: watch::Sender::new(None),
-                settle_failed: Mutex::new(None),
-                mode_gate: tokio::sync::Mutex::new(()),
-                transition: Arc::new(ModeTransition::default()),
                 session_id: identity.session_id.clone(),
                 config: config.clone(),
                 refreshing: Mutex::default(),
@@ -1223,7 +1085,6 @@ impl DynPlugin for ToolRegistryPlugin {
                 Arc::new(ForeignRegistry(registry.clone())),
             )?;
             ctx.provide_at(self.registry.clone(), registry.clone())?;
-            ctx.provide_at(self.transition.clone(), registry.transition.clone())?;
             Ok(Effect::Done)
         })
     }
@@ -1264,10 +1125,6 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(ToolMode::Normal),
-            settling: watch::Sender::new(None),
-            settle_failed: Mutex::new(None),
-            mode_gate: tokio::sync::Mutex::new(()),
-            transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),
@@ -1298,10 +1155,6 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(mode),
-            settling: watch::Sender::new(None),
-            settle_failed: Mutex::new(None),
-            mode_gate: tokio::sync::Mutex::new(()),
-            transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),

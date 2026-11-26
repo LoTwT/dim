@@ -1698,7 +1698,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
         ("mentionIndex", "host-resource"),
-        ("modeTransition", "control"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),
         ("prepareContextHost", "hot-path"),

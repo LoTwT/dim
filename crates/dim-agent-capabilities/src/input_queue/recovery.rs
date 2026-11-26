@@ -438,7 +438,7 @@ impl InputQueue {
         for (_, decision) in decisions {
             (published, _) = self.write(vec![decision], published)?;
         }
-        let tool_mode = self.tools.effective_tool_mode_now();
+        let tool_mode = self.tools.effective_tool_mode();
         let releases = release
             .into_iter()
             .flat_map(|id| state.release(&id))

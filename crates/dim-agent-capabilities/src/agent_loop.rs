@@ -229,26 +229,6 @@ impl AgentLoop {
     }
     /// Starts a turn when idle and an applied input drives one; nothing
     /// starts while a compaction step runs.
-    /// Starts the turn once any entry registration that would pin it has
-    /// settled, so the turn's consumed inputs include the pause the settle
-    /// writes.
-    fn start_when_settled(self: &Arc<Self>, slot: &mut Option<Turn>) -> Result<()> {
-        if let Some(mode) = self.binding.settling() {
-            let owner = self.clone();
-            self.tasks.spawn(async move {
-                tokio::select! {
-                    _ = owner.lifecycle.cancelled() => return,
-                    _ = owner.binding.await_mode(mode) => {}
-                }
-                let mut slot = owner.turn.lock().unwrap();
-                if let Err(error) = owner.try_start(&mut slot) {
-                    owner.dispatcher.fail(error);
-                }
-            });
-            return Ok(());
-        }
-        self.try_start(slot)
-    }
     fn try_start(&self, slot: &mut Option<Turn>) -> Result<()> {
         if slot.is_some() || self.compaction.lock().unwrap().running() {
             return Ok(());
@@ -603,7 +583,7 @@ impl AgentLoop {
             cancel.cancel();
         }
     }
-    async fn rebuild(self: &Arc<Self>) -> Result<u64> {
+    async fn rebuild(&self) -> Result<u64> {
         let through = self.timeline.committed();
         let equal = |path: &str, value: serde_json::Value| QueryFilter::Compare {
             left: QueryOperand::Field { path: path.into() },
@@ -1209,7 +1189,7 @@ impl AgentLoop {
         *slot = restored;
         self.publish(&slot);
         match slot.as_mut() {
-            None => self.start_when_settled(&mut slot)?,
+            None => self.try_start(&mut slot)?,
             Some(turn) => {
                 if let Some(request) = turn
                     .request
@@ -1271,7 +1251,6 @@ impl AgentLoop {
         let mut through = through;
         self.tasks.spawn(async move {
             let work = AssertUnwindSafe(async {
-                owner.binding.await_mode(tool_mode).await;
                 through = through.max(owner.timeline.sequence());
                 if let Some(mut source) = recovery {
                     owner
@@ -1444,7 +1423,7 @@ impl AgentLoop {
                 let drives = input.mode != InputMode::Append;
                 self.pending.lock().unwrap().push(input);
                 match slot.as_mut() {
-                    None => return self.start_when_settled(&mut slot),
+                    None => return self.try_start(&mut slot),
                     Some(turn) if drives => self.steer(turn),
                     Some(_) => {}
                 }
@@ -1534,7 +1513,7 @@ impl AgentLoop {
                     return Ok(());
                 }
                 drop(compaction);
-                return self.start_when_settled(&mut slot);
+                return self.try_start(&mut slot);
             }
             EventKind::ContextCompact(_) => {
                 let mut compaction = self.compaction.lock().unwrap();
@@ -1611,7 +1590,7 @@ impl AgentLoop {
                         self.next_model(turn, None, deferred, event.sequence)
                     }
                     Some(_) => Ok(()),
-                    None => self.start_when_settled(&mut slot),
+                    None => self.try_start(&mut slot),
                 };
             }
             // Results closing calls that were never dispatched settle no batch

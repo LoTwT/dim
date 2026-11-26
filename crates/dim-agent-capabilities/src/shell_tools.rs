@@ -13,7 +13,7 @@ use crate::{
 use dim_agent_runtime::{AgentBuilder, Names};
 use dim_agent_types::{ToolCall, ToolResult};
 use rutis::Ctx;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -131,7 +131,6 @@ impl DynPlugin for ShellToolsPlugin {
             let tree = ctx.require_at(&self.tree)?;
             let mut definition = execute_definition(&platform);
             definition.risk = Some("execute_process".into());
-            tools.begin_entry(dim_agent_types::ToolMode::Shell);
             tools.register(
                 ctx,
                 ToolContribution {
@@ -139,12 +138,6 @@ impl DynPlugin for ShellToolsPlugin {
                     handler: Arc::new(ShellTool { tree }),
                 },
             )?;
-            tools
-                .settle_entry(dim_agent_types::ToolMode::Shell)
-                .await
-                .map_err(|error| {
-                    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
-                })?;
             Ok(Effect::Done)
         })
     }

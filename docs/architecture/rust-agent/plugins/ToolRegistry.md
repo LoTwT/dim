@@ -40,20 +40,17 @@ force ([agent tool modes](../../../design/agent-tool-modes.md)):
 | --- | --- | --- |
 | `normal` | every mounted tool except `codemode` and `execute` | none |
 | `codemode` | `codemode` and `skill` | every mounted tool except `codemode` |
-| `shell` | `execute`, `ask_user` and `recall` | none |
+| `shell` | `execute`, `ask_user`, `goal_update` and `recall` | none |
 
 `effective_tool_mode` falls back to `normal` when the mode's entry tool is not
 mounted. `session.tool_mode.update` replaces the live mode through
 `set_tool_mode`; the next input application pins it, and neither the projection
 nor the update re-adopts the callable set.
 
-The mode gate is one lock shared by the operator's update, an entry
-registration and Goal's `set`/`resume`. The update settles through the
-internal `ModeTransition` service while holding it, then writes the record
-and replaces the live mode before releasing it. An entry tool marks its
-registration, registers and settles through the same service; a turn that
-pins the registering mode waits in its preparation task until the settlement
-publishes, and its cutoff includes what the settlement committed.
+The operator's update writes the record and replaces the live mode; a
+registration is an ordinary source refresh. A turn's pin is the mode recorded
+on the input it started from, and its request declares that mode's visible
+set.
 
 ## Handler contract
 

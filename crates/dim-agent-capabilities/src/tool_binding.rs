@@ -78,19 +78,9 @@ fn current(registry: &ToolRegistry) -> (ToolSetAdoption, Vec<Arc<ToolSourceSet>>
 }
 
 impl ToolBinding {
-    /// The mode an entry registration is settling, if any.
-    pub fn settling(&self) -> Option<ToolMode> {
-        self.registry.settling()
-    }
-
     /// The mode in force for a step with no open turn.
     pub fn effective_mode(&self) -> ToolMode {
         self.registry.effective_tool_mode_now()
-    }
-
-    /// Waits for an entry registration that pinned `mode` to settle.
-    pub async fn await_mode(&self, mode: ToolMode) {
-        self.registry.await_entry(mode).await;
     }
 
     /// Fixes the handlers of `request_id` to the tools its prefix (through

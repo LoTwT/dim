@@ -5,7 +5,7 @@
 
 use crate::fold::{self, Conclusion, ConclusionAction, Decision, Fold, TurnEnd};
 use crate::text::{self, GoalTexts, Live};
-use dim_agent_capabilities::{timeline_tree::TreeCommands, tool_registry::ToolRegistry};
+use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick,
@@ -14,13 +14,12 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, InputBlock,
-    InputMessageData, InputMode, InterruptScope, TurnEndData, TurnOutcome,
+    InputMessageData, InterruptScope, TurnEndData, TurnOutcome,
 };
 use dim_app_server::settings::{Settings, SettingsScope};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Deserializer};
-use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     num::NonZeroU64,
@@ -53,7 +52,6 @@ pub(crate) enum Change {
         objective: String,
     },
     Pause,
-    PauseMode,
     Resume,
     Clear,
     Report {
@@ -70,7 +68,6 @@ impl Change {
             Self::Set { objective, judge } => text::set(branch, objective, *judge),
             Self::Edit { objective } => text::edit(branch, objective),
             Self::Pause => text::pause(branch),
-            Self::PauseMode => text::pause_mode(branch),
             Self::Resume => text::resume(branch),
             Self::Clear => text::clear(branch),
             Self::Report { completed, summary } => text::report(
@@ -117,34 +114,6 @@ impl Changes {
             .and_then(Weak::upgrade)
             .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
         owner.change(change).await
-    }
-    /// The input ids this branch's Goal wrote that may still be queued.
-    pub(crate) fn queued(&self, key: &TimelineKey) -> Vec<String> {
-        self.owners
-            .lock()
-            .unwrap()
-            .get(key)
-            .and_then(Weak::upgrade)
-            .map(|owner| owner.queued.lock().unwrap().clone())
-            .unwrap_or_default()
-    }
-    /// Waits for a pause a failed settle left unconfirmed applied.
-    pub(crate) async fn await_pause(&self, key: &TimelineKey) -> Result<(), AgentError> {
-        let owner = self
-            .owners
-            .lock()
-            .unwrap()
-            .get(key)
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
-        owner.await_pending_pause().await
-    }
-    /// Forgets one id a settle withdrew; a failed withdrawal keeps it for a
-    /// retry.
-    pub(crate) fn forget_queued(&self, key: &TimelineKey, input_id: &str) {
-        if let Some(owner) = self.owners.lock().unwrap().get(key).and_then(Weak::upgrade) {
-            owner.queued.lock().unwrap().retain(|id| id != input_id);
-        }
     }
     /// Registers `owner` for its branch; the returned handle withdraws it.
     fn register(&self, key: TimelineKey, owner: &Arc<Owner>) -> Weak<Owner> {
@@ -211,7 +180,6 @@ pub struct GoalBranch {
     session: Key<SessionLifecycle>,
     texts: Arc<GoalTexts>,
     changes: Changes,
-    tools: Key<ToolRegistry>,
 }
 
 impl GoalBranch {
@@ -226,7 +194,6 @@ impl GoalBranch {
             session: names.key()?,
             texts,
             changes,
-            tools: names.key()?,
         })
     }
 }
@@ -244,7 +211,6 @@ impl DynPlugin for GoalBranch {
             self.identity.erase(),
             self.phase.erase(),
             self.session.erase(),
-            self.tools.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -256,7 +222,6 @@ impl DynPlugin for GoalBranch {
             let identity = ctx.require_at(&self.identity)?;
             let phase = ctx.require_at(&self.phase)?;
             let session = ctx.require_at(&self.session)?;
-            let tools = ctx.require_at(&self.tools)?;
             let stop = CancellationToken::new();
             let (resolved, _) = watch::channel(false);
             let (stepped, _) = watch::channel(0);
@@ -273,7 +238,6 @@ impl DynPlugin for GoalBranch {
                 texts: self.texts.clone(),
                 phase: phase.clone(),
                 session: session.clone(),
-                tools,
                 stop: stop.clone(),
                 tasks: TaskTracker::new(),
                 work: TaskTracker::new(),
@@ -281,8 +245,6 @@ impl DynPlugin for GoalBranch {
                 stepped,
                 ready,
                 write_status,
-                queued: Mutex::default(),
-                pause_pending: Mutex::default(),
                 state: Mutex::new(State::default()),
                 write: tokio::sync::Mutex::new(()),
             });
@@ -520,10 +482,6 @@ struct Owner {
     texts: Arc<GoalTexts>,
     phase: Arc<BranchLifecycle>,
     session: Arc<SessionLifecycle>,
-    tools: Arc<ToolRegistry>,
-    queued: Mutex<Vec<String>>,
-    /// The pause input whose application the settle still owes.
-    pause_pending: Mutex<Option<String>>,
     stop: CancellationToken,
     tasks: TaskTracker,
     work: TaskTracker,
@@ -560,11 +518,7 @@ impl Owner {
     /// Commits one Goal input on this branch and remembers it as the branch's
     /// newest Goal write (R5).
     async fn write(&self, input: InputMessageData) -> Result<Arc<AgentEvent>, AgentError> {
-        let tracked = queued_goal_input(&input);
         let event = self.tree.input(self.branch_id.clone(), input).await?;
-        if tracked {
-            self.queued.lock().unwrap().push(event.id.clone());
-        }
         let mut state = self.state.lock().unwrap();
         state.last_write = state.last_write.max(event.sequence);
         drop(state);
@@ -579,88 +533,15 @@ impl Owner {
         input: InputMessageData,
         head: u64,
     ) -> Result<Option<Arc<AgentEvent>>, AgentError> {
-        let tracked = queued_goal_input(&input);
         let event = self
             .tree
             .input_if_head(self.branch_id.clone(), input, head)
             .await?;
-        if tracked && let Some(event) = &event {
-            self.queued.lock().unwrap().push(event.id.clone());
-        }
         if let Some(event) = &event {
             let mut state = self.state.lock().unwrap();
             state.last_write = state.last_write.max(event.sequence);
         }
         Ok(event)
-    }
-
-    /// Waits until the InputQueue applies the input `input_id`; the first
-    /// Shell request must see the pause this settle wrote.
-    async fn await_applied(&self, input_id: &str) -> Result<(), AgentError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let query = TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: None,
-                through: None,
-                include_publishing: false,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::And {
-                        conditions: vec![
-                            QueryFilter::In {
-                                value: QueryOperand::Field {
-                                    path: "kind".into(),
-                                },
-                                values: vec![json!("input/applied")],
-                            },
-                            QueryFilter::Compare {
-                                left: QueryOperand::Field {
-                                    path: "data.input_id".into(),
-                                },
-                                comparison: QueryComparison::Eq,
-                                right: QueryOperand::Value {
-                                    value: json!(input_id),
-                                },
-                            },
-                        ],
-                    }),
-                    select: QuerySelect::Fields {
-                        fields: vec!["id".into()],
-                    },
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::new(1).unwrap(),
-                    after: None,
-                }),
-            };
-            let reply = tokio::select! {
-                _ = self.stop.cancelled() => return Err(AgentError::Closed("Goal".into())),
-                result = self.timeline.query(query) => result?,
-            };
-            if matches!(&reply.result, QueryOutput::Rows { rows } if !rows.is_empty()) {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(AgentError::Cancelled(
-                    "the mode pause was not applied".into(),
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    /// Waits for a pause a failed settle recorded but did not confirm applied.
-    async fn await_pending_pause(self: &Arc<Self>) -> Result<(), AgentError> {
-        let pending = self.pause_pending.lock().unwrap().clone();
-        let Some(input_id) = pending else {
-            return Ok(());
-        };
-        self.await_applied(&input_id).await?;
-        *self.pause_pending.lock().unwrap() = None;
-        Ok(())
     }
 
     /// Waits until this generation's rebuild has returned and folded the facts
@@ -798,7 +679,7 @@ impl Owner {
                 let operation = match &change {
                     Change::Set { .. } => "set",
                     Change::Edit { .. } => "edit",
-                    Change::Pause | Change::PauseMode => "pause",
+                    Change::Pause => "pause",
                     Change::Resume => "resume",
                     Change::Clear => "clear",
                     Change::Report {
@@ -852,16 +733,6 @@ impl Owner {
                 };
                 break events;
             };
-            if let EventKind::InputMessage(data) = &events[1].kind
-                && queued_goal_input(data)
-            {
-                self.queued.lock().unwrap().push(events[1].id.clone());
-            }
-            if matches!(change, Change::PauseMode) {
-                *self.pause_pending.lock().unwrap() = Some(events[1].id.clone());
-                self.await_applied(&events[1].id).await?;
-                *self.pause_pending.lock().unwrap() = None;
-            }
             let sequence = events[1].sequence;
             let mut lock = self.state.lock().unwrap();
             lock.recorded = lock.recorded.max(sequence);
@@ -2235,11 +2106,6 @@ impl Owner {
                     let Some(Decision::Continuation { count, idle }) = decision else {
                         return Ok(());
                     };
-                    if self.tools.effective_tool_mode() == dim_agent_types::ToolMode::Shell {
-                        drop(write);
-                        self.change(Change::PauseMode).await?;
-                        return Ok(());
-                    }
                     let input =
                         text::continuation(&self.branch_id, count, limit, idle, after, &self.texts);
                     if self.write_if_head(input, through).await?.is_some() {
@@ -2901,12 +2767,4 @@ pub(crate) fn live_inputs(condition: QueryFilter) -> QueryFilter {
             },
         ],
     }
-}
-
-fn queued_goal_input(input: &InputMessageData) -> bool {
-    input.mode == Some(InputMode::Queue)
-        && input
-            .submission_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("goal:"))
 }

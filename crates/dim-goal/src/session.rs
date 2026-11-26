@@ -7,14 +7,14 @@
 use crate::branch::{Change, Changes};
 use crate::text::{self, OBJECTIVE_LIMIT, SUMMARY_LIMIT};
 use dim_agent_capabilities::{
-    host::{HostError, HostFuture, ToolExecutionContext},
+    host::{HostFuture, ToolExecutionContext},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     timeline_tree::TreeCommands,
-    tool_registry::{ModeChangeCause, ModeTransition, ToolContribution, ToolHandler, ToolRegistry},
+    tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
-use dim_agent_types::{GoalViewStatus, ToolCall, ToolDefinition, ToolMode, ToolResult, ToolSource};
+use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -24,7 +24,6 @@ use tokio_util::sync::CancellationToken;
 pub struct GoalSession {
     tree: Key<TreeCommands>,
     tools: Key<ToolRegistry>,
-    transition: Key<ModeTransition>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
     identity: Key<SessionIdentity>,
@@ -36,7 +35,6 @@ impl GoalSession {
         Ok(Self {
             tree: names.key()?,
             tools: names.key()?,
-            transition: names.key()?,
             methods: names.key()?,
             guide: names.key()?,
             identity: names.key()?,
@@ -53,7 +51,6 @@ impl DynPlugin for GoalSession {
         vec![
             self.tree.erase(),
             self.tools.erase(),
-            self.transition.erase(),
             self.methods.erase(),
             self.guide.erase(),
             self.identity.erase(),
@@ -63,7 +60,6 @@ impl DynPlugin for GoalSession {
         Box::pin(async move {
             let tree = ctx.require_at(&self.tree)?;
             let tools = ctx.require_at(&self.tools)?;
-            let transition = ctx.require_at(&self.transition)?;
             let methods = ctx.require_at(&self.methods)?;
             let guide = ctx.require_at(&self.guide)?;
             let identity = ctx.require_at(&self.identity)?;
@@ -95,90 +91,10 @@ impl DynPlugin for GoalSession {
                     }),
                 },
             )?;
-            let settle_tree = tree.clone();
-            let settle_changes = self.changes.clone();
-            let settle_methods = methods.clone();
-            let settle_session = identity.session_id.clone();
-            let settle =
-                transition.register(Arc::new(move |mode: ToolMode, _cause: ModeChangeCause| {
-                    let tree = settle_tree.clone();
-                    let changes = settle_changes.clone();
-                    let methods = settle_methods.clone();
-                    let session_id = settle_session.clone();
-                    Box::pin(async move {
-                        if mode != ToolMode::Shell {
-                            return Ok(());
-                        }
-                        for info in tree.list() {
-                            let key = TimelineKey {
-                                session_id: session_id.clone(),
-                                branch_id: info.id.clone(),
-                            };
-                            let Ok(read) = changes.current(&key).await else {
-                                continue;
-                            };
-                            if let Err(error) = changes.await_pause(&key).await {
-                                return Err(HostError::failed(error.to_string()));
-                            }
-                            let active = matches!(
-                                read.goal.as_ref().map(|goal| &goal.status),
-                                Some(GoalViewStatus::Active)
-                            );
-                            if active
-                                && let Err(error) = changes.change(&key, Change::PauseMode).await
-                            {
-                                return Err(HostError::failed(error.to_string()));
-                            }
-                            let queued = changes.queued(&key);
-                            if queued.is_empty() {
-                                continue;
-                            }
-                            let Some(provider) = methods.provider("session.input.withdraw") else {
-                                return Err(HostError::failed(
-                                    "the input queue is not loaded; Goal inputs are still held",
-                                ));
-                            };
-                            for input_id in queued {
-                                let params = json!({
-                                    "sessionId": session_id,
-                                    "branchId": key.branch_id,
-                                    "inputId": input_id,
-                                });
-                                match provider.accept(
-                                    "session.input.withdraw".into(),
-                                    params,
-                                    None,
-                                    CancellationToken::new(),
-                                    |_: serde_json::Value| {},
-                                ) {
-                                    Ok(accepted) => match accepted.reply.await {
-                                        Ok(Ok(_)) => changes.forget_queued(&key, &input_id),
-                                        Ok(Err(error)) => {
-                                            return Err(HostError::failed(format!("{error:?}")));
-                                        }
-                                        Err(error) => {
-                                            return Err(HostError::failed(format!("{error:?}")));
-                                        }
-                                    },
-                                    Err(error) => {
-                                        return Err(HostError::failed(format!("{error:?}")));
-                                    }
-                                }
-                            }
-                        }
-                        Ok(())
-                    })
-                }));
-            let settle_transition = transition.clone();
-            ctx.effect(move || async move {
-                settle_transition.remove(settle);
-                Ok(())
-            })?;
             let owner = Arc::new(Owner {
                 tree,
                 identity,
                 changes: self.changes.clone(),
-                tools: tools.clone(),
             });
             methods.register(
                 ctx,
@@ -231,7 +147,6 @@ struct Owner {
     tree: Arc<TreeCommands>,
     identity: Arc<SessionIdentity>,
     changes: Changes,
-    tools: Arc<ToolRegistry>,
 }
 
 impl Owner {
@@ -252,20 +167,6 @@ impl Owner {
         let op = method
             .strip_prefix("session.goal.")
             .ok_or_else(|| RpcError::invalid(format!("unknown method {method}")))?;
-        let mode_gate = matches!(op, "set" | "resume").then(|| self.tools.lock_mode());
-        let _mode_gate = match mode_gate {
-            Some(gate) => Some(gate.await),
-            None => None,
-        };
-        if matches!(op, "set" | "resume")
-            && self.tools.effective_tool_mode_now() == dim_agent_types::ToolMode::Shell
-        {
-            return Err(RpcError::app(
-                -32000,
-                "goal_unavailable_in_shell_mode",
-                "The goal cannot be set or resumed while shell mode is in force",
-            ));
-        }
         let change = match op {
             "set" | "edit" => {
                 let objective =

@@ -33,7 +33,6 @@ impl DynPlugin for ModeEntryPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let tools = ctx.require_at(&self.tools)?;
-            tools.begin_entry(ToolMode::Shell);
             tools.register(
                 ctx,
                 ToolContribution {
@@ -41,11 +40,6 @@ impl DynPlugin for ModeEntryPlugin {
                     handler: Arc::new(Noop),
                 },
             )?;
-            tools.settle_entry(ToolMode::Shell).await.map_err(|error| {
-                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
-                    error.to_string().into(),
-                ))
-            })?;
             Ok(Effect::Done)
         })
     }

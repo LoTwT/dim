@@ -432,23 +432,6 @@ pub fn pause(branch: &str) -> InputMessageData {
     )
 }
 
-pub fn pause_mode(branch: &str) -> InputMessageData {
-    input(
-        vec![Block::new(
-            vec![
-                ("kind", "goal".to_owned()),
-                ("op", "pause".to_owned()),
-                ("reason", "mode".to_owned()),
-                ("branch", branch.to_owned()),
-            ],
-            vec![format!(
-                "The Session switched to shell mode and paused the goal for branch {branch}."
-            )],
-        )],
-        InputMode::Append,
-    )
-}
-
 pub fn resume(branch: &str) -> InputMessageData {
     input(
         vec![Block::new(
