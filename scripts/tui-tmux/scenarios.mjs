@@ -534,6 +534,34 @@ const scenarios = [
     },
   },
   {
+    name: 'scrollback_click_places_draft_cursor',
+    area: 'composer',
+    title: 'Scrollback captures clicks only while editing and inserts at the clicked cell',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--scrollback'], {waitForComposer: true, cols: 60});
+      const mouseEnabled = () => tui.tmuxRun(['display-message', '-p', '-t', terminal.session, '#{mouse_any_flag}']).trim() === '1';
+      assert(!mouseEnabled(), 'empty scrollback draft preserves native selection');
+      const prefix = 'a'.repeat(60);
+      terminal.send(`${prefix}界bc`);
+      terminal.key('C-j');
+      terminal.send('last line');
+      await terminal.waitFor('last line');
+      assert(mouseEnabled(), 'editing enables terminal mouse reporting');
+      const lines = terminal.capture({join: false}).split('\n');
+      const row = lines.findIndex((line) => line.includes('界bc'));
+      assert(row > 0 && lines[row - 1].includes('aaaa'), 'target is on a wrapped row');
+      const report = `\x1b[<0;${lines[row].indexOf('界') + 3};${row + 1}`;
+      terminal.bytes(Buffer.from(`${report}M${report}m`));
+      terminal.send('X');
+      terminal.key('Enter');
+      await terminal.waitFor(ANSWER);
+      assert.equal(lastTurnText(tui.model), `${prefix}界Xbc\nlast line`);
+      assert(!mouseEnabled(), 'submitting releases the mouse');
+      await exitWith(terminal);
+    },
+  },
+  {
     name: 'composer_edits_multiline_and_stores_a_large_paste',
     area: 'composer',
     title: 'The composer edits a newline draft and stores a multi-line paste as an attachment',

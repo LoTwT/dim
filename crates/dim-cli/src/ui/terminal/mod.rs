@@ -319,10 +319,10 @@ impl Terminal {
         modes::is_live(Mode::Mouse)
     }
 
-    /// Turns mouse reporting on or off on the alternate screen; off hands
+    /// Turns mouse reporting on or off; off hands
     /// selection and the wheel back to the terminal.
     pub fn set_mouse(&mut self, on: bool) -> io::Result<()> {
-        if on == self.mouse() || !modes::is_live(Mode::AltScreen) {
+        if on == self.mouse() {
             return Ok(());
         }
         if on {

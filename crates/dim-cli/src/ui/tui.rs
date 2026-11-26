@@ -128,7 +128,7 @@ enum Placement {
     },
 }
 
-/// `config.json` key of the fullscreen mouse switch (`"on"` / `"off"`).
+/// `config.json` key of the mouse switch (`"on"` / `"off"`).
 const MOUSE_KEY: &str = "tuiMouseMode";
 
 /// Where a palette action or a sent message moves the fullscreen view.
@@ -400,11 +400,16 @@ fn run_terminal(
             app.host.shutdown();
             return code;
         }
-        let mouse = app.mouse && !app.native_selection();
+        let mouse = app.mouse
+            && if full.is_some() {
+                !app.native_selection()
+            } else {
+                app.keyboard_free() && !app.composer.is_empty()
+            };
         if !mouse && let Some(full) = &mut full {
             full.cancel_click();
         }
-        if full.is_some() && terminal.mouse() != mouse && terminal.set_mouse(mouse).is_err() {
+        if terminal.set_mouse(mouse).is_err() {
             let code = terminal.lost();
             app.host.shutdown();
             return code;
@@ -571,7 +576,17 @@ fn run_terminal(
                 }
             }
             Wait::Event(InputEvent::Mouse(event)) => {
-                let Some(full) = &mut full else { continue };
+                let Some(full) = &mut full else {
+                    if mouse
+                        && event.kind == crate::ui::terminal::MouseKind::Press
+                        && screen.size() == terminal.size()
+                        && let Some((area, cell)) = screen.composer_hit(event.column, event.row)
+                    {
+                        app.composer.click(cell, area);
+                        dirty = true;
+                    }
+                    continue;
+                };
                 dirty |= full.resize(terminal.size());
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
@@ -6592,7 +6607,7 @@ impl App {
             }
         }
         let box_top = live.len();
-        if self.fullscreen && self.prompt.is_none() && !palette_overlay {
+        if self.prompt.is_none() && !palette_overlay {
             frame.composer = Some(Rect::new(
                 (MARGIN + 2 + prompt_width) as u16,
                 (box_top + 1 - frame.dock) as u16,
