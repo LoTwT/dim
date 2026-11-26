@@ -128,6 +128,8 @@ impl Screen {
         self.size
     }
 
+    /// Maps a screen cell to the rendered composer box and cell, keeping screen columns
+    /// and using dock-relative rows. Cells outside the visible editor return `None`.
     pub fn composer_hit(&self, x: u16, y: u16) -> Option<(Rect, Position)> {
         let (area, dock_rows) = self.composer?;
         let row = y.checked_sub(self.top)?;
@@ -899,6 +901,25 @@ mod tests {
             Screen::new(SIZE, sync),
             Emu::new(SIZE.0 as usize, SIZE.1 as usize),
         )
+    }
+
+    #[test]
+    fn composer_click_tracks_the_visible_box_in_clipped_and_padded_frames() {
+        let (mut screen, mut emu) = setup(true);
+        screen.set_origin(0);
+        for tail in [10, 1] {
+            let mut rows = vec!["tail"; tail];
+            rows.extend(["border", "first", "second", "status"]);
+            let mut f = docked(&rows, tail, None);
+            let area = Rect::new(3, 1, 8, 2);
+            f.composer = Some(area);
+            drive(&mut screen, &mut emu, &f);
+            let drawn = emu.rows_text();
+            let y = drawn.iter().position(|row| row == "second").unwrap() as u16;
+            assert_eq!(screen.composer_hit(5, y), Some((area, Position::new(5, 2))));
+            assert_eq!(screen.composer_hit(5, y - 2), None);
+            assert_eq!(screen.composer_hit(2, y), None);
+        }
     }
 
     #[test]

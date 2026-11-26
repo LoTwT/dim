@@ -470,6 +470,7 @@ fn run_terminal(
                 std::env::var_os("TERMUX_VERSION").is_some(),
             );
             if reflow || !keyboard {
+                terminal.discard_queued_mouse();
                 let rows = app.reflow_history(size.0 as usize);
                 let frame = app.frame(size);
                 let wanted = screen.wanted_for(size, frame.live.len());
@@ -493,7 +494,10 @@ fn run_terminal(
             let frame = app.frame(size);
             let bytes = match &mut full {
                 Some(full) => full.render(&frame, size, &app.palette, &app),
-                None => screen.render(&frame, size),
+                None => {
+                    terminal.discard_queued_mouse();
+                    screen.render(&frame, size)
+                }
             };
             if terminal.write(&bytes).is_err() || terminal.write_failed() {
                 let code = terminal.lost();
@@ -578,6 +582,8 @@ fn run_terminal(
             Wait::Event(InputEvent::Mouse(event)) => {
                 let Some(full) = &mut full else {
                     if mouse
+                        && !dirty
+                        && !terminal.writing()
                         && event.kind == crate::ui::terminal::MouseKind::Press
                         && screen.size() == terminal.size()
                         && let Some((area, cell)) = screen.composer_hit(event.column, event.row)
@@ -1318,8 +1324,7 @@ struct App {
     /// The `/models` picker a Provider's management area was opened from:
     /// closing the area goes back to the picker, as it was left.
     models_return: Option<ModelsPanel>,
-    /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
-    /// and the wheel to the terminal.
+    /// Mouse input in both TUI modes (`tuiMouseMode`); off leaves selection and scrolling native.
     pub mouse: bool,
     /// Ask the terminal to notify when the run needs the user
     /// (`tuiNotifyOnComplete`).

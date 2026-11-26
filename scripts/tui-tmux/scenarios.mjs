@@ -580,7 +580,20 @@ const scenarios = [
       await terminal.waitFor(ANSWER);
       assert.equal(lastTurnText(tui.model), `${prefix}界Xbc\nlast line`);
       assert(!mouseEnabled(), 'submitting releases the mouse');
+      const draft = Array.from({length: 18}, (_, i) => `draft-row-${i}`);
+      terminal.bytes(Buffer.from(draft.map((line) => `\x1b[200~${line}\x1b[201~`).join('\n')));
+      await terminal.waitFor('draft-row-17');
+      const visible = terminal.capture({join: false}).split('\n');
+      const first = visible.findIndex((line) => line.includes('draft-row-'));
+      assert(first >= 0 && !visible[first].includes('draft-row-0'), 'the editor is scrolled');
+      const oldCell = `\x1b[<0;${visible[first].indexOf('draft-row-') + 1};${first + 1}`;
+      terminal.bytes(Buffer.from(`\x1b[200~\nnew-row\x1b[201~${oldCell}M${oldCell}mX`));
+      await terminal.waitFor('new-rowX');
+      terminal.key('Enter');
+      await waitForRequest(tui.model, (request) => userText(request) === `${draft.join('\n')}\nnew-rowX`);
       await exitWith(terminal);
+      const raw = terminal.raw();
+      assert(raw.slice(raw.lastIndexOf('\x1b[?2026l\x1b[0m')).includes('\x1b[?1006l\x1b[?1003l\x1b[?1002l'), 'exit resets mouse reporting even after mouse-off was queued');
     },
   },
   {
