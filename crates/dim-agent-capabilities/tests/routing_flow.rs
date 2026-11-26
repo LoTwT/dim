@@ -369,6 +369,27 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     }
     assert_eq!(
         scope
+            .line_call(LineCall::new("main", "wait", "wait", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::MethodNotRoutable {
+            service: "wait".into(),
+            method: "wait".into()
+        },
+        "an operation that needs a caller-side cancellation is not routed"
+    );
+    assert_eq!(
+        scope
+            .call(SessionCall::new("treeCommands", "create", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::MethodNotRoutable {
+            service: "treeCommands".into(),
+            method: "create".into()
+        }
+    );
+    assert_eq!(
+        scope
             .line_call(LineCall::new("main", "loopState", "state", vec![]))
             .await
             .unwrap_err(),

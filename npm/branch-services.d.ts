@@ -1801,7 +1801,7 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
 /** What a method returning `Err(RouteError)` throws. */
-export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "SessionReloading" | "SessionUnavailable" | "NoLine" | "NotDataFace" | "WrongScope" | "Owner", undefined>
+export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "SessionReloading" | "SessionUnavailable" | "NoLine" | "NotDataFace" | "MethodNotRoutable" | "WrongScope" | "Owner", undefined>
 
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
@@ -1870,10 +1870,10 @@ export type LineFaces = {
   branchLine: BranchLine
   dispatcher: Dispatcher
   inputQueue: InputQueue
-  permission: Permission
+  permission: Omit<Permission, 'check'>
   timeline: Timeline
   timelineIdentity: TimelineIdentity
-  wait: Wait
+  wait: Omit<Wait, 'wait'>
 }
 
 /** The data faces a Session reaches. */
@@ -1888,8 +1888,8 @@ export type SessionFaces = {
   sessionLoader: SessionLoader
   sessionScope: SessionScope
   skillsConfig: SkillsConfig
-  toolHost: ToolHost
-  treeCommands: TreeCommands
+  toolHost: Omit<ToolHost, 'execute'>
+  treeCommands: Omit<TreeCommands, 'create'>
   uiResources: UiResources
 }
 

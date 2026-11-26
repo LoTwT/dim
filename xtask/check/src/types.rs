@@ -45,10 +45,20 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     session.dedup();
     line.sort();
     line.dedup();
+    let refused = lifecycle(root)?;
     let faces = |items: &[(String, String)], name: &str| {
         let mut text = format!("export type {name} = {{\n");
         for (member, ty) in items {
-            text += &format!("  {member}: {ty}\n");
+            let omitted: Vec<String> = refused
+                .iter()
+                .filter(|(service, _)| service == member)
+                .map(|(_, method)| format!("'{method}'"))
+                .collect();
+            if omitted.is_empty() {
+                text += &format!("  {member}: {ty}\n");
+            } else {
+                text += &format!("  {member}: Omit<{ty}, {}>\n", omitted.join(" | "));
+            }
         }
         text + "}\n"
     };
@@ -261,6 +271,58 @@ fn name_of(expression: &syn::Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The operations routing does not resolve, read from the runtime's own list:
+/// a call that needs a cancellation or a caller-side cleanup keeps its lifetime
+/// only when it is made directly.
+fn lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
+    let path = root.join("crates/dim-agent-runtime/src/route.rs");
+    let ast = syn::parse_file(&std::fs::read_to_string(&path)?)?;
+    let mut found = Vec::new();
+    let mut seen = false;
+    for item in &ast.items {
+        let syn::Item::Const(declaration) = item else {
+            continue;
+        };
+        if declaration.ident != "LIFECYCLE_METHODS" {
+            continue;
+        }
+        let syn::Expr::Array(array) = &*declaration.expr else {
+            return Err(format!("{}: LIFECYCLE_METHODS is not an array", path.display()).into());
+        };
+        for element in &array.elems {
+            let syn::Expr::Tuple(tuple) = element else {
+                return Err(format!(
+                    "{}: a LIFECYCLE_METHODS entry is not a pair",
+                    path.display()
+                )
+                .into());
+            };
+            let mut parts = tuple.elems.iter().filter_map(|part| match part {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(text),
+                    ..
+                }) => Some(text.value()),
+                _ => None,
+            });
+            match (parts.next(), parts.next()) {
+                (Some(service), Some(method)) => found.push((service, method)),
+                _ => {
+                    return Err(format!(
+                        "{}: a LIFECYCLE_METHODS entry is not a pair of names",
+                        path.display()
+                    )
+                    .into());
+                }
+            }
+        }
+        seen = true;
+    }
+    if !seen {
+        return Err(format!("{}: LIFECYCLE_METHODS is missing", path.display()).into());
+    }
+    Ok(found)
 }
 
 /// The names routing does not resolve, read from the runtime that refuses

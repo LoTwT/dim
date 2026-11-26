@@ -48,6 +48,8 @@ void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw',
 void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
 // @ts-expect-error a reply keeps the target method's own type.
 void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
+// @ts-expect-error an operation that needs a caller-side cancellation is not routed.
+void scope.lineCall({ lineId: 'main', service: 'wait', method: 'wait', args: [] })
 // @ts-expect-error a Session service takes no lineId.
 void sessions.call({ sessionId, lineId: 'main', service: 'sessionConfig', method: 'get', args: [] })
 // @ts-expect-error a line call takes no Session id.

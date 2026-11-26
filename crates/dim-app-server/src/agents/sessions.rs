@@ -908,6 +908,7 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
             data,
             retryable: reloading,
         },
+        RouteError::MethodNotRoutable { .. } => SessionsError::Rejected { message },
         RouteError::NotDataFace { .. } | RouteError::WrongScope { .. } => {
             SessionsError::Rejected { message }
         }

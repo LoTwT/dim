@@ -79,6 +79,11 @@ pub enum RouteError {
     /// lifecycle service. A permanent answer: the request is wrong.
     #[error("{service} is not a routable data face")]
     NotDataFace { service: String },
+    /// The service is a data face a route resolves, but this operation of it
+    /// is not: its call needs a cancellation or a cleanup the routed call
+    /// cannot carry, so only a direct call keeps its lifetime behaviour.
+    #[error("{service}.{method} is not a routable operation")]
+    MethodNotRoutable { service: String, method: String },
     /// The name is a data face, but not of the scope the route reaches.
     #[error("{service} is not a {group} service")]
     WrongScope { service: String, group: String },
@@ -108,6 +113,7 @@ impl RouteError {
             Self::SessionUnavailable { .. } => "session_unavailable",
             Self::NoLine { .. } => "no_line",
             Self::NotDataFace { .. } => "not_data_face",
+            Self::MethodNotRoutable { .. } => "method_not_routable",
             Self::WrongScope { .. } => "wrong_scope",
             Self::Owner { .. } => "owner",
         }
@@ -178,6 +184,18 @@ impl SessionCall {
 /// owner's own word for "try again later".
 const RELOADING: &str = "Reloading";
 
+/// Operations a route does not resolve even though their service is a data
+/// face: each takes a cancellation the caller observes through the future, or
+/// hands the caller something to settle, and a routed call carries data only.
+/// The generated authoring requests read this same list, so the runtime and the
+/// declarations agree on what is routable.
+pub const LIFECYCLE_METHODS: [(&str, &str); 4] = [
+    ("permission", "check"),
+    ("toolHost", "execute"),
+    ("treeCommands", "create"),
+    ("wait", "wait"),
+];
+
 const REGISTRATION_POINTS: [&str; 5] = [
     "sessionMethods",
     "toolRegistry",
@@ -240,7 +258,7 @@ impl SessionScope {
     pub async fn call(&self, call: SessionCall) -> Routed<serde_json::Value> {
         let session = self.live()?;
         let (catalog, faces) = session.reach();
-        face(catalog, faces, &call.service, SESSION_GROUP)?;
+        face(catalog, faces, &call.service, &call.method, SESSION_GROUP)?;
         let loaded = session.loaded().map_err(owner)?;
         call_face(
             &loaded.ctx,
@@ -255,7 +273,13 @@ impl SessionScope {
     /// Calls one of this Session's lines' data faces.
     pub async fn line_call(&self, call: LineCall) -> Routed<serde_json::Value> {
         let line = self.line_context(&call.line_id)?;
-        face(line.catalog(), line.faces(), &call.service, BRANCH_GROUP)?;
+        face(
+            line.catalog(),
+            line.faces(),
+            &call.service,
+            &call.method,
+            BRANCH_GROUP,
+        )?;
         call_face(
             line.ctx(),
             line.scope_instance(),
@@ -276,7 +300,7 @@ pub fn resolves(
     service: &str,
     group: &str,
 ) -> bool {
-    face(catalog, faces, service, group).is_ok()
+    face(catalog, faces, service, "", group).is_ok()
 }
 
 /// Fails unless a route may resolve `service` as a data face of `group`
@@ -285,8 +309,20 @@ pub(crate) fn face(
     catalog: &names::ServiceCatalog,
     faces: &Faces,
     service: &str,
+    method: &str,
     group: &str,
 ) -> Routed<()> {
+    if LIFECYCLE_METHODS
+        .iter()
+        .any(|(refused_service, refused_method)| {
+            *refused_service == service && *refused_method == method
+        })
+    {
+        return Err(RouteError::MethodNotRoutable {
+            service: service.into(),
+            method: method.into(),
+        });
+    }
     let lifecycle = [
         names::name_of::<SessionLifecycle>(),
         names::name_of::<BranchLifecycle>(),
