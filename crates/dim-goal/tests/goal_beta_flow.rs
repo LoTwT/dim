@@ -15,7 +15,7 @@ use dim_agent_capabilities::host::{
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateData, BranchSource, EventKind, ExecEndedData, ExecStartedData,
-    ExecStatus, InputMode, MessageContent, ModelRequest, Role, ToolResult,
+    ExecStatus, InputMode, Message, MessageContent, ModelRequest, Role, ToolResult,
 };
 use serde_json::json;
 use support::*;
@@ -31,8 +31,68 @@ fn is_evaluator(request: &ModelRequest) -> bool {
     })
 }
 
+/// Whether a user message is one of Goal's append-mode inputs rather than a
+/// conversational input: the state records (`kind="state"`), the evaluator's
+/// conclusion (`kind="report"`), the retirement blocks that end a legacy
+/// status key (`kind="status"`, text.rs writes them only into the append
+/// batches of the state inputs) and the triggers `goal_update` and an edit,
+/// pause or clear write (`kind="goal"` with an op other than `set` or
+/// `resume`, which drive a turn). These blocks ride along with a tool result
+/// they were committed ahead of, so the message they leave at the tail of a
+/// request says nothing about what drives the turn. Driving blocks keep their
+/// meaning: `op="set"` and `op="resume"`, continuations, evaluations.
+fn goal_input_is_append(text: &str) -> bool {
+    if !text.starts_with("<dim-goal ") || !text.ends_with("</dim-goal>") {
+        return false;
+    }
+    let head = text.lines().next().unwrap_or_default();
+    if ["kind=\"state\"", "kind=\"report\"", "kind=\"status\""]
+        .iter()
+        .any(|kind| head.contains(kind))
+    {
+        return true;
+    }
+    head.contains("kind=\"goal\"")
+        && [
+            "op=\"completed\"",
+            "op=\"blocked\"",
+            "op=\"edit\"",
+            "op=\"pause\"",
+            "op=\"clear\"",
+        ]
+        .iter()
+        .any(|op| head.contains(op))
+}
+
+/// The latest message that drives the script: `EchoModel::last_message`'s
+/// selection, with Goal's append-mode inputs skipped the same way runtime
+/// state and rules are. `matches` and `last_user_text` share this selection,
+/// so a held turn is judged on the same tail the script text is read from.
+fn select_last(request: &ModelRequest) -> Option<&Message> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .map(AsRef::as_ref)
+        .find(|message: &&Message| {
+            message.role != Role::User
+                || !match &message.content {
+                    MessageContent::Text(text) => {
+                        dim_agent_capabilities::context_block::is_state_or_rule(text)
+                            || goal_input_is_append(text)
+                    }
+                    MessageContent::Parts(parts) => matches!(
+                        parts.as_slice(),
+                        [dim_agent_types::MessagePart::Text { text, .. }]
+                            if dim_agent_capabilities::context_block::is_state_or_rule(text)
+                                || goal_input_is_append(text)
+                    ),
+                }
+        })
+}
+
 fn last_user_text(request: &ModelRequest) -> Option<&str> {
-    let message = EchoModel::last_message(request)?;
+    let message = select_last(request)?;
     if message.role != Role::User {
         return None;
     }
@@ -76,7 +136,7 @@ impl ScriptedModel {
         self.release.notify_one();
     }
     fn matches(request: &ModelRequest) -> Option<Halt> {
-        let message = EchoModel::last_message(request)?;
+        let message = select_last(request)?;
         match message.role {
             Role::ToolResult => Some(Halt::AfterTool),
             Role::User => {
@@ -1145,4 +1205,142 @@ async fn beta_8_an_open_task_does_not_block_the_deferred_evaluation() {
         }
     );
     env.close().await;
+}
+
+/// The request the loop builds after a `goal_update` report whose input was
+/// consumed together with the tool result: the report's state record and
+/// completed trigger sit at the tail, and the selection must reach past them
+/// to the tool result. `goal_update` writes both blocks as append-mode inputs
+/// in one atomic batch before its result commits (Goal A.5, R5), so under load
+/// the input events land ahead of the result and the loop renders them after
+/// it; a tail read that stops at the block never recognizes the tool turn.
+#[test]
+fn scripted_matches_skip_goal_inputs_riding_a_tool_result() {
+    let state_record = r#"<dim-goal kind="state" status="completed" judge="evaluator" trigger="goal:request-id" branch="main">
+<objective>
+make the tests pass
+</objective>
+This is the user's standing goal for branch main. If you are on another line of this Session, the goal belongs to branch main: treat it as background, do not continue it, and do not call goal_update for it.
+goal_update set the goal status for branch main to completed. Do not continue working toward a goal for branch main on your own.
+<result>
+all tests pass
+</result>
+</dim-goal>"#;
+    let completed = r#"<dim-goal kind="goal" op="completed" branch="main">
+Result:
+all tests pass
+
+goal_update reported the goal for branch main as completed.
+</dim-goal>"#;
+    let blocked = r#"<dim-goal kind="goal" op="blocked" branch="main">
+Blocker:
+needs a decision
+
+goal_update reported the goal for branch main as blocked.
+</dim-goal>"#;
+    let edit = r#"<dim-goal kind="goal" op="edit" branch="main">
+Objective:
+make the other tests pass
+
+The user asked to edit the objective of the goal for branch main.
+</dim-goal>"#;
+    let pause = r#"<dim-goal kind="goal" op="pause" reason="user" branch="main">
+The user asked to pause the goal for branch main.
+</dim-goal>"#;
+    let cleared = r#"<dim-goal kind="goal" op="clear" branch="main">
+The user asked to clear the goal for branch main.
+</dim-goal>"#;
+    let retired_status = r#"<dim-goal kind="status" status="cleared" branch="main">
+The goal for branch main is not in effect.
+</dim-goal>"#;
+    let conclusion = r#"<dim-goal kind="report" result="completed" evaluation="1" evaluator="evaluate" branch="main">
+Evaluator report:
+all tests pass
+</dim-goal>"#;
+    let set = r#"<dim-goal kind="goal" op="set" judge="evaluator" branch="main">
+Objective:
+make the tests pass
+
+The user asked to set the goal for branch main to this objective.
+</dim-goal>"#;
+    let resume = r#"<dim-goal kind="goal" op="resume" branch="main">
+The user asked to resume the goal for branch main.
+</dim-goal>"#;
+    let continuation = r#"<dim-goal kind="continuation" count="1" after="9" idle="0" branch="main">
+Continue working toward the active goal for branch main.
+</dim-goal>"#;
+
+    let request = |tail: Vec<dim_agent_types::Message>| {
+        dim_agent_capabilities::host::ModelSettings::new("mock", "mock")
+            .request(tail.into_iter().map(Arc::new).collect())
+    };
+    let tool_result = || dim_agent_types::Message::text(Role::ToolResult, "goal updated");
+
+    // The append inputs consumed with the report's tool result do not hide
+    // it: the selection is the tool result either way.
+    for blocks in [
+        vec![state_record],
+        vec![completed],
+        vec![blocked],
+        vec![edit],
+        vec![pause],
+        vec![cleared],
+        vec![conclusion],
+        vec![state_record, completed],
+        vec![state_record, retired_status],
+    ] {
+        let mut messages = vec![tool_result()];
+        messages.extend(
+            blocks
+                .iter()
+                .map(|text| dim_agent_types::Message::text(Role::User, *text)),
+        );
+        let found = ScriptedModel::matches(&request(messages));
+        assert_eq!(
+            found,
+            Some(Halt::AfterTool),
+            "a riding block must not hide the tool result: {blocks:?}"
+        );
+    }
+
+    // A conversational input drives a turn the blocks ride along with: a
+    // queued input starts the turn, the goal change appends commit behind it,
+    // and the selection falls past them to the driving text.
+    let messages = vec![
+        dim_agent_types::Message::text(Role::User, "hold the queued turn"),
+        dim_agent_types::Message::text(Role::User, state_record),
+        dim_agent_types::Message::text(Role::User, completed),
+    ];
+    assert_eq!(
+        ScriptedModel::matches(&request(messages.clone())),
+        Some(Halt::Text("hold the queued turn".into()))
+    );
+    assert_eq!(
+        last_user_text(&request(messages)),
+        Some("hold the queued turn")
+    );
+
+    // Driving inputs are never skipped: the tail block itself is the match.
+    for driving in [set, resume, continuation] {
+        let messages = vec![
+            tool_result(),
+            dim_agent_types::Message::text(Role::User, driving),
+        ];
+        assert_eq!(
+            ScriptedModel::matches(&request(messages)),
+            Some(Halt::Text(driving.to_owned())),
+            "a driving input keeps its meaning"
+        );
+    }
+
+    // Plain user text and the report command are unaffected.
+    let report_turn = vec![dim_agent_types::Message::text(
+        Role::User,
+        r#"tool:goal_update {"status": "completed", "summary": "all tests pass"}"#,
+    )];
+    assert_eq!(
+        ScriptedModel::matches(&request(report_turn)),
+        Some(Halt::Report)
+    );
+    assert_eq!(ScriptedModel::matches(&request(vec![])), None);
 }
