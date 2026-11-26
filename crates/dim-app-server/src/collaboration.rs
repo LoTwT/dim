@@ -2700,9 +2700,12 @@ impl CollaborationSession {
     }
 
     fn message_input(&self, agent_id: &str, content: String, mode: InputMode) -> InputMessageData {
-        let relation = match self.role {
-            CollaborationRole::Leader => "your team leader, assigned you this work",
-            CollaborationRole::Member => "your teammate, sent you this message",
+        let relation = match (self.role, mode) {
+            (CollaborationRole::Leader, InputMode::Queue) => {
+                "your team leader, assigned you this work"
+            }
+            (CollaborationRole::Leader, _) => "your team leader, sent you this message",
+            (CollaborationRole::Member, _) => "your teammate, sent you this message",
         };
         let text = context_block::element(
             "dim-agent-message",
@@ -3348,16 +3351,19 @@ enum Input {
 }
 
 const LEADER_DESCRIPTION_HEAD: &str = "Work with other agents as a team you lead.
-- request: give a task to a new member (agentId or profile) or to one of your members
-  (agentId + sessionId). An agentId is copied exactly from list's agents[].agentId; an
-  Agent's name, such as \"default\", is not an agentId. A profile creates a temporary
-  Agent; usually omit its tools. Returns immediately; the member's final result arrives
-  later as an input. One task per member at a time. Members cannot delegate. The user's
-  subagent model policy may override the model a new member's profile requests.
+- request: start a new member from an Agent (agentId or profile) and give it a task, or
+  give a task to one of your members (agentId + sessionId).
+  An agentId is copied exactly from list's agents[].agentId; an Agent's name, such as
+  \"default\", is not an agentId.
+  A profile creates a temporary Agent; usually omit its tools. Returns immediately; the
+  member's final result arrives later as an input. One task per member at a time; to
+  replace a running task, cancel it and request again. Members cannot delegate. The
+  user's subagent model policy may override the model a new member's profile requests.
 - cancel / close: require agentId + sessionId to stop a member's current task / remove the member from your team. Detached exec Task IDs belong to exec_stop, not agent.
-- message: send information to a team member. Default mode \"append\" adds context the
-  receiver sees in its next step without interrupting it. Use mode \"steer\" only when the
-  receiver must change course now.
+- message: send information to a team member. Default mode \"steer\" has the receiver act
+  on it now, waking it when idle. Mode \"append\" adds context the receiver sees in its
+  next step without interrupting it, and waits while it is idle. A message starts no task
+  and returns no result; give new work with request.
 - read: view a team member's recent activity, more pages by passing nextCursor as after
   together with the branchId the page reported. list: show your team and the agents you
   can use. inspect: show one agent's full profile (instructions, tools, model).";
@@ -3371,10 +3377,9 @@ const LEADER_DESCRIPTION_TAIL: &str = "
 Address members with agentId + sessionId from earlier results.";
 
 const MEMBER_DESCRIPTION: &str = "You are a member of a team. You cannot delegate work.
-- message: send information to your leader or another member. Default mode \"append\"
-  adds context the receiver sees in its next step without interrupting it. Use mode
-  \"steer\" only when the receiver must act on it now, such as a blocking question or a
-  finding that invalidates its current work.
+- message: send information to your leader or another member. Default mode \"steer\"
+  has the receiver act on it now, waking it when idle. Mode \"append\" adds context the
+  receiver sees in its next step without interrupting it, and waits while it is idle.
 - read: view a team member's recent activity, more pages by passing nextCursor as after
   together with the branchId the page reported. list: show your team.
 Your final answer to the task is returned to the leader automatically; do not send it

@@ -1795,7 +1795,7 @@ async fn leader_delegates_and_team_members_communicate() {
     let member_timeline = events(&member_session).await;
     let sent = last_ok(&member_timeline);
     assert_eq!(sent["status"], "delivered");
-    assert_eq!(sent["mode"], "append");
+    assert_eq!(sent["mode"], "steer");
     let leader_inputs = events(&lead_session)
         .await
         .iter()
@@ -1808,7 +1808,7 @@ async fn leader_delegates_and_team_members_communicate() {
     assert!(agent_message(&leader_inputs[before]) == Some("note for leader"));
     assert_eq!(
         leader_inputs[before].mode,
-        Some(dim_agent_types::InputMode::Append)
+        Some(dim_agent_types::InputMode::Steer)
     );
     let facts = async |session: &Session| {
         events(session)
