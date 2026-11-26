@@ -153,19 +153,19 @@ fn chatgpt_reasoning_levels_stay_within_the_request_paths_acceptance() {
         ["low", "medium", "high", "xhigh", "max"],
         "only levels the request path accepts, in catalog order"
     );
-    // The offered set must be exactly the acceptance the request path itself
-    // reports for the slug, so a level the route accepts is never withheld
-    // and one it rejects is never published (#2189).
+    // Every offered level is one the request path itself accepts for the
+    // slug, so a level the route rejects is never published (#2189). The
+    // published offer may still be narrower than the table, since the
+    // projection keeps only levels inside what the wire accepts and the
+    // endpoint declares both.
     let accepted = dim_agent_aimux::accepted_reasoning_efforts("gpt-6.2-sol")
         .expect("the request path constrains the slug");
-    let mut offered_sorted = offered.clone();
-    let mut accepted_sorted = accepted.to_vec();
-    offered_sorted.sort();
-    accepted_sorted.sort();
-    assert_eq!(
-        offered_sorted, accepted_sorted,
-        "the published set is the request path's accepted set"
-    );
+    for effort in &offered {
+        assert!(
+            accepted.contains(&effort.as_str()),
+            "{effort} must be one the request path accepts"
+        );
+    }
     assert_eq!(
         reasoning.effort, None,
         "a default the request path rejects cannot become the implicit default"
