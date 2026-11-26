@@ -10,7 +10,10 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     history::HistoryRenderer,
     host::*,
-    host_platform::{HostPlatform, HostPlatformConfig, HostPlatformPlugin, resolve_shell},
+    host_platform::{
+        ExecShellRuntime, HostPlatform, HostPlatformConfig, HostPlatformPlugin, OutputEncoding,
+        ShellEdition, ShellSource, ShellStatus, resolve_shell,
+    },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
@@ -20,7 +23,7 @@ use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::*;
 use dim_agent_types::*;
-use process_support::{gone, pid_in};
+use process_support::{alive, gone, pid_in};
 use rutis::host::CtxHost;
 use rutis::{Ctx, Plugin};
 use serde_json::{Value, json};
@@ -656,7 +659,12 @@ async fn new_persistent_shells_and_environment_refresh_use_current_preferences()
         .await;
     session.idle("main").await.unwrap();
     let events = local_events(&session).await;
-    assert!(text(results(&events).last().unwrap()).contains(&format!("selected={alternate}")));
+    let call_results = results(&events);
+    let selected = text(call_results.last().unwrap());
+    assert!(
+        selected.contains(&format!("selected={alternate}")),
+        "expected selected={alternate}: {selected}"
+    );
     let environment = events
         .iter()
         .rev()
@@ -875,6 +883,131 @@ async fn timeout_occupies_shell_and_wakes() {
     harness.shutdown().await;
 }
 
+/// An ended command no longer occupies the shell: the next call runs its
+/// command instead of asking for a resend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_after_the_occupying_command_ends_runs() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 0.4 && echo occupied", "timeoutMs": 100}),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    assert!(
+        text(&results(&events)[0]).contains("occupies the shell"),
+        "{}",
+        text(&results(&events)[0])
+    );
+    until(&session, "occupying wake", |events| {
+        !notifications(events).is_empty()
+    })
+    .await;
+    harness
+        .run(&session, &[("execute", json!({"command": "echo next"}))])
+        .await;
+    let events = until(&session, "next result", |events| tool_results(events) == 2).await;
+    let result = &results(&events)[1];
+    assert!(text(result).contains("next"), "{}", text(result));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A command that moves to the background keeps the exit status it ended with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handed_off_command_keeps_its_exit_code() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 0.3; sh -c 'exit 7'", "timeoutMs": 100}),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
+    let fields = end.result.structured_content.as_ref().unwrap();
+    assert_eq!(fields.get("exitCode").and_then(Value::as_i64), Some(7));
+    assert_eq!(
+        fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
+    assert!(
+        text(&end.result).contains("Command exited with code 7."),
+        "{}",
+        text(&end.result)
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A detached shell job keeps the exit status it ended with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_detached_job_keeps_its_exit_code() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sh -c 'exit 7'", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec started", |events| tool_results(events) == 1).await;
+    let task_id = task_of(&results(&events)[0]);
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
+    let fields = end.result.structured_content.as_ref().unwrap();
+    assert_eq!(fields.get("exitCode").and_then(Value::as_i64), Some(7));
+    assert_eq!(
+        fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
+    assert!(
+        text(&end.result).contains("Command exited with code 7."),
+        "{}",
+        text(&end.result)
+    );
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let stopped = stop.stop(task_id.clone()).await.unwrap();
+    let stopped_fields = stopped.result.structured_content.as_ref().unwrap();
+    assert_eq!(
+        stopped_fields.get("exitCode").and_then(Value::as_i64),
+        Some(7)
+    );
+    assert_eq!(
+        stopped_fields.get("summary").and_then(Value::as_str),
+        Some("Command exited with code 7.")
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_background_task() {
     let harness = Harness::new(platform(&[]).await).await;
@@ -897,16 +1030,243 @@ async fn stop_background_task() {
     let pid = pid_in(&pid_file).await;
 
     let stop = session
-        .service_opt::<dyn dim_agent_capabilities::exec_stop::ExecStop>("main")
-        .unwrap()
-        .expect("the minimal profile provides the branch stop owner");
-    let ended = stop.clone().stop(task_id.clone()).await.unwrap();
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = stop.stop(task_id.clone()).await.unwrap();
     assert_eq!(ended.status, ExecStatus::Cancelled);
     assert!(gone(&pid).await);
     let repeated = stop.stop(task_id).await.unwrap();
     assert_eq!(repeated.status, ExecStatus::Cancelled);
     session.close().await.unwrap();
     harness.shutdown().await;
+}
+
+/// Stopping a command that converted to the background returns a terminal and
+/// leaves the shell usable. A shell may abort the wrapper line on the interrupt,
+/// in which case the owner terminates the shell and the command ends as a reset;
+/// a shell that prints the end marker ends it with the interrupted status. For
+/// this command both are a failed terminal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "sleep 60", "timeoutMs": 100}))],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(10), stop.stop(task_id.clone()))
+        .await
+        .expect("the stop returns once the owner confirms the terminal")
+        .unwrap();
+    assert_eq!(ended.task_id, task_id);
+    assert_eq!(ended.status, ExecStatus::Failed);
+
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "echo after-stop"}))],
+        )
+        .await;
+    let events = until(&session, "next result", |events| tool_results(events) == 2).await;
+    let result = &results(&events)[1];
+    assert!(text(result).contains("after-stop"), "{}", text(result));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A command that ignores the interrupt is released by the owner. The command
+/// runs in the terminal's foreground process group, not the shell's, and macOS
+/// has no `/proc` tree to walk, so the owner signals that group itself before
+/// it terminates the shell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_a_command_that_ignores_the_interrupt_leaves_no_process() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("stubborn.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'echo $$ > {}; trap \"\" INT TERM HUP; while true; do sleep 1; done'",
+                        pid_file.display()
+                    ),
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(10), stop.stop(task_id.clone()))
+        .await
+        .expect("the stop returns once the owner confirms the terminal")
+        .unwrap();
+    assert_eq!(ended.task_id, task_id);
+    assert_eq!(ended.status, ExecStatus::Failed);
+    let path = if cfg!(target_os = "macos") {
+        " the foreground-group signal did not release it"
+    } else {
+        ""
+    };
+    assert!(gone(&pid).await, "process {pid} survived the stop;{path}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A shell slower than the init retry still initializes: every written copy is
+/// watched until the deadline, not only the newest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_shell_still_initializes() {
+    let Some(platform) = zsh_platform() else {
+        return;
+    };
+    let harness = Harness::new(platform).await;
+    std::fs::write(harness.cwd.join(".zshrc"), "preexec() { sleep 1.5; }\n").unwrap();
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "printf 'ready'"}))],
+        )
+        .await;
+    let events = until(&session, "result", |events| tool_results(events) == 1).await;
+    let call_results = results(&events);
+    let result = text(&call_results[0]);
+    assert!(result.contains("ready"), "{result}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// Closing a Session releases the command its shell is running, not only
+/// stopping a task. macOS has no `/proc` tree to walk, so the shell's
+/// termination signals the terminal's foreground process group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_a_session_releases_an_occupying_command() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("closing.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'echo $$ > {}; trap \"\" INT TERM HUP; while true; do sleep 1; done'",
+                        pid_file.display()
+                    ),
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    session.close().await.unwrap();
+    let events = local_events(&session).await;
+    let (_, end) = ended(&events)
+        .into_iter()
+        .find(|(_, data)| data.task_id == task_id)
+        .expect("closing publishes the occupying task's terminal");
+    assert_eq!(end.status, ExecStatus::Failed);
+    let path = if cfg!(target_os = "macos") {
+        " the foreground-group signal did not release it"
+    } else {
+        ""
+    };
+    assert!(
+        gone(&pid).await,
+        "process {pid} survived the Session close;{path}"
+    );
+    harness.shutdown().await;
+}
+
+/// A startup consumer cannot skip the initialization. The `.zshrc` lives in the
+/// shell's home, consumes the wrapper line up to the boundary before the final
+/// `printf`, and leaves the shell to run that `printf`: the end marker alone
+/// reaches the tail while the init never ran. `/bin/zsh` absent skips the case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_startup_consumer_cannot_skip_the_init() {
+    let Some(platform) = zsh_platform() else {
+        return;
+    };
+    let harness = Harness::new(platform).await;
+    // The harness makes its cwd the shell's HOME.
+    std::fs::write(
+        harness.cwd.join(".zshrc"),
+        r#"HISTFILE=/tmp/dim-consumer-history
+__dim_buf=
+while true; do
+  read -k 1 __dim_ch || break
+  __dim_buf+=$__dim_ch
+  if [[ $__dim_buf == *"eval $'"* && $__dim_buf == *"'; " ]]; then
+    break
+  fi
+done
+"#,
+    )
+    .unwrap();
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "printf 'histfile=%s' \"${HISTFILE-unset}\""}),
+            )],
+        )
+        .await;
+    let events = until(&session, "result", |events| tool_results(events) == 1).await;
+    let call_results = results(&events);
+    let result = text(&call_results[0]);
+    assert!(result.contains("histfile=unset"), "{result}");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+fn zsh_platform() -> Option<HostPlatform> {
+    let zsh = "/bin/zsh";
+    if !Path::new(zsh).is_file() {
+        return None;
+    }
+    let runtime = ExecShellRuntime {
+        executable_path: zsh.into(),
+        edition: ShellEdition::Zsh,
+        source: ShellSource::Fallback,
+        output_encoding: OutputEncoding::Utf8,
+    };
+    Some(
+        HostPlatform::current(ShellStatus::Available(runtime))
+            .unwrap()
+            .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default())),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1168,7 +1528,7 @@ async fn a_call_that_converts_before_its_output_writes_only_the_command_output()
             &session,
             &[(
                 "execute",
-                json!({"command": "echo first; echo second", "timeoutMs": 0}),
+                json!({"command": "sleep 0.1; echo first; echo second", "timeoutMs": 0}),
             )],
         )
         .await;
@@ -1214,13 +1574,69 @@ async fn shell_exit_kills_background_jobs() {
     assert_eq!(end.task_id, task_id);
     assert_eq!(end.status, ExecStatus::Failed);
     assert!(
-        text(&end.result).contains("shell was reset"),
+        text(&end.result).contains("shell exited"),
         "{}",
         text(&end.result)
     );
     assert!(
         gone(&pid).await,
-        "background process {pid} survived the shell reset: result={:?}, process={:?}",
+        "background process {pid} survived the shell exit: result={:?}, process={:?}",
+        end.result,
+        std::process::Command::new("ps")
+            .args(["-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", &pid])
+            .output()
+            .map(|output| (
+                output.status,
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ))
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A job that ignores SIGTERM is gone before its terminal is published: the
+/// shell confirms each job's release while it ends, instead of a single
+/// unconfirmed signal from the terminal sweep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_ignoring_job_is_gone_before_its_terminal() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("ignoring.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'trap \"\" TERM; echo $$ > {}; sleep 60'",
+                        pid_file.display()
+                    ),
+                    "runInBackground": true
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "start", |events| tool_results(events) == 1).await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    harness
+        .run(&session, &[("execute", json!({"command": "exit 7"}))])
+        .await;
+    let events = until(&session, "job settled", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
+    assert!(
+        !alive(&pid),
+        "process {pid} was alive when its terminal was published: result={:?}",
+        end.result
+    );
+    assert!(
+        gone(&pid).await,
+        "background process {pid} survived the shell exit: result={:?}, process={:?}",
         end.result,
         std::process::Command::new("ps")
             .args(["-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", &pid])
@@ -1493,10 +1909,12 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
         ended(events).len() == 1 && notifications(events).len() == 1
     })
     .await;
+    assert_eq!(ended(&after)[0].1.status, ExecStatus::Failed);
     assert_eq!(count(&after, "exec/started"), 1);
     assert!(
-        text(&ended(&after)[0].1.result).contains("shell was reset"),
-        "the live shell must settle before recovery inspects history"
+        text(&ended(&after)[0].1.result).contains("shell reset"),
+        "the live shell must settle before recovery inspects history: {}",
+        text(&ended(&after)[0].1.result)
     );
     {
         let ready = tokio::time::timeout(

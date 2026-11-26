@@ -1092,6 +1092,7 @@ export type TaskError =
   | /** Required task facts could not be read. */ { read: [] }
   | /** No matching task or live output on this branch. */ "unknown"
   | /** This instance was unloaded. */ "closed"
+  | /** The stop is pending: the owner has not confirmed the task's release, so the task is still running and its terminal will follow. */ "running"
 
 /**
  * One page of a task's registered output file, as
@@ -1164,9 +1165,13 @@ export interface BackgroundExec {
    */
   wait(taskId: string, timeoutMs: number | bigint): Promise<ExecEndedData>
   /**
-   * Stops a task: cancels it while running, so it ends `cancelled` and
-   * does not wake. Returns once its `exec/ended` is dispatched; a task that
-   * already ended keeps its result and its wake.
+   * Stops a task and answers the owner's terminal: a native command or a
+   * background job ends `cancelled` and does not wake, while a shell command
+   * is interrupted and ends with the interrupted line's own status, so it
+   * wakes. Returns once its `exec/ended` is dispatched; a task that already
+   * ended keeps its result and its wake. When the owner has not confirmed the
+   * release, answers `running`: the task keeps its record and hold, and its
+   * terminal follows.
    * @throws {TaskErrorThrown}
    */
   stop(taskId: string): Promise<ExecEndedData>
@@ -1825,7 +1830,7 @@ export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Crea
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "no_session" | "session_closing" | "session_reloading" | "session_unavailable" | "no_line" | "not_data_face" | "method_not_routable" | "wrong_scope" | "routed" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
-export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
+export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed" | "running", TaskError>
 
 /** What a method returning `Err(WaitCallError)` throws. */
 export type WaitCallErrorThrown = RustError<"WaitCallError", "AlreadyWaiting" | "Reloading", undefined>

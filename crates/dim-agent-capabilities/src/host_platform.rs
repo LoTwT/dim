@@ -47,6 +47,12 @@ pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellCh
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
 pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
 
+/// How long a shell command's interrupt may take to record its terminal before
+/// the shell is terminated. Some shells print the end marker after the
+/// interrupt and the command ends with its interrupted status; one still
+/// running after this window cannot end inside the live shell.
+const SHELL_COMMAND_STOP_WAIT_MS: u64 = 2_000;
+
 #[cfg(windows)]
 const WINDOWS_SANDBOX_UNAVAILABLE: &str =
     "The sandbox has no backend on Windows; select Off in /settings > Process isolation";
@@ -440,21 +446,6 @@ pub struct OutputPageReply {
     pub reset: Option<bool>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ShellEvent {
-    Output { cursor: u64, text: String },
-    Marker { cursor: u64, line: String },
-}
-
-impl ShellEvent {
-    pub(crate) fn cursor(&self) -> u64 {
-        match self {
-            Self::Output { cursor, .. } | Self::Marker { cursor, .. } => *cursor,
-        }
-    }
-}
-
 /// A request to start a persistent PTY shell on this execution node.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -630,20 +621,6 @@ pub struct OutputRequest {
     pub task_id: String,
     pub cursor: Option<u64>,
     pub limit: Option<u64>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ShellEventRequest {
-    pub task_id: String,
-    pub cursor: u64,
-    pub wait_ms: u64,
-    pub limit: usize,
-}
-
-pub(crate) struct ShellEventPage {
-    pub events: Vec<ShellEvent>,
-    pub next_cursor: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -1265,7 +1242,24 @@ impl HostPlatform {
                     .shell
                     .write(b"\x03")
                     .await
-                    .map_err(|error| HostPlatformError::Io(error.to_string()))
+                    .map_err(|error| HostPlatformError::Io(error.to_string()))?;
+                if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status != WaitStatus::Running {
+                    return Ok(());
+                }
+                // A command still running after the interrupt did not end
+                // inside the live shell (some shells abort the whole wrapper
+                // line, so no end marker can print). The command runs in the
+                // terminal's foreground process group, which a shell that
+                // aborts the line leaves running; signal it before terminating
+                // the shell, whose sweep records the command's terminal.
+                command.shell.kill_foreground_group().await;
+                command.shell.terminate();
+                if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status == WaitStatus::Running {
+                    return Err(HostPlatformError::Failed(
+                        "the shell did not confirm the command's end".into(),
+                    ));
+                }
+                Ok(())
             }
             TaskKind::Job(job) => {
                 if !self.stopping.lock().unwrap().insert(task.id.clone()) {
@@ -1405,13 +1399,6 @@ impl HostPlatform {
     pub(crate) fn shell_command(&self, id: &str) -> Option<Arc<shell::ShellCommand>> {
         match &self.task(id)?.kind {
             TaskKind::ShellCommand(command) => Some(command.clone()),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn job_marker(&self, id: &str) -> Option<String> {
-        match &self.task(id)?.kind {
-            TaskKind::Job(job) => Some(job.end_marker.clone()),
             _ => None,
         }
     }
@@ -1775,24 +1762,6 @@ impl HostPlatform {
             truncated: page.truncated,
             retained_from: 0,
             reset: None,
-        })
-    }
-
-    /// The private ShellSession transport: the lossless owner event page.
-    /// Not a public data-face operation and never exposed through TypeScript.
-    pub(crate) async fn shell_events(
-        &self,
-        request: ShellEventRequest,
-    ) -> Result<ShellEventPage, HostPlatformError> {
-        let shell = self
-            .shell_task(&request.task_id)
-            .ok_or(HostPlatformError::TaskUnknown)?;
-        let page = shell
-            .events_page(request.cursor, Some(request.wait_ms), request.limit)
-            .await;
-        Ok(ShellEventPage {
-            events: page.events,
-            next_cursor: page.next_cursor,
         })
     }
 
@@ -3558,6 +3527,9 @@ impl PtyProcessTree {
             self.terminating = true;
             #[cfg(unix)]
             {
+                // The command an interactive shell is running leads the
+                // terminal's foreground group, outside the shell's own.
+                let foreground = self.kill_foreground_group();
                 native::kill_tree(self.pid);
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
                 while tokio::time::Instant::now() < deadline {
@@ -3565,6 +3537,9 @@ impl PtyProcessTree {
                         Some(_) => break,
                         None => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
                     }
+                }
+                if let Some(leader) = foreground {
+                    let _ = wait_group_gone(leader).await;
                 }
             }
             #[cfg(windows)]
@@ -3582,6 +3557,25 @@ impl PtyProcessTree {
         }
         Ok(())
     }
+    /// Signals the terminal's foreground process group, where an interactive
+    /// shell runs the command it is executing, and answers its leader when that
+    /// group is not the shell's own.
+    pub(crate) fn kill_foreground_group(&self) -> Option<u32> {
+        #[cfg(unix)]
+        {
+            let leader = self.master.process_group_leader()?;
+            if leader as u32 == self.pid {
+                return None;
+            }
+            // SAFETY: plain syscall on the addressed group.
+            unsafe { libc::kill(-leader, libc::SIGKILL) };
+            Some(leader as u32)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
     /// The root exited on its own and was reaped: its descendants stay.
     fn released(&self) -> bool {
         self.reaped && !self.terminating
@@ -3592,6 +3586,7 @@ impl PtyProcessTree {
 impl Drop for PtyProcessTree {
     fn drop(&mut self) {
         if !self.terminated && !self.released() {
+            self.kill_foreground_group();
             native::kill_tree(self.pid);
         }
     }
@@ -3605,19 +3600,21 @@ impl Drop for PtyProcessTree {
     }
 }
 
-/// Terminates a background job by its root pid: the process group it leads
-/// on POSIX, the process tree under it on Windows.
-pub fn terminate_job(pid: u32) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        // SAFETY: plain syscall on the addressed group.
-        if unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) } != 0 {
-            return Err(io::Error::last_os_error());
+#[cfg(unix)]
+async fn wait_group_gone(leader: u32) -> bool {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        // SAFETY: signal 0 only probes the addressed group.
+        if unsafe { libc::kill(-(leader as libc::pid_t), 0) } != 0
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            return true;
         }
-        Ok(())
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    #[cfg(windows)]
-    native::terminate_tree(pid)
 }
 
 async fn observe_job_release(
@@ -3652,9 +3649,8 @@ async fn observe_job_release(
     }
 }
 
-/// Kills a background job that outlived its shell and confirms it is gone:
-/// the process group it leads on POSIX, the process tree under it on
-/// Windows.
+/// Kills a background job and confirms it is gone: the process group it leads
+/// on POSIX, the process tree under it on Windows.
 pub async fn kill_job(pid: u32, tree: Option<Vec<u32>>) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -4024,18 +4020,17 @@ pub(crate) mod shell {
         ExecShellRuntime, HostPlatform, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
         ShellEdition, ShellStatus,
     };
-    use super::{TaskKind, TaskRecord, terminate_job};
+    use super::{TaskKind, TaskRecord, job_tree, kill_job};
     use crate::workspace_tools::background::{
         OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page,
     };
     use std::{
-        collections::VecDeque,
         io::{self, Read, Write},
         path::{Path, PathBuf},
         sync::{Arc, Mutex, Weak},
-        time::{Duration, Instant},
+        time::Duration,
     };
-    use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
+    use tokio::sync::{Mutex as AsyncMutex, watch};
     use tokio_util::sync::CancellationToken;
 
     const RETAINED: usize = 64 * 1024;
@@ -4049,10 +4044,8 @@ pub(crate) mod shell {
     pub(crate) struct ShellTask {
         pty: AsyncMutex<Option<PtyProcessTree>>,
         capture: Mutex<Capture>,
-        events: Mutex<ShellEvents>,
         active_command: Mutex<Option<Weak<super::TaskRecord>>>,
         children: Mutex<Vec<Weak<super::TaskRecord>>>,
-        event_notify: Arc<Notify>,
         kill: CancellationToken,
         path: PathBuf,
         edition: super::ShellEdition,
@@ -4263,8 +4256,6 @@ pub(crate) mod shell {
         }
     }
 
-    const EVENT_RETAIN_CHARS: usize = 1024 * 1024;
-
     fn parse_shell_job(line: &str) -> Option<(String, u32)> {
         let (prefix, tail) = last_full_marker(line)?;
         if prefix != "__DIM_END_" {
@@ -4274,13 +4265,6 @@ pub(crate) mod shell {
         let pid = parts.next()?.parse().ok()?;
         let task_id = parts.next()?;
         Some((task_id.to_owned(), pid))
-    }
-
-    fn shell_event_len(event: &super::ShellEvent) -> usize {
-        match event {
-            super::ShellEvent::Output { text, .. } => text.len(),
-            super::ShellEvent::Marker { line, .. } => line.len(),
-        }
     }
 
     fn last_full_marker(line: &str) -> Option<(&'static str, &str)> {
@@ -4311,113 +4295,6 @@ pub(crate) mod shell {
             }
         }
         found.map(|(_, marker)| marker)
-    }
-
-    #[derive(Default)]
-    struct ShellEvents {
-        items: VecDeque<super::ShellEvent>,
-        pending: String,
-        base: u64,
-        next: u64,
-        chars: usize,
-    }
-
-    impl ShellEvents {
-        fn push(&mut self, text: String) {
-            self.pending.push_str(&text);
-            while let Some(newline) = self.pending.find('\n') {
-                let line: String = self.pending.drain(..=newline).collect();
-                let cursor = self.next;
-                self.next += 1;
-                self.chars += line.len();
-                if last_full_marker(&line).is_some() {
-                    self.items
-                        .push_back(super::ShellEvent::Marker { cursor, line });
-                } else {
-                    self.items
-                        .push_back(super::ShellEvent::Output { cursor, text: line });
-                }
-            }
-            if self.pending.len() > 65536 {
-                let cursor = self.next;
-                self.next += 1;
-                let text = std::mem::take(&mut self.pending);
-                self.chars += text.len();
-                self.items
-                    .push_back(super::ShellEvent::Output { cursor, text });
-            }
-        }
-
-        fn trim(&mut self) {
-            let mut removed = false;
-            while self.chars > EVENT_RETAIN_CHARS {
-                let Some(front) = self.items.pop_front() else {
-                    break;
-                };
-                self.chars = self.chars.saturating_sub(shell_event_len(&front));
-                removed = true;
-            }
-            if removed {
-                self.base = self
-                    .items
-                    .front()
-                    .map(super::ShellEvent::cursor)
-                    .unwrap_or(self.next);
-            }
-        }
-
-        fn finish(&mut self) {
-            if self.pending.is_empty() {
-                return;
-            }
-            let cursor = self.next;
-            self.next += 1;
-            let text = std::mem::take(&mut self.pending);
-            self.chars += text.len();
-            self.items
-                .push_back(super::ShellEvent::Output { cursor, text });
-        }
-
-        fn page(&mut self, cursor: u64, limit: usize) -> EventPage {
-            while let Some(front) = self.items.front() {
-                if front.cursor() >= cursor {
-                    break;
-                }
-                if let Some(front) = self.items.pop_front() {
-                    self.chars = self.chars.saturating_sub(shell_event_len(&front));
-                    self.base = front.cursor() + 1;
-                }
-            }
-            let reset = cursor < self.base;
-            let mut events = Vec::new();
-            let mut used = 0;
-            for event in self.items.iter().filter(|event| event.cursor() >= cursor) {
-                let length = shell_event_len(event);
-                if !events.is_empty() && used + length > limit {
-                    break;
-                }
-                used += length;
-                events.push(event.clone());
-                if used >= limit {
-                    break;
-                }
-            }
-            let next_cursor = events
-                .last()
-                .map(|event| event.cursor() + 1)
-                .unwrap_or(cursor.max(self.base));
-            EventPage {
-                events,
-                next_cursor,
-                reset,
-            }
-        }
-    }
-
-    pub(crate) struct EventPage {
-        pub(crate) events: Vec<super::ShellEvent>,
-        pub(crate) next_cursor: u64,
-        pub(crate) reset: bool,
     }
 
     #[derive(Default)]
@@ -4608,10 +4485,8 @@ pub(crate) mod shell {
                 let shell = Arc::new(ShellTask {
                     pty: AsyncMutex::new(None),
                     capture: Mutex::default(),
-                    events: Mutex::default(),
                     active_command: Mutex::new(None),
                     children: Mutex::new(Vec::new()),
-                    event_notify: Arc::new(Notify::new()),
                     kill: CancellationToken::new(),
                     path,
                     edition: runtime.edition,
@@ -4675,14 +4550,6 @@ pub(crate) mod shell {
                         }
                     }
                     drop(capture);
-                    {
-                        let mut events = pump.events.lock().unwrap();
-                        events.trim();
-                        if !shell_record.is_terminal() {
-                            events.push(chunk);
-                        }
-                    }
-                    pump.event_notify.notify_waiters();
                 }
                 let (raw_tail, tail) = filter.finish();
                 if !raw_tail.is_empty() {
@@ -4710,15 +4577,11 @@ pub(crate) mod shell {
                         let _ = file.write_all(&tail.as_bytes()[..take]);
                     }
                     drop(capture);
-                    let mut events = pump.events.lock().unwrap();
-                    events.trim();
-                    events.push(tail);
                 }
-                if let Some(pump) = pump.upgrade() {
-                    if let Some(line) = splitter.finish() {
-                        classify_line(&line, &pump, &jobs);
-                    }
-                    pump.events.lock().unwrap().finish();
+                if let Some(pump) = pump.upgrade()
+                    && let Some(line) = splitter.finish()
+                {
+                    classify_line(&line, &pump, &jobs);
                 }
                 let _ = drained.send(());
             });
@@ -4764,6 +4627,20 @@ pub(crate) mod shell {
                     reader_finished,
                 )
                 .await;
+                // A job outlives its shell only until it is released: confirm
+                // that before the shell's terminal sweeps it to its own.
+                for child in worker.children_list() {
+                    if child.is_terminal() {
+                        continue;
+                    }
+                    let pid = match &child.kind {
+                        TaskKind::Job(job) => *job.pid.borrow(),
+                        _ => None,
+                    };
+                    if let Some(pid) = pid {
+                        let _ = kill_job(pid, job_tree(pid)).await;
+                    }
+                }
                 let terminal =
                     shell_terminal(&worker_record, worker.output_record(), exit, status, error);
                 worker_record.finish(terminal);
@@ -4864,7 +4741,7 @@ pub(crate) mod shell {
                     super::TaskKind::ShellCommand(command) => command.output_record(),
                     super::TaskKind::Job(job) => {
                         if let Some(pid) = *job.pid.borrow() {
-                            let _ = terminate_job(pid);
+                            super::native::kill_tree(pid);
                         }
                         job.output_record().0
                     }
@@ -4887,6 +4764,19 @@ pub(crate) mod shell {
             self.kill.cancel();
         }
 
+        pub(crate) async fn kill_foreground_group(&self) -> bool {
+            let leader = {
+                let pty = self.pty.lock().await;
+                pty.as_ref().and_then(|pty| pty.kill_foreground_group())
+            };
+            #[cfg(unix)]
+            if let Some(leader) = leader {
+                return super::wait_group_gone(leader).await;
+            }
+            let _ = leader;
+            true
+        }
+
         pub(crate) fn output_record(&self) -> super::OutputRecord {
             let capture = self.capture.lock().unwrap();
             let (preview, preview_truncated) =
@@ -4901,32 +4791,6 @@ pub(crate) mod shell {
             }
         }
 
-        pub(crate) async fn events_page(
-            &self,
-            cursor: u64,
-            wait_ms: Option<u64>,
-            limit: usize,
-        ) -> EventPage {
-            let wait = wait_ms.unwrap_or(0);
-            let deadline = Instant::now() + Duration::from_millis(wait.min(86_400_000));
-            loop {
-                let page = {
-                    let mut events = self.events.lock().unwrap();
-                    let page = events.page(cursor, limit);
-                    drop(events);
-                    page
-                };
-                if !page.events.is_empty() || page.reset || wait == 0 || Instant::now() >= deadline
-                {
-                    return page;
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                tokio::select! {
-                    _ = self.event_notify.notified() => {}
-                    _ = tokio::time::sleep(remaining) => {}
-                }
-            }
-        }
         pub(crate) async fn write(&self, data: &[u8]) -> io::Result<()> {
             self.pty
                 .lock()

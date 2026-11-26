@@ -12,7 +12,6 @@ pub mod context_preparation;
 mod context_usage;
 pub mod defaults;
 pub mod environment_clients;
-pub mod exec_stop;
 pub mod execution_settings;
 pub mod file_access;
 pub mod file_storage;
@@ -119,7 +118,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<prompt_sources::PromptSourcesBranch>(catalog, branch);
     register::<workspace_tools::background::BackgroundExec>(catalog, branch);
     register::<shell_session::ShellSession>(catalog, branch);
-    register::<dyn exec_stop::ExecStop>(catalog, branch);
     register::<wait::Wait>(catalog, branch);
     register::<workspace_tools::file_reads::FileReads>(catalog, branch);
     catalog.register_shared_instance("branchLine", BRANCH_GROUP);
@@ -146,7 +144,6 @@ impl PublicService for input_queue::SubmitChecks {}
 impl PublicService for permission::Permission {}
 impl PublicService for workspace_tools::background::BackgroundExec {}
 impl PublicService for shell_session::ShellSession {}
-impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
 impl PublicService for timeline_tree::BranchLine {}
 impl PublicService for tool_registry::ToolRegistry {}
