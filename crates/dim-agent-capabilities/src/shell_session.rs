@@ -575,11 +575,22 @@ impl ShellSession {
             .map_err(|error| error.to_string())?;
         let _ = std::fs::remove_file(&output_path);
         if reply.status == WaitStatus::Running {
-            let mut inner = self.inner.lock().await;
-            let task_id = inner.shell.take();
-            let captured = reply.preview.clone();
-            inner.had_reset = true;
-            drop(inner);
+            let task_id = {
+                let mut inner = self.inner.lock().await;
+                inner.had_reset = true;
+                inner.shell.take()
+            };
+            let captured = match &task_id {
+                Some(task_id) => self
+                    .host
+                    .tail(TaskRequest {
+                        task_id: task_id.clone(),
+                    })
+                    .await
+                    .map(|tail| tail.text)
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
             if let Some(task_id) = task_id {
                 self.stop_shell(&task_id).await;
             }
