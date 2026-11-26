@@ -130,6 +130,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 **结果**是 `content` 的文本；blob 和图片为 `[file]` 与 `[image]`；工具带入的上下文消息为 `with <n> context messages`。展开这次调用时给出全部内容。结果比调用晚到不同的分钟时，结局带上结果的时间。
 
+**声明的效果**是工具在文本之外声明自己做过的事：写了一个文件，或运行了一条命令（[Session Boundary §5](../contracts/session-boundary.md#5-context-mapping)）。它们属于这次调用的记录，不属于结果文本：行里不出现；展开这次调用时，在结局下逐条给出，`wrote <path>` 或 `ran <command> (exit <code>)`、`(signal <name>)` 或不带状态，命令按摘要的规则截短。
+
 ### 3.5 不重复讲
 
 有些经历此刻仍在模型眼前。Recall 指向它们，而不是重复：
@@ -173,6 +175,8 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 | `… without a message to you` | `… without a message` |
 
 没有自己的那一轮时，所读的线上每个没有 `turn/end` 的轮次都是 `in progress`。
+
+把手属于显示它的那条线（§4）。所读的线在两次调用之间可能变化的读者，比如成员的当前线会变，可能拿着新线上没有的把手；这个把手与任何未知 id 一样被拒绝（§6），拒绝消息告诉读者不带 `open` 或 `before` 再读一次，从它现在所读的线的最近几轮开始。
 
 ## 4. 把手：时间与事件 id
 
@@ -298,7 +302,7 @@ End of turn. Open one: open=<id>.
 | `open` 与 `about`、`tool` 或 `before` 同时出现 | `recall: open shows one turn or thing; drop about, tool and before.` |
 | 没有 `open` 却给了 `offset` | `recall: offset needs open.` |
 | 类型错误、空字符串或只有空白、`about` 超过 200 字符、未知字段 | `recall: <field> must be <what>.` |
-| `open` 或 `before` 不是某一行的 id | `No turn or line has id <id>.` |
+| `open` 或 `before` 不是某一行的 id | `No turn or line has id <id>. Read without open or before for the latest turns.` |
 | `offset` 超出一轮或一件事的末尾 | `Turn <id> has <n> lines.` / `<id> has <len> characters.` |
 
 宿主错误按 `wait` 的映射：Session 正在重载导致 Branch 门面读取失败时返回 `HostError::Cancelled(CAPABILITY_RELOADING)`，其他门面错误（未知或已关闭的分支）返回带其文本的 `HostError::failed`，被取消的调用返回 `HostError::Cancelled`。ToolExecutor 把它们各自变成该调用的终态结果。

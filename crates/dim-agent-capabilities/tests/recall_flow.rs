@@ -816,7 +816,7 @@ async fn a_child_branch_opens_inherited_ids_and_tells_its_fork_and_the_cut_paren
 
         let (page, error) = recall(&session, &child, json!({ "open": "not-a-line" })).await;
         assert!(error);
-        assert_eq!(page, "No turn or line has id not-a-line.");
+        assert_eq!(page, "No turn or line has id not-a-line. Read without open or before for the latest turns.");
 
         // The opening input on the child is its identity block.
         let (page, error) = recall(&session, &child, json!({})).await;
@@ -2887,8 +2887,14 @@ fn the_arguments_and_the_paginations_say_how_to_fix_the_call() {
             json!({ "nope": 1 }),
             "recall: nope must be a known argument.",
         ),
-        (json!({ "open": "nope" }), "No turn or line has id nope."),
-        (json!({ "before": "nope" }), "No turn or line has id nope."),
+        (
+            json!({ "open": "nope" }),
+            "No turn or line has id nope. Read without open or before for the latest turns.",
+        ),
+        (
+            json!({ "before": "nope" }),
+            "No turn or line has id nope. Read without open or before for the latest turns.",
+        ),
     ] {
         let (page, error) = recorded.answer("t2", arguments.clone());
         assert!(error, "{arguments} is not an error: {page}");

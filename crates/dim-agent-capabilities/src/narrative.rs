@@ -171,6 +171,8 @@ struct Outcome {
     error: bool,
     /// A result that closed a call never dispatched (`call_event_id` absent).
     never_dispatched: bool,
+    /// What the tool declared it did beside its text, shortened (§3.4).
+    effects: Vec<ToolEffect>,
 }
 
 struct Exec {
@@ -519,6 +521,7 @@ impl<'a> Narrative<'a> {
                                 text: result_text(&item.result),
                                 error: item.result.is_error.unwrap_or(false),
                                 never_dispatched: data.call_event_id.is_none(),
+                                effects: item.result.shortened_effects().unwrap_or_default(),
                             });
                             joined = true;
                         }
@@ -745,7 +748,7 @@ impl<'a> Narrative<'a> {
     fn answer(&self, calling_turn: &str, arguments: &Query) -> ToolResult {
         if let Some(open) = &arguments.open {
             let Some(entry) = self.ids.get(open.as_str()).copied() else {
-                return ToolResult::error(format!("No turn or line has id {}.", part(open)));
+                return unknown(open);
             };
             return match entry {
                 Entry::Turn(index) => self.turn_page(index, arguments.offset.unwrap_or(0)),
@@ -756,7 +759,7 @@ impl<'a> Narrative<'a> {
             Some(before) => match self.ids.get(before.as_str()).copied() {
                 Some(entry) => Some(entry_anchor(&self.turns, &self.things, entry)),
                 None => {
-                    return ToolResult::error(format!("No turn or line has id {}.", part(before)));
+                    return unknown(before);
                 }
             },
             None => None,
@@ -1100,7 +1103,11 @@ impl<'a> Narrative<'a> {
             }
             Kind::Reply { text, .. } => format!("\n{text}"),
             Kind::Call(call) => {
-                let ending = ending(call, time, true);
+                let mut ending = ending(call, time, true);
+                for effect in call.result.iter().flat_map(|result| &result.effects) {
+                    ending.push('\n');
+                    ending.push_str(&effect_line(effect));
+                }
                 match &call.input {
                     Some(input) => format!(
                         "{}\n\n{ending}",
@@ -1593,6 +1600,31 @@ fn ending(call: &Call, origin: u64, full: bool) -> String {
         );
     }
     "no result yet".into()
+}
+
+/// The refusal of a handle that is not on the line read: one from a line the
+/// reader no longer reads restarts from the latest page (§3.8).
+fn unknown(id: &str) -> ToolResult {
+    ToolResult::error(format!(
+        "No turn or line has id {}. Read without open or before for the latest turns.",
+        part(id)
+    ))
+}
+
+/// A declared effect as the full view of its call tells it (§3.4).
+fn effect_line(effect: &ToolEffect) -> String {
+    match effect {
+        ToolEffect::FileWritten { path } => format!("wrote {path}"),
+        ToolEffect::CommandRun {
+            command,
+            exit_code,
+            signal,
+        } => match (exit_code, signal) {
+            (Some(code), _) => format!("ran {command} (exit {code})"),
+            (None, Some(signal)) => format!("ran {command} (signal {signal})"),
+            (None, None) => format!("ran {command}"),
+        },
+    }
 }
 
 fn status_text(status: ExecStatus) -> &'static str {

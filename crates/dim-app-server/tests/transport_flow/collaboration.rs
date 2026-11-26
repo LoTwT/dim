@@ -7,7 +7,7 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::{
     AgentEvent, CollaborationDelivery, CollaborationOutcome, ContentBlock, EventKind, InputBlock,
-    InputMessageData, MessageContent, ToolContent,
+    InputMessageData, MessageContent, ToolContent, ToolEffect,
 };
 use futures_util::FutureExt;
 use rutis::Ctx;
@@ -3271,6 +3271,52 @@ impl ToolDriver for GateTools {
     }
 }
 
+/// Mock tools plus `touch`, whose result declares the effects its input
+/// names, the way a workspace tool declares its own result (session
+/// boundary A.6).
+struct EffectTools;
+impl ToolDriver for EffectTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        let mut tools = MockTools.definitions();
+        tools.push(dim_agent_capabilities::tool_registry::definition(
+            "touch",
+            "Declare the file or the command the input names.",
+            json!({"type": "object", "additionalProperties": false, "properties": {
+                "path": {"type": "string"}, "command": {"type": "string"}}}),
+        ));
+        tools
+    }
+    fn execute(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        if call.name != "touch" {
+            let mock: &'static MockTools = &MockTools;
+            return mock.execute(call, context, cancel);
+        }
+        Box::pin(async move {
+            let mut effects = Vec::new();
+            if let Some(path) = call.input.get("path").and_then(Value::as_str) {
+                effects.push(ToolEffect::FileWritten {
+                    path: path.to_owned(),
+                });
+            }
+            if let Some(command) = call.input.get("command").and_then(Value::as_str) {
+                effects.push(ToolEffect::CommandRun {
+                    command: command.to_owned(),
+                    exit_code: Some(0),
+                    signal: None,
+                });
+            }
+            let mut result = ToolResult::text("touched");
+            result.effects = (!effects.is_empty()).then_some(effects);
+            Ok(result)
+        })
+    }
+}
+
 /// Messages to a working member join its running turn at the next tool
 /// result; a request's work spans the member's turns until it is idle and
 /// returns the last turn's output. `read` pages through a Timeline.
@@ -6046,6 +6092,93 @@ async fn undispatched_results_name_calls_from_their_starts() {
             .count(),
         UNFINISHED_CALLS,
         "reused call ids in a later request must not rename earlier results: {earlier}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Opening a member's call shows the effects its result declared beside its
+/// text: the path verbatim, a command cut at 200 characters with the cut
+/// marked, and nothing for a result that declared none; the call's line in a
+/// page leaves them out (Recall §3.4, session boundary §5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opening_a_member_call_shows_the_effects_it_declared() {
+    let (server, agent) = launch_with_agent(Arc::new(EffectTools), ServerConfig::default()).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "touch"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let path = "/work/src/parse.py";
+    let command = format!("cargo test --locked {}", "x".repeat(200));
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request",
+            "prompt": format!("tool:touch {{\"path\":\"{path}\"}}"),
+            "profile": {"name": "helper", "description": "", "systemPrompt": "", "tools": ["touch"]}}),
+        ),
+        "queue",
+    )
+    .await;
+    let started = poll("temporary request", async || {
+        let timeline = events(&lead_session).await;
+        (!results(&timeline).is_empty()).then(|| last_ok(&timeline))
+    })
+    .await;
+    let temporary = started["agentId"].as_str().unwrap().to_owned();
+    let member = started["sessionId"].as_str().unwrap().to_owned();
+    for input in [
+        format!("tool:touch {{\"command\":\"{command}\"}}"),
+        r#"tool:touch {"note":"neither"}"#.to_string(),
+    ] {
+        say(&mut client, &member, input, "queue").await;
+        idle(&mut client, &member).await;
+    }
+
+    let read = async |client: &mut Client, query: Value| {
+        let mut input = json!({"action": "read", "agentId": temporary, "sessionId": member});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(query.as_object().unwrap().clone());
+        say(client, &lead, tool(input), "queue").await;
+        idle(client, &lead).await;
+        last_text(&events(&lead_session).await)
+    };
+    let calls = read(&mut client, json!({"tool": "touch"})).await;
+    let id_of = |marker: &str| -> String {
+        calls
+            .lines()
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| panic!("no line with {marker} in {calls}"))
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        !calls.contains("wrote ") && !calls.contains("(exit 0)"),
+        "a call's line leaves its effects out: {calls}"
+    );
+
+    let wrote = read(&mut client, json!({"open": id_of("path=")})).await;
+    assert!(
+        wrote.contains(&format!("ok: touched\nwrote {path}\n")),
+        "{wrote}"
+    );
+    let ran = read(&mut client, json!({"open": id_of("command=")})).await;
+    assert!(
+        ran.contains(&format!("ok: touched\nran {}… (exit 0)\n", &command[..200])),
+        "{ran}"
+    );
+    let neither = read(&mut client, json!({"open": id_of("note=")})).await;
+    assert!(
+        !neither.contains("wrote ") && !neither.contains("\nran "),
+        "{neither}"
     );
     server.shutdown();
     server.join().await.unwrap();
@@ -9122,8 +9255,8 @@ async fn a_cancel_stops_the_line_the_request_was_delivered_to() {
 }
 
 /// A read tells the member's default line as it is when the read runs: after
-/// the member moves its default back, the side line's turn is not told
-/// (design §9).
+/// the member moves its default back, the side line's turn is not told, and
+/// its handle is refused with the way to start again (design §9, Recall §3.8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_tells_the_line_the_member_is_on() {
     let (server, agent, mut client, lead, lead_session, holder, _gate) = launch_branch_team().await;
@@ -9161,6 +9294,12 @@ async fn a_read_tells_the_line_the_member_is_on() {
     };
     let on_side = read(&mut client).await;
     assert!(on_side.contains("turn: user \"side turn\""), "{on_side}");
+    let side_turn = on_side
+        .lines()
+        .find(|line| line.contains("side turn"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap()
+        .to_owned();
 
     assert_ok(
         &client
@@ -9174,6 +9313,21 @@ async fn a_read_tells_the_line_the_member_is_on() {
     assert!(
         !on_main.contains("side turn"),
         "a read tells the line the member is on: {on_main}"
+    );
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "read", "agentId": holder, "sessionId": member, "open": side_turn})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    assert_eq!(
+        last_error(&events(&lead_session).await),
+        format!(
+            "No turn or line has id {side_turn}. Read without open or before for the latest turns."
+        ),
+        "a handle from the line the member left restarts from the latest turns"
     );
     server.shutdown();
     server.join().await.unwrap();

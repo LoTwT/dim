@@ -39,7 +39,7 @@ leader 的 `agent` request schema 要求新生成的调用带有字符串 `title
 
 `read` 用 [Recall §3](Recall.md#3-叙事投影) 的叙事投影讲述团队成员的活动，人称是 [Recall §3.8](Recall.md#38-人称与其他读者) 的第三人称：与 `recall` 给模型讲它自己历史的行相同，只是不称呼读者。每次读取讲成员对话在读取时所在的那条线，读到这条线的头部。谁能读谁不变（§6.2）。查询沿用 Recall 的（[Recall §5.2](Recall.md#52-输入)）：不带查询时按最近在前列出各轮，`open` 按 id 展示一轮或完整的一件事，`offset` 接着一次 `open` 往下读，`before` 向前翻页，`about` 与 `tool` 检索。被拒绝的查询是 `invalid_input`，消息以 `agent:` 开头。
 
-**兼容性。** 这次替换了事件页面。`after`、`branchId` 与 `limit` 不再接受；读取返回叙事文本，结构化内容是 `{level, ids, next}`，不再是 `{agentId, sessionId, branchId, events, nextCursor}`。原页面列出原始条目和每个结果的 `effects`；现在打开一次调用即可读到它完整的参数和结果。存储的数据不变。
+**兼容性。** 这次替换了事件页面。`after`、`branchId` 与 `limit` 不再接受；读取返回叙事文本，结构化内容是 `{level, ids, next}`，不再是 `{agentId, sessionId, branchId, events, nextCursor}`。原页面列出原始条目和每个结果的 `effects`；现在打开一次调用即可读到它完整的参数、结果和声明的效果（[Recall §3.4](Recall.md#34-每件事怎么讲)）。原页面的 `branchId` 让读者在成员默认线移开之后仍能在原线上接着读；现在把手属于显示它的那条线，默认线移开后，读者从新线的最近几轮重新开始（[Recall §3.8](Recall.md#38-人称与其他读者)）。存储的数据不变。
 
 ## 2. guide 条目
 

@@ -306,6 +306,12 @@ tunable limit.
 the tool added are `with <n> context messages`. Opening the call shows all of it. When the result
 arrives in a later minute than the call, the ending carries its time.
 
+**Declared effects** are what the tool declared it did beside its text, a file written or a
+command run ([Session Boundary §5](../contracts/session-boundary.md#5-context-mapping)). They are
+part of the call's record, not of the result text: the line leaves them out, and opening the call
+shows each one under the ending, `wrote <path>` or `ran <command> (exit <code>)`, `(signal <name>)`
+or no status, the command shortened as the digest shortens it.
+
 ### 3.5 Not telling twice
 
 Some of what happened is still in front of the model. Recall points to it instead of repeating
@@ -376,6 +382,11 @@ nothing; it only drops the address to the reader:
 | `… without a message to you` | `… without a message` |
 
 Without a turn of its own, every turn without a `turn/end` on the read line is `in progress`.
+
+A handle belongs to the line it was shown on (§4). A reader whose line can change between calls,
+as a member's current line can, may hold a handle the new line does not have; that handle is
+refused as any unknown id is (§6), and the refusal tells the reader to read again without `open`
+or `before`, which starts from the latest turns of the line it now reads.
 
 ## 4. Handles: time and event id
 
@@ -530,7 +541,7 @@ Errors (`ToolResult::error`) say how to fix the call:
 | `open` with `about`, `tool` or `before` | `recall: open shows one turn or thing; drop about, tool and before.` |
 | `offset` without `open` | `recall: offset needs open.` |
 | Wrong type, empty or whitespace-only string, `about` over 200 characters, unknown field | `recall: <field> must be <what>.` |
-| `open` or `before` is not the id of a line | `No turn or line has id <id>.` |
+| `open` or `before` is not the id of a line | `No turn or line has id <id>. Read without open or before for the latest turns.` |
 | `offset` past the end of a turn or a thing | `Turn <id> has <n> lines.` / `<id> has <len> characters.` |
 
 Host errors, as `wait` maps them: a branch facade read that fails because the Session is reloading

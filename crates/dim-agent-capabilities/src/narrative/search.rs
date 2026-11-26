@@ -721,10 +721,7 @@ pub(super) async fn run(
     }
     if let Some(id) = &arguments.before {
         let Some(anchor) = search.anchor(id).await? else {
-            return Ok(ToolResult::error(format!(
-                "No turn or line has id {}.",
-                part(id)
-            )));
+            return Ok(unknown(id));
         };
         let (ordinal, sequence) = search.order(&anchor);
         conditions.push(or(vec![
@@ -928,7 +925,7 @@ pub(super) async fn open(
     let QueryOutput::Rows { mut rows } = reply.result else {
         unreachable!("Recall origin fields")
     };
-    let missing = || ToolResult::error(format!("No turn or line has id {}.", part(id)));
+    let missing = || unknown(id);
     let Some(row) = rows.first() else {
         return Ok(missing());
     };
@@ -1131,10 +1128,7 @@ pub(super) async fn index(
     };
     let before = if let Some(id) = &arguments.before {
         let Some(at) = search.anchor(id).await? else {
-            return Ok(ToolResult::error(format!(
-                "No turn or line has id {}.",
-                part(id)
-            )));
+            return Ok(unknown(id));
         };
         Some(at)
     } else {
