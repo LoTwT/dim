@@ -3382,8 +3382,8 @@ const MEMBER_DESCRIPTION: &str = "You are a member of a team. You cannot delegat
   receiver sees in its next step without interrupting it, and waits while it is idle.
 - read: view a team member's recent activity, more pages by passing nextCursor as after
   together with the branchId the page reported. list: show your team.
-Your final answer to the task is returned to the leader automatically; do not send it
-as a message.";
+When you stop, your last reply is the result the leader receives; do not send it as a
+message.";
 
 fn agent_definition(
     role: CollaborationRole,
