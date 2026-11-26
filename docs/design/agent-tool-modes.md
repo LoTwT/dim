@@ -90,13 +90,13 @@ mean something, not a simplification.
 
 `codemode` and `shell` declare what the table lists: their entry tool and the extras their mode
 needs. `codemode` adds `skill`, whose instructions the model reads directly; `shell` has no
-program, so it adds `ask_user` and `recall`. `normal` declares the work tools.
+program, so it adds `ask_user`, `goal_update` and `recall`. `normal` declares the work tools.
 
 | Mode | Declared | A program may call | Hidden |
 | --- | --- | --- | --- |
 | `normal` (default) | every tool except `codemode` and `execute` | — | `codemode`, `execute` |
 | `codemode` | `codemode`, `skill` | every tool except `codemode` | — |
-| `shell` | `execute`, `ask_user`, `recall` | — | every other tool |
+| `shell` | `execute`, `ask_user`, `goal_update`, `recall` | — | every other tool |
 
 - `codemode` loses no reach: its program calls every tool except `codemode`, so images, the web,
   MCP, lines, agents, schedules, settings and the shell are all available inside a program.
@@ -146,7 +146,7 @@ owns this projection. Three terms:
 | --- | --- | --- | --- |
 | `normal` | every tool except `codemode` and `execute` | none | — |
 | `codemode` | `codemode`, `skill` | every tool except `codemode` | the Session runs `normal` |
-| `shell` | `execute`, `ask_user`, `recall` | none | the Session runs `normal` |
+| `shell` | `execute`, `ask_user`, `goal_update`, `recall` | none | the Session runs `normal` |
 
 - The sets follow §2 and name no other tool: a new tool is declared in `normal`, callable from a
   `codemode` program and hidden in `shell`, so it needs no edit here.
@@ -194,8 +194,8 @@ The mode is Session configuration; there is no daemon-wide default to maintain.
 
 The mode is live for the Session's lifetime:
 
-- `ToolRegistry` holds the Session's current mode, initialised from the configuration. The
-  InputQueue records it when it applies an input; nothing re-adopts a tool set when it changes.
+- `ToolRegistry` holds the Session's current mode, initialised from the configuration. A request
+  reads it when it is prepared; nothing re-adopts a tool set when it changes.
 - `session.tool_mode.get` returns `{mode, effective}`: the mode the operator chose and the one in
   force. A mode whose entry tool is absent stays chosen and is not in force; that is the fallback.
   `session.tool_mode.update` writes the record and replaces the live value. A cancellation before
@@ -327,7 +327,7 @@ there is no default row to set.
 
 The picker lists all three modes; `normal` is always available, and `codemode` or `shell` is shown
 as unavailable when its `hello.features` entry is absent. A switch takes effect from the next
-applied input, and the row shows the effective mode, so a mode that fell back to `normal` is not
+request prepared after it, and the row shows the effective mode, so a mode that fell back to `normal` is not
 reported as in force. `goal_update` is a dialogue tool, so a goal can be completed or blocked in every mode.
 
 ## 9. Compatibility
@@ -357,7 +357,7 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
 
 - Flow: create a Session in each mode (request field; absent = `normal`) and assert the request's
   declarations: `normal` declares every tool except `codemode` and `execute`; `codemode` declares
-  `codemode` and `skill`; `shell` declares `execute`, `ask_user` and `recall`.
+  `codemode` and `skill`; `shell` declares `execute`, `ask_user`, `goal_update` and `recall`.
 - Flow: in `codemode` mode a top-level call naming `read`, `ask_user` or `execute` is refused as an
   unknown tool even though the request pinned it for children, and a child call to `codemode` is
   refused as outside `delegated`. In `shell` mode a top-level call naming `read` is refused.
@@ -373,9 +373,8 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
   new visible set, a request after a tool result reads the live mode again, an in-process budget
   recovery keeps the mode it read, a process restart settles the in-flight request without
   reissuing it, and a call already admitted finishes.
-- Flow: a turn whose input is applied but which is deferred for compaction, or recovered after a
-  restart, uses the mode recorded at application; a switch after the application does not change
-  it.
+- Flow: a request deferred for a compaction step, or one built after a restart, reads the live
+  effective mode when it is prepared.
 - Flow: fallback — a mode whose entry tool is absent stays chosen in `get` and is reported as not in
   force; the Session declares the `normal` surface.
 - Flow: a member created under `codemode` records it; switching the creator leaves the member
@@ -417,11 +416,10 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
   the record write, the new value stays stored and in force. Both report the effective mode rather
   than refusing one.
 - §7.2: no object or resource handle crosses an owner; no new public service, and the mode methods
-  join the existing Session method face; the parameters are data. The mode gate is a
-  update gate is a synchronization primitive, not a service or a value; no new service crosses an
-  owner.
-- [ADR 002](../adr/002-plugin-scope.md) D1: the mode is Session configuration and the pinned mode is
-  branch state. D2: no wiring module. D3: ToolRegistry keeps no hard dependency on Code Mode; an
+  join the existing Session method face; the parameters are data. The update gate is a
+  synchronization primitive, not a service or a value; no new service crosses an owner.
+- [ADR 002](../adr/002-plugin-scope.md) D1: the mode is Session configuration, read live when a
+  request is prepared. D2: no wiring module. D3: ToolRegistry keeps no hard dependency on Code Mode; an
   absent or excluded `codemode` falls back to `normal`. D4: business configuration, read at creation
   and changed by its owner's operation. D5: the mode methods take data.
 ## 12. Requirements raised to mechanism owners
@@ -433,12 +431,13 @@ Requirements go to other owners:
 - **PromptSources.** The environment block follows the surface: while `shell` is in force (the
   `effective` value) it drops the Windows file-encoding guidance about `read`/`edit`/`write`. Its
   owner carries this into [PromptSources](plugins/PromptSources.md).
-- **Loop.** Record the effective mode when the input is applied, at its serial position; a rebuild
-  starts its pending inputs under the effective mode then. Its page gains the turn's mode pin. Its
-  owner carries this into [Loop](../architecture/rust-agent/plugins/Loop.md).
+- **Loop.** Read the live effective mode when a request is prepared; a switch applies to the next
+  request prepared after it. Its page gains that live read. Its owner carries this into
+  [Loop](../architecture/rust-agent/plugins/Loop.md).
 
 Everything else stays within the owners that already exist: ToolRegistry projects its own set and
-holds the live mode, the Loop holds the turn's mode pin, ToolBinding pins the callable set,
-ToolExecution refuses a call outside the turn's sets, ContextUsage counts `visible`, the App Server
+holds the live mode, the Loop reads it at preparation, ToolBinding pins the request's callable set,
+ToolExecution refuses a call outside the request's sets, ContextUsage counts the request's
+declarations, the App Server
 owns the stored record and the Session methods, and each client owns its control and its remembered
 choice.
