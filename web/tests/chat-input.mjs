@@ -106,6 +106,8 @@ function mount(t, branchId, questions = [], component, stores = {}, props = {}, 
       views: { session: view }, open() {}, ensureLine() {},
       async submit(sessionId, branch, value, attachments, mode) { submissions.push({ sessionId, branch, value, attachments, mode }) },
       async stop(sessionId, branch) { globalThis.chatInputStops.push({ sessionId, branch }) },
+      async loadToolMode() {},
+      async setToolMode() {},
       async withdrawInput(sessionId, branch, inputId) {
         globalThis.chatInputWithdrawals.push({ sessionId, branch, inputId })
         return { status: "deleted" }
