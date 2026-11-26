@@ -430,12 +430,16 @@ component and protocol tests do not already cover.
 CI keeps:
 
 - Ordinary workspace tests: the `dim-cli` component render and keyboard tests,
-  `dim-app-server` protocol and transport flows, the 422 non-TUI `cli_flow*`
-  cases (`--no-tui`, `exec`, piped prompts, ACP, `staged_update::recovery::`,
-  and the scripted daemon flows), and the 287 TUI cases #1810 still tracks
-  (including the 6 `staged_update::tui_update::` cases, which use the debug-only
-  `DIM_TEST_RELEASE_BUILD=1` override instead of a separate release-stamped
-  build step).
+  `dim-app-server` protocol and transport flows, the 389 non-TUI `cli_flow*`
+  cases (`--no-tui`, `exec`, piped prompts, ACP, and the scripted daemon flows),
+  and the 281 TUI cases #1810 still tracks.
+- The dedicated `dev-tests` step: the 7 `staged_update::recovery::`, 6
+  `staged_update::tui_update::`, 6 `daemon_replace::build_identity::` and 20
+  `daemon_startup_progress::` cases. It runs when their owning test files or
+  the production paths they protect change. The `tui_update` cases use the
+  debug-only `DIM_TEST_RELEASE_BUILD=1` override instead of a separate
+  release-stamped build step. When the dedicated step is selected, the two
+  runs together keep the original 422 non-TUI and 287 TUI `cli_flow*` cases.
 - The explicit `cli_flow` step that names the 12 `--ignored` production and
   line-mode flows one by one: the production App Server, the account and
   permission presets, the real-owner MCP/hooks/workflow writes, and the
