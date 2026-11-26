@@ -370,11 +370,11 @@ fn lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
 /// that kind cannot slip past the list the runtime refuses.
 ///
 /// What it recognizes: a `Ctx` or a reference to one, the `CancelledFn` and
-/// `CancellationToken` aliases, and `dyn Fn(..)` behind `Arc` or a reference.
-/// What it does not: an `impl Fn` parameter, a bare `fn(..)` pointer, and any
-/// other alias of those types; an operation written that way needs the list
-/// updated by hand, which the two-way comparison will report as a listed
-/// operation whose signature looks routable.
+/// `CancellationToken` aliases, and `Fn(..)` as a trait object, behind `Arc`, or
+/// as `impl Fn`, and a bare `fn(..)` pointer. What it still misses: any other
+/// alias of those types; an operation written that way is a review-time
+/// guarantee, and the two-way comparison reports it as a listed operation whose
+/// signature looks routable.
 fn derived_lifecycle(root: &Path) -> Result<Vec<(String, String)>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(root.join("crates"))? {
@@ -456,6 +456,11 @@ fn carries_lifecycle(ty: &syn::Type) -> bool {
                 _ => false,
             }
         }
+        syn::Type::ImplTrait(implemented) => implemented.bounds.iter().any(|bound| {
+            matches!(bound, syn::TypeParamBound::Trait(bound)
+                if bound.path.segments.last().is_some_and(|segment| segment.ident == "Fn"))
+        }),
+        syn::Type::BareFn(_) => true,
         syn::Type::TraitObject(object) => object.bounds.iter().any(|bound| {
             matches!(bound, syn::TypeParamBound::Trait(bound)
                 if bound.path.segments.last().is_some_and(|segment| segment.ident == "Fn"))

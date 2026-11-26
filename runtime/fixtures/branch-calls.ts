@@ -4,6 +4,12 @@
 import type { Sessions } from '../../npm/plugin.js'
 import type { RouteError, SessionScope } from '../../npm/branch-services.js'
 
+/** Every `sessions` failure carries the envelope's retryability. */
+export function retryable(error: import('../../npm/plugin.js').SessionsError): boolean {
+  const retryable: boolean = error.retryable
+  return retryable
+}
+
 /** A Session part reads the owner's structured failure from the routed error. */
 export function ownerFailure(error: RouteError): string | null {
   return 'owner' in error ? `${error.owner.name}: ${error.owner.message}` : null

@@ -281,8 +281,9 @@ export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
 export type SessionsErrorCode = import('./branch-services.js').SessionsErrorThrown['code'];
 /** The failure a `sessions` call reports: the generated union, so each code carries
- * the details the server sends (`reason`, `line`, `service`, `name`, `data`). */
-export type SessionsError = import('./branch-services.js').SessionsError;
+ * the details the server sends (`reason`, `line`, `service`, `name`, `data`), plus
+ * the envelope's own `retryable`, which every code answers. */
+export type SessionsError = import('./branch-services.js').SessionsError & { retryable: boolean };
 export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: SessionsError };
 
 /** Process service `sessions`; these methods are not terminal RPC methods. */

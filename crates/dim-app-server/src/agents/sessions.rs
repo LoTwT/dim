@@ -1009,8 +1009,6 @@ async fn call(
             index.delete(&session_id).await?;
             reply(json!({}))
         }
-        // The routing answer names itself in the message until the Agents
-        // contract gives this face routing codes of its own.
         "call" => index.call(request(args)?).await.map_err(routed),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"

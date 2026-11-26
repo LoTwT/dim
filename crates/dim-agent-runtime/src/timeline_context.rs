@@ -350,7 +350,7 @@ impl TimelineContext {
         &self.view
     }
     /// The branch instance's context, for reads of its data faces by id
-    /// ([`Route`]).
+    /// ([`crate::route::SessionScope`]).
     pub(crate) fn ctx(&self) -> &Ctx {
         &self.ctx
     }
