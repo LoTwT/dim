@@ -68,7 +68,7 @@ test('source areas select their groups',()=>{
   assert.deepEqual(classify(['docker/Dockerfile']),only('scripts'));
   assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust','node','windows_native'));
   assert.deepEqual(classify(['crates/dim-app-server/src/protocol.rs']),only('rust','node','web','scripts'));
-  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts','debug'));
   assert.deepEqual(classify(['crates/dim-app-server/resources/default-catalog.json']),only('rust','node','scripts'));
   assert.deepEqual(classify(['crates/dim-cli/src/main.rs']),only('rust','windows'));
   assert.deepEqual(classify(['crates/dim-client/src/lib.rs']),only('rust','windows','node'));
@@ -122,6 +122,11 @@ test('debug-only CLI tests follow their owning modules',()=>{
   assert.deepEqual(classify(['crates/dimcode/tests/support/cli_harness.rs']),only('rust','node','debug'));
   assert.deepEqual(classify(['crates/dimcode/Cargo.toml']),only('rust','debug','dependencies'));
   assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust'));
+  for (const file of ['crates/dim-cli/src/client.rs','crates/dim-cli/src/update.rs'])
+    assert.deepEqual(classify([file]),only('rust','windows','debug'),file);
+  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts','debug'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/cli.rs']),only('rust','node','debug','windows_native'));
+  assert.deepEqual(classify(['crates/dim-cli/src/session_host.rs']),only('rust','windows'));
 });
 
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{

@@ -362,14 +362,15 @@ jobs:
         if: needs.changes.outputs.debug == 'true'
         shell: bash
         env:
-          DIM_TEST_TIMEOUT_MS: "900000"
+          DIM_TEST_TIMEOUT_MS: "600000"
         run: |
           set -euo pipefail
           cargo clippy --locked -p dimcode --all-targets --features dev-tests -- -D warnings
-          cargo test --locked -p dimcode --features dev-tests --test cli_daemon_flow daemon_startup_progress -- --test-threads=2
-          cargo test --locked -p dimcode --features dev-tests --test cli_daemon_flow daemon_replace::build_identity -- --test-threads=2
-          cargo test --locked -p dimcode --features dev-tests --test cli_flow staged_update::recovery -- --test-threads=2
-          cargo test --locked -p dimcode --features dev-tests --test cli_flow staged_update::tui_update -- --test-threads=2
+          cargo build --locked -p dimcode --features dev-tests --tests --message-format=json > target/debug-test-artifacts.jsonl
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_startup_progress --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_daemon_flow daemon_replace::build_identity --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_flow staged_update::recovery --test-threads=2
+          node scripts/run-rust-test.mjs target/debug-test-artifacts.jsonl cli_flow staged_update::tui_update --test-threads=2
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact

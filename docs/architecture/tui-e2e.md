@@ -434,9 +434,11 @@ CI keeps:
   and the 281 TUI cases #1810 still tracks.
 - The dedicated `dev-tests` step: the 7 `staged_update::recovery::`, 6
   `staged_update::tui_update::`, 6 `daemon_replace::build_identity::` and 20
-  `daemon_startup_progress::` cases. It runs when their owning test files
-  change. The `tui_update` cases use the debug-only `DIM_TEST_RELEASE_BUILD=1`
-  override instead of a separate release-stamped build step.
+  `daemon_startup_progress::` cases. It runs when their owning test files or
+  the production paths they protect change. The `tui_update` cases use the
+  debug-only `DIM_TEST_RELEASE_BUILD=1` override instead of a separate
+  release-stamped build step. Together with the ordinary run, CI keeps the
+  original 422 non-TUI and 287 TUI `cli_flow*` cases.
 - The explicit `cli_flow` step that names the 12 `--ignored` production and
   line-mode flows one by one: the production App Server, the account and
   permission presets, the real-owner MCP/hooks/workflow writes, and the

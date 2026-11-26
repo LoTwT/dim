@@ -50,6 +50,8 @@ const rules=[
   [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','macos_scripts']],
   [/^scripts\//,['scripts']],
   [/^docker\//,['scripts']],
+  // The startup, replacement and update paths these acceptances protect.
+  [/^crates\/dim-cli\/src\/(?:client|update)\.rs$/,['rust','windows','debug']],
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
@@ -61,7 +63,8 @@ const rules=[
   [/^crates\/dimcode\/Cargo\.toml$/,['rust','debug']],
   [/^crates\/dimcode\//,['rust']],
   [/^crates\/dim-app-server\/src\/protocol\.rs$/,['rust','node','web','scripts']],
-  [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts']],
+  [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts','debug']],
+  [/^crates\/dim-app-server\/src\/cli\.rs$/,['rust','node','debug']],
   [/^crates\/dim-app-server\/resources\//,['rust','node','scripts']],
   [/^crates\/dim-agent-capabilities\/src\/(workspace_tools\/(background|exec)|host_platform)/,['rust','node','execution']],
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
