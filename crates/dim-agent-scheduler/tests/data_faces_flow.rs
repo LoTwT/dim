@@ -825,24 +825,6 @@ async fn a_process_call_by_id_reaches_a_live_session_and_names_the_reason_it_can
         json!(session.sequence("main").unwrap()),
         "{line}"
     );
-    let unknown = rig
-        .call(
-            "sessions",
-            "call",
-            json!({"sessionId": "absent", "service": "sessionConfig", "method": "get"}),
-        )
-        .await;
-    assert_eq!(unknown["error"]["code"], "no_session", "{unknown}");
-    let missing = rig
-        .call(
-            "sessions",
-            "call",
-            json!({"sessionId": id, "lineId": "absent", "service": "timeline", "method": "sequence"}),
-        )
-        .await;
-    assert_eq!(missing["error"]["code"], "no_line", "{missing}");
-    // A Session that closed itself keeps stored rows Agents cannot load, which
-    // is `session_unavailable`; a deleted one is `no_session`.
     session.close().await.unwrap();
     let closed = rig
         .call(

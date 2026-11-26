@@ -425,5 +425,40 @@ mod tests {
             ),
             "{permanent:?}"
         );
+        // The production path of a Rust service's `Err`: a `Remote` error
+        // whose graph carries the owner's own code.
+        let remote = |code: &str, message: &str| BridgeError::Remote {
+            name: "AgentError".into(),
+            message: message.into(),
+            graph: Some(serde_json::json!({
+                "root": {"type": "reference", "value": 0},
+                "nodes": [{"type": "error", "name": "AgentError", "code": code, "message": message}],
+            })),
+        };
+        let reloading = owner(remote(RELOADING, "timeline is reloading"));
+        assert!(
+            matches!(
+                reloading,
+                RouteError::Owner {
+                    reloading: true,
+                    ..
+                }
+            ),
+            "{reloading:?}"
+        );
+        let permanent = owner(remote(
+            "not_reloadable",
+            "a permanent failure whose name mentions reload",
+        ));
+        assert!(
+            matches!(
+                permanent,
+                RouteError::Owner {
+                    reloading: false,
+                    ..
+                }
+            ),
+            "{permanent:?}"
+        );
     }
 }
