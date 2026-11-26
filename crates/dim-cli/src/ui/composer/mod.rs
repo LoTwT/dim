@@ -1236,6 +1236,9 @@ impl Composer {
         }
     }
 
+    /// Place the cursor at `cell` and clear the selection. Both `cell` and the
+    /// rendered textarea `area` use screen columns and rows counted from the
+    /// top of the unclipped dock. Clicks outside `area` are ignored.
     pub fn click(&mut self, cell: Position, area: Rect) {
         if let Some(offset) = self
             .area

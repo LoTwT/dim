@@ -42,6 +42,17 @@ install_nightly() (
     ln -s "$dest/bin/dimcode" "$linkdir/dim-nightly"
     mv -f "$linkdir/dim-nightly" "$entry"
     printf 'Installed dim-nightly %s at %s\n' "$version" "$entry"
+    short=$bin/dimn
+    if [ ! -e "$short" ] && [ ! -L "$short" ]; then
+        { ln -s dim-nightly "$linkdir/dimn" && ln -P "$linkdir/dimn" "$bin/"; } || :
+    fi
+    if [ -L "$short" ] && [ "$(readlink "$short")" = dim-nightly ]; then
+        printf 'Run dimn or dim-nightly to start Nightly.\n'
+    elif [ -e "$short" ] || [ -L "$short" ]; then
+        printf 'Keeping existing %s; use dim-nightly to start Nightly.\n' "$short" >&2
+    else
+        printf 'Shortcut unavailable; use dim-nightly to start Nightly.\n' >&2
+    fi
     case :$PATH: in *:"$bin":*) :;; *) printf 'Add %s to PATH to run dim-nightly.\n' "$bin";; esac
 )
 
