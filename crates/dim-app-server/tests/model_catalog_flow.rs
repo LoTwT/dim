@@ -2794,6 +2794,8 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
                     "id": "zz-evolve",
                     "vision": vision,
                     "modalities": if vision { json!(["text", "image"]) } else { json!(["text"]) },
+                    "toolCalling": true,
+                    "modalityCapabilities": ["image.generate"],
                     "context_window": 32000, "max_output_tokens": 4096,
                     "reasoning": true,
                     "supported_reasoning_levels": efforts.iter().map(|effort| json!({"effort": effort})).collect::<Vec<_>>(),
@@ -2871,5 +2873,45 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
     assert_eq!(
         merged[0].capabilities.context_window, v3.capabilities.context_window,
         "a limit the edit never touched follows the refresh"
+    );
+
+    // The remaining pin branches walk the same merge: a toolCalling edit pins
+    // tool calling, and a modalityCapabilities edit pins both raw keys, while
+    // the declarations the edit never made still follow the refreshed row.
+    let pinned = catalog.merge_visible_edit(
+        &base_v1[0],
+        ModelEdit {
+            tool_calling: Some(false),
+            modality_capabilities: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    assert!(
+        v3.capabilities.tool_calling,
+        "the refreshed row declares tool calling for this pin to override"
+    );
+    let merged = catalog.effective_models(
+        &provider,
+        std::slice::from_ref(&v3),
+        std::slice::from_ref(&pinned),
+    );
+    assert!(
+        !merged[0].capabilities.tool_calling,
+        "the explicit toolCalling edit is pinned"
+    );
+    assert!(
+        merged[0].capabilities.vision,
+        "a capability the edit never touched follows the refresh here too"
+    );
+    let raw = &merged[0].metadata.as_ref().unwrap().raw;
+    assert_eq!(
+        raw.get("imageGeneration"),
+        Some(&json!(false)),
+        "the modalityCapabilities edit's image-generation projection is pinned"
+    );
+    assert_eq!(
+        raw.get("modalityCapabilities"),
+        Some(&json!([])),
+        "the modalityCapabilities edit itself is pinned"
     );
 }
