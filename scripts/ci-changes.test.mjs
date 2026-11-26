@@ -126,6 +126,7 @@ test('debug-only CLI tests follow their owning modules',()=>{
     'crates/dim-cli/src/client.rs',
     'crates/dim-cli/src/update.rs',
     'crates/dim-cli/src/update/staged.rs',
+    'crates/dim-cli/src/lib.rs',
     'crates/dim-cli/src/plugins.rs',
     'crates/dim-cli/src/ui/tui.rs',
   ]) assert.deepEqual(classify([file]),only('rust','windows','debug'),file);
