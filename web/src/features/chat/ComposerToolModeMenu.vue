@@ -4,12 +4,16 @@ import { useI18n } from "vue-i18n"
 import type { ToolMode, ToolModeState } from "../../rpc/protocol"
 
 /** Session tool mode; the picker lists every mode and marks one whose entry tool is absent. */
-const props = defineProps<{ state: ToolModeState | undefined }>()
+const props = defineProps<{ state: ToolModeState | undefined; available: ToolMode[] }>()
 const emit = defineEmits<{ select: [mode: ToolMode] }>()
 const { t } = useI18n()
 const popoverOpen = ref(false)
 
 const MODES: ToolMode[] = ["normal", "codemode", "shell"]
+
+function unavailable(mode: ToolMode): boolean {
+  return mode !== "normal" && !props.available.includes(mode)
+}
 
 function choose(mode: ToolMode): void {
   if (props.state === undefined || mode === props.state.mode) return
@@ -43,7 +47,10 @@ defineExpose({ open })
             :aria-pressed="mode === state?.mode"
             @click="choose(mode)"
           >
-            <span class="tool-mode-option-text"><span>{{ t(`composer.toolMode.name.${mode}`) }}</span><small>{{ t(`composer.toolMode.description.${mode}`) }}</small></span>
+            <span class="tool-mode-option-text">
+              <span>{{ t(`composer.toolMode.name.${mode}`) }}</span>
+              <small>{{ unavailable(mode) ? t("composer.toolMode.unavailable") : t(`composer.toolMode.description.${mode}`) }}</small>
+            </span>
             <template #trailing>
               <UIcon v-if="mode === state?.mode" name="i-lucide-check" class="size-3.5 shrink-0 text-primary" aria-hidden="true" />
             </template>

@@ -89,6 +89,7 @@ const zhCN: Messages = {
   "composer.toolMode.description.normal": "每一步调用一个工具，使用全部工具面。",
   "composer.toolMode.description.codemode": "每一步运行一个程序，通过代码调用其他工具。",
   "composer.toolMode.description.shell": "每一步执行一条命令，运行在持久 shell 中。",
+  "composer.toolMode.unavailable": "当前 daemon 不可用；普通模式生效。",
   "composer.toolMode.fallback": "该模式的入口工具不可用，普通模式生效。",
   "composer.permission.label": "权限",
   "composer.permission.preset.read-only": "只读",

@@ -68,7 +68,7 @@ const props = withDefaults(defineProps<{
   /** The Session policy and its independent controls; absent where permission methods are unavailable. */
   permission?: { policy: PermissionPolicy | undefined; select: (preset: PermissionPreset) => Promise<void> }
   /** The Session tool mode and its control; absent where mode methods are unavailable. */
-  toolMode?: { state: ToolModeState | undefined; select: (mode: ToolMode) => Promise<void> }
+  toolMode?: { state: ToolModeState | undefined; available: ToolMode[]; select: (mode: ToolMode) => Promise<void> }
   stop?: (branchId?: string) => Promise<void>
   /**
    * The messages the server holds for this branch, oldest first: the composer
@@ -849,7 +849,7 @@ defineExpose({ focus: () => field.value?.focus(), quote })
       <footer class="composer-toolbar">
         <div class="composer-tool-group">
           <ComposerPermissionMenu v-if="permission && variant !== 'panel'" ref="permissionMenu" :policy="permission.policy" @select="permission.select" />
-          <ComposerToolModeMenu v-if="toolMode && variant !== 'panel'" ref="toolModeMenu" :state="toolMode.state" @select="toolMode.select" />
+          <ComposerToolModeMenu v-if="toolMode && variant !== 'panel'" ref="toolModeMenu" :state="toolMode.state" :available="toolMode.available" @select="toolMode.select" />
         </div>
         <div class="composer-run-group">
           <progress v-if="uploadProgress !== undefined" :value="uploadProgress" max="100" aria-label="File upload" />

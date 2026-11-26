@@ -84,6 +84,7 @@ const en = {
   "composer.toolMode.description.normal": "One tool call per step, with the full tool surface.",
   "composer.toolMode.description.codemode": "One program per step; it calls the other tools through code.",
   "composer.toolMode.description.shell": "One command per step, run in a persistent shell.",
+  "composer.toolMode.unavailable": "Not available in this daemon; normal is in force.",
   "composer.toolMode.fallback": "The mode's entry tool is not available; normal is in force.",
   "composer.command.permissions": "Show or change the session permissions",
   "composer.permission.label": "Permissions",

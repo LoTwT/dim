@@ -58,7 +58,10 @@ watch(() => [view.value?.status, view.value?.methods.includes("session.skills")]
 const toolModeControl = computed(() => {
   const session = view.value
   if (session?.status !== "ready" || !connection.supports("session.tool_mode") || !connection.supports("session.tool_mode.update")) return undefined
-  return { state: session.toolMode, select: selectToolMode }
+  const available: ToolMode[] = []
+  if (connection.supports("session.tool_mode.codemode")) available.push("codemode")
+  if (connection.supports("session.tool_mode.shell")) available.push("shell")
+  return { state: session.toolMode, available, select: selectToolMode }
 })
 async function selectToolMode(mode: ToolMode): Promise<void> {
   localStorage.setItem("dim.toolMode", mode)

@@ -864,6 +864,17 @@ async fn run_connection(
                                         }
                                     }
                                     if trusted && hub.config().local_execution() {
+                                        for mode in &hub.config().tool_modes {
+                                            match mode {
+                                                dim_agent_types::ToolMode::Codemode => {
+                                                    features.push("session.tool_mode.codemode")
+                                                }
+                                                dim_agent_types::ToolMode::Shell => {
+                                                    features.push("session.tool_mode.shell")
+                                                }
+                                                dim_agent_types::ToolMode::Normal => {}
+                                            }
+                                        }
                                         features.extend(LOCAL_EXECUTION_METHODS);
                                     }
                                     if local {
