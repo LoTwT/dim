@@ -23,7 +23,7 @@
 //!   takes the same two forms for a process caller.
 //!
 //! Each call looks the target up again, so a caller never keeps a live target
-//! (D4). Rust calls the same operations: it builds `args` from the target
+//! (D4). Rust calls the same two `SessionScope` operations: it builds `args` from the target
 //! operation's request type and reads the reply as its reply type.
 //!
 //! What a call resolves is the target scope's data face in the catalog. A name
