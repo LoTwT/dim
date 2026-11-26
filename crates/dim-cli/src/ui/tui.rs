@@ -5265,11 +5265,13 @@ impl App {
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::ToolMode => {
-                let next = next_tool_mode(&self.tool_mode);
-                self.tool_mode = next.to_owned();
-                self.host.send(Command::SetToolMode {
-                    mode: next.to_owned(),
-                });
+                if !self.session_id.is_empty() {
+                    let next = next_tool_mode(&self.tool_mode);
+                    self.tool_mode = next.to_owned();
+                    self.host.send(Command::SetToolMode {
+                        mode: next.to_owned(),
+                    });
+                }
                 self.settings_return = None;
                 self.open_settings(setting);
             }
@@ -9872,9 +9874,9 @@ fn next_tool_mode(mode: &str) -> &'static str {
 }
 
 fn tool_mode_row(chosen: &str, effective: &str, available: &[String]) -> String {
+    let unavailable = effective != chosen && !available.iter().any(|mode| mode.as_str() == chosen);
     let chosen = tool_mode_label(chosen);
     let effective = tool_mode_label(effective);
-    let unavailable = effective != chosen && !available.iter().any(|mode| mode.as_str() == chosen);
     match (unavailable, chosen == effective) {
         (true, _) => format!("{chosen} (unavailable) → {effective}"),
         (false, true) => chosen,

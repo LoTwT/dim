@@ -4,9 +4,9 @@ use crate::{
     tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
-    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOrder,
-    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
-    Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand,
+    QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
+    QueryValue, Result, Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -1044,55 +1044,109 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
-    /// The mode the turn at `through` ran under: the latest applied input's
-    /// recorded mode, or the live effective mode when none precedes it.
-    async fn mode_at(&self, through: u64) -> ToolMode {
-        let query = TimelineQuery {
-            scope: TimelineQueryScope::Branch,
-            from: None,
-            through: Some(through),
-            include_publishing: false,
-            query: QuerySpec {
-                filter: Some(QueryFilter::And {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec![serde_json::json!("input/applied")],
+    /// The mode the turn at `through` ran under: the driving input's
+    /// recorded mode at the turn's start, or `normal` when none precedes it.
+    async fn mode_at(&self, through: u64) -> Result<ToolMode> {
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
                         },
-                        QueryFilter::Present {
-                            value: QueryOperand::Field {
-                                path: "data.tool_mode".into(),
-                            },
-                        },
-                    ],
-                }),
-                select: QuerySelect::Fields {
-                    fields: vec!["data.tool_mode".into()],
+                        values: vec![serde_json::json!("turn/start")],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["position.sequence".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
                 },
-                group_by: vec![],
-                pick: None,
-                order_by: vec![QueryOrder {
-                    key: QueryOrderKey::Position,
-                    direction: TimelineQueryDirection::Descending,
-                }],
-            },
-            page: Some(QueryPage {
-                limit: NonZeroU64::MIN,
-                after: None,
-            }),
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let start = match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => value.as_u64(),
+                    _ => None,
+                })
+            }
+            _ => None,
         };
-        let reply = self.timeline.query(query).await;
-        if let Ok(reply) = reply
-            && let QueryOutput::Rows { rows } = reply.result
-            && let Some(row) = rows.first()
-            && let [QueryValue::Value { value }] = row.values.as_slice()
-            && let Ok(mode) = serde_json::from_value::<ToolMode>(value.clone())
-        {
-            return mode;
-        }
-        self.registry.effective_tool_mode_now()
+        let Some(start) = start else {
+            return Ok(ToolMode::Normal);
+        };
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(start),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: vec![serde_json::json!("input/applied")],
+                            },
+                            QueryFilter::Compare {
+                                left: QueryOperand::Field {
+                                    path: "data.mode".into(),
+                                },
+                                comparison: QueryComparison::Ne,
+                                right: QueryOperand::Value {
+                                    value: serde_json::json!("append"),
+                                },
+                            },
+                        ],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["data.tool_mode".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let Some(value) = (match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => Some(value.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }) else {
+            return Ok(ToolMode::Normal);
+        };
+        Ok(serde_json::from_value::<Option<ToolMode>>(value)
+            .ok()
+            .flatten()
+            .unwrap_or(ToolMode::Normal))
     }
 
     async fn current_tools(
@@ -1108,7 +1162,7 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let tools = self.registry.visible_for(self.mode_at(through).await);
+        let tools = self.registry.visible_for(self.mode_at(through).await?);
         let tools_fingerprint = fingerprint(
             &tools
                 .iter()
