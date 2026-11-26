@@ -46,6 +46,10 @@ enum Limited {
     /// image input for the fixture model, as an upstream capability roll-out
     /// does (#2189).
     Evolved,
+    /// The same account's refreshed catalog stops declaring reasoning for the
+    /// fixture model, so its row carries no metadata at all, the way a model
+    /// whose supported levels are all dropped reads (#2189).
+    Stripped,
 }
 
 /// A signed-in managed account whose first credential the relay rejects.
@@ -180,25 +184,33 @@ impl ManagedProvider for Provider {
             unavailable_reason: None,
             zdr: false,
         }];
-        if *self.0.limited.lock().unwrap() == Limited::Evolved {
-            let entry = &mut models[0].entry;
-            entry.capabilities.reasoning = true;
-            entry.capabilities.vision = true;
-            entry.capabilities.modalities =
-                ["text", "image"].into_iter().map(str::to_owned).collect();
-            let metadata = entry.metadata.get_or_insert_default();
-            let reasoning = metadata.reasoning.get_or_insert_default();
-            reasoning.supported = true;
-            reasoning.effort_options = Some(
-                ["low", "medium", "high", "xhigh"]
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-            );
-            reasoning.effort = Some("high".into());
+        match *self.0.limited.lock().unwrap() {
+            Limited::Evolved => {
+                let entry = &mut models[0].entry;
+                entry.capabilities.reasoning = true;
+                entry.capabilities.vision = true;
+                entry.capabilities.modalities =
+                    ["text", "image"].into_iter().map(str::to_owned).collect();
+                let metadata = entry.metadata.get_or_insert_default();
+                let reasoning = metadata.reasoning.get_or_insert_default();
+                reasoning.supported = true;
+                reasoning.effort_options = Some(
+                    ["low", "medium", "high", "xhigh"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                );
+                reasoning.effort = Some("high".into());
+            }
+            Limited::Stripped => {
+                let entry = &mut models[0].entry;
+                entry.capabilities.reasoning = false;
+                entry.metadata = None;
+            }
+            _ => {}
         }
         match *self.0.limited.lock().unwrap() {
-            Limited::Absent | Limited::Evolved => {}
+            Limited::Absent | Limited::Evolved | Limited::Stripped => {}
             Limited::ProviderUnavailable => return ready(Err(ManagedError::Transient)),
             Limited::Available => {
                 let entry: ModelEntry = serde_json::from_value(json!({"modelId":"limited-model",
@@ -1765,6 +1777,126 @@ async fn an_explicit_capability_edit_survives_a_same_account_refresh() {
     assert_eq!(
         model["capabilities"]["modalities"],
         json!(["text", "image"])
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The fixture server and account the override tests share.
+async fn override_fixture() -> (RunningServer, Arc<Fixture>, std::path::PathBuf) {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(AccountSnapshot {
+            credential_epoch: "epoch".into(),
+            generation: 1,
+            account: Some(AccountView {
+                issuer: "https://accounts.example".into(),
+                subject: "fixture".into(),
+                email: Some("fixture@example.com".into()),
+                name: Some("Fixture".into()),
+                granted_scopes: vec!["model".into()],
+            }),
+        }),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+        watch: watch::channel(Some(true)).0,
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            session_defaults: dim_agent_runtime::SessionConfig {
+                tools: Some(["read"].map(String::from).to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    (server, fixture, home)
+}
+
+
+/// A regression for the pin that a refreshed row without metadata dropped
+/// (#2189): the row keeps the capability but nothing to hang it on, and the
+/// pin the user wrote must still win over it, mark and all, or the next
+/// refresh silently loses the edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reasoning_pin_survives_a_row_without_reasoning_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user pins the reasoning declaration to a narrower offer than the
+    // catalog row's.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":true,"effortOptions":["low"]}}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning: the refreshed row carries
+    // no reasoning metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], true,
+        "the pinned reasoning must win over a row that declares none: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["supported"], true,
+        "the pinned descriptor must survive the row without metadata: {}",
+        model["metadata"]
+    );
+    assert_eq!(
+        model["metadata"]["reasoning"]["effortOptions"],
+        json!(["low"]),
+        "the pinned offer must survive the row without metadata"
+    );
+    let marks = model["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the mark must survive the row without metadata, or the next refresh loses the pin: {marks:?}"
     );
     assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
     server.join().await.unwrap();

@@ -1320,6 +1320,12 @@ pub fn rebase_override(base: &ModelEntry, pinned: &ModelEntry) -> ModelEntry {
     if marked("reasoning") {
         merged.capabilities.reasoning = pinned.capabilities.reasoning;
     }
+    if marks
+        .iter()
+        .any(|field| field == "reasoning" || field == "modalityCapabilities")
+    {
+        merged.metadata.get_or_insert_default();
+    }
     if let Some(metadata) = merged.metadata.as_mut() {
         if marked("reasoning") {
             metadata.reasoning = pinned
