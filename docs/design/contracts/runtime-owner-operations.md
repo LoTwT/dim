@@ -49,7 +49,7 @@ tree's own methods.
 
 | Session caller | Target operation |
 | --- | --- |
-| Context RPC / PromptSuggestion | `contextUsage.read`. A compaction that waits stays in the existing compact RPC handler: it calls `agentLoop.compact` through `lineCall`, then waits through the Session's `timelineTree` for that compaction's result and returns the existing completed/skipped/failed reply. `lineCall` resolves only operations an owner already serves in the catalog, so no owner provides a separate compact-and-wait operation. |
+| Context RPC / PromptSuggestion | `contextUsage.read`, a direct call inside the Session's own face. A compaction that waits stays in the existing compact RPC handler: it takes its `Branch`, calls `AgentLoop::compact` there and waits on the branch's own `publication()`/`query`, then returns the existing completed/skipped/failed reply. These handlers are reached by the Session's own code today; routing them is written here only once `agentLoop`, `contextUsage`, `prompt` and `timelineTree` are routable faces with a wait operation, which they are not (`route::face` refuses them as internal). |
 | Session language / Agent configuration / Report | `prompt.configure` or `prompt.adoptedConfiguration` with the existing source, model and outcome records. |
 | InputQueue management / Collaboration | `inputQueue.withdraw` with the existing command; the caller runs the existing submit checks for steer before writing. `approval.pending` returns the branch's existing pending requests, and `approval.decide` settles the selected request. Collaboration retains its ended response on closed/ended/unknown detail lookup. |
 

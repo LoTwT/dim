@@ -1671,7 +1671,7 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
-        let Some(scope) = session.routed_scope() else {
+        let Some(scope) = dim_agent_runtime::route::routed_scope(session) else {
             return Err(if session.is_closing() {
                 RouteError::SessionClosing(id)
             } else {

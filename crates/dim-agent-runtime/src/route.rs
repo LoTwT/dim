@@ -278,6 +278,31 @@ impl SessionScope {
     }
 }
 
+/// The routed-call entry for the Session `session`: the owning instance's own
+/// router, so the Session facade offers no read for it (ADR 027 appendix F).
+/// Agents is the only caller; a part of another language reaches it as the
+/// `sessionScope` data face. The typed read remains impossible:
+///
+/// ```compile_fail
+/// use dim_agent_runtime::{Session, SessionScope};
+/// fn read(session: &Session) {
+///     let _ = session.session_service::<SessionScope>();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use dim_agent_runtime::Session;
+/// fn read(session: &Session) {
+///     let _ = session.routed_scope();
+/// }
+/// ```
+pub fn routed_scope(session: &Session) -> Option<Arc<SessionScope>> {
+    let loaded = session.assembly().loaded().ok()?;
+    loaded
+        .ctx
+        .get_at::<SessionScope>(&loaded.scope.key::<SessionScope>())
+}
+
 #[rutis::service]
 impl SessionScope {
     /// Calls one of this Session's own data faces.
