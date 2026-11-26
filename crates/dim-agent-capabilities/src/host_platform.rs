@@ -3527,6 +3527,9 @@ impl PtyProcessTree {
             self.terminating = true;
             #[cfg(unix)]
             {
+                // The command an interactive shell is running leads the
+                // terminal's foreground group, outside the shell's own.
+                let foreground = self.kill_foreground_group();
                 native::kill_tree(self.pid);
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
                 while tokio::time::Instant::now() < deadline {
@@ -3534,6 +3537,9 @@ impl PtyProcessTree {
                         Some(_) => break,
                         None => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
                     }
+                }
+                if let Some(leader) = foreground {
+                    let _ = wait_group_gone(leader).await;
                 }
             }
             #[cfg(windows)]
@@ -3580,6 +3586,7 @@ impl PtyProcessTree {
 impl Drop for PtyProcessTree {
     fn drop(&mut self) {
         if !self.terminated && !self.released() {
+            self.kill_foreground_group();
             native::kill_tree(self.pid);
         }
     }

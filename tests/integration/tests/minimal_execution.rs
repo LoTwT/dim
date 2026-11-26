@@ -1047,6 +1047,55 @@ async fn stopping_a_command_that_ignores_the_interrupt_leaves_no_process() {
     harness.shutdown().await;
 }
 
+/// Closing a Session releases the command its shell is running, not only
+/// stopping a task. macOS has no `/proc` tree to walk, so the shell's
+/// termination signals the terminal's foreground process group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_a_session_releases_an_occupying_command() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("closing.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'echo $$ > {}; trap \"\" INT TERM HUP; while true; do sleep 1; done'",
+                        pid_file.display()
+                    ),
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    session.close().await.unwrap();
+    let events = local_events(&session).await;
+    let (_, end) = ended(&events)
+        .into_iter()
+        .find(|(_, data)| data.task_id == task_id)
+        .expect("closing publishes the occupying task's terminal");
+    assert_eq!(end.status, ExecStatus::Failed);
+    let path = if cfg!(target_os = "macos") {
+        " the foreground-group signal did not release it"
+    } else {
+        ""
+    };
+    assert!(
+        gone(&pid).await,
+        "process {pid} survived the Session close;{path}"
+    );
+    harness.shutdown().await;
+}
+
 /// A startup consumer cannot skip the initialization. The `.zshrc` lives in the
 /// shell's home, consumes the wrapper line up to the boundary before the final
 /// `printf`, and leaves the shell to run that `printf`: the end marker alone

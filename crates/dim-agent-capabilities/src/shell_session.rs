@@ -548,30 +548,24 @@ impl ShellSession {
         Ok(reset_note)
     }
 
-    /// Writes the init wrapper until its end marker reaches the shell's tail;
-    /// a timeout terminates the shell and fails the call.
+    /// Writes the init wrapper until one copy's start marker and then its end
+    /// marker reach the shell's tail; a timeout terminates the shell and fails
+    /// the call.
     ///
     /// A shell can spend its first input on a startup consumer — zsh's newuser
     /// wizard, for example — instead of the shell prompt, so the wrapper is
-    /// written again until one copy runs. A copy counts only after its start
-    /// marker reached the tail: the typed line carries the marker fragments
-    /// separately, so its echo cannot satisfy the check, and an end marker a
-    /// consumer emitted by itself is not an initialization.
+    /// written again until one copy runs. Each copy carries its own markers, so
+    /// an end marker a consumer printed for an earlier copy cannot complete a
+    /// later one, and the typed line carries the fragments separately, so its
+    /// echo cannot satisfy the check.
     async fn send_initial(self: &Arc<Self>, command: &str) -> Result<(), String> {
-        let (start, end) = marker_pair();
         let dialect = {
             let inner = self.inner.lock().await;
             inner.dialect
         };
-        let wrapped = match dialect {
-            ShellDialect::Posix => posix_command(command, &start, &end),
-            ShellDialect::Pwsh => pwsh_command(command, &start, &end),
-        };
-        let start_marker = start.full();
-        let end_marker = end.full();
         let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
         let mut write_at = tokio::time::Instant::now();
-        let mut started = false;
+        let mut current: Option<(String, String)> = None;
         loop {
             let task_id = {
                 let inner = self.inner.lock().await;
@@ -580,34 +574,37 @@ impl ShellSession {
             let Some(task_id) = task_id else {
                 return Err("shell exited during initialization".into());
             };
+            let now = tokio::time::Instant::now();
+            if now >= write_at {
+                let (start, end) = marker_pair();
+                let wrapped = match dialect {
+                    ShellDialect::Posix => posix_command(command, &start, &end),
+                    ShellDialect::Pwsh => pwsh_command(command, &start, &end),
+                };
+                self.write_shell(format!("{wrapped}\n").as_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                current = Some((start.full(), end.full()));
+                write_at = now + INIT_RETRY;
+            }
             let tail = self
                 .host
                 .tail(TaskRequest {
                     task_id: task_id.clone(),
                 })
                 .await;
-            started |= matches!(&tail, Ok(tail) if tail.text.contains(&start_marker));
-            let now = tokio::time::Instant::now();
-            if now >= write_at && !started {
-                self.write_shell(format!("{wrapped}\n").as_bytes())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                write_at = now + INIT_RETRY;
+            if let (Some((start_marker, end_marker)), Ok(tail)) = (&current, &tail)
+                && init_complete(&tail.text, start_marker, end_marker)
+            {
+                return Ok(());
             }
-            match &tail {
-                // A wrapper line the shell executed printed its start marker;
-                // an end marker alone is text a startup consumer emitted.
-                Ok(tail) if started && tail.text.contains(&end_marker) => return Ok(()),
-                Ok(_) => {}
-                Err(_) => {
-                    if self
-                        .host
-                        .task(&task_id)
-                        .is_none_or(|record| record.is_terminal())
-                    {
-                        return Err("shell exited during initialization".into());
-                    }
-                }
+            if let Err(_) = &tail
+                && self
+                    .host
+                    .task(&task_id)
+                    .is_none_or(|record| record.is_terminal())
+            {
+                return Err("shell exited during initialization".into());
             }
             if tokio::time::Instant::now() >= deadline {
                 let captured = tail.map(|tail| tail.text).unwrap_or_default();
@@ -1230,6 +1227,13 @@ impl DynPlugin for ShellSessionPlugin {
     }
 }
 
+/// Whether `tail` holds `start` and `end` after it. An end marker a consumer
+/// printed for an earlier copy, or by itself, does not complete a copy.
+fn init_complete(tail: &str, start: &str, end: &str) -> bool {
+    tail.find(start)
+        .is_some_and(|at| tail[at + start.len()..].contains(end))
+}
+
 /// Declares the command the call sent to the shell (session boundary A.6):
 /// the exit status the end marker carried, or none while it was still
 /// running.
@@ -1527,4 +1531,23 @@ fn pwsh_background(
 fn base64_encode(data: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::init_complete;
+
+    #[test]
+    fn an_init_copy_completes_only_after_its_own_start_marker() {
+        let start = "__DIM_START_aaaaaaaa_bbbbbbbb__";
+        let end = "__DIM_END_cccccccc_dddddddd__";
+        assert!(init_complete(
+            &format!("noise\n{start}\ninit output\n{end}\n"),
+            start,
+            end
+        ));
+        assert!(!init_complete(&format!("{end}\n{start}\n"), start, end));
+        assert!(!init_complete(&format!("echo {end}\n"), start, end));
+        assert!(!init_complete(&format!("{start}\n"), start, end));
+    }
 }

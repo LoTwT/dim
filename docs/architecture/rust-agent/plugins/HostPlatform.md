@@ -26,7 +26,7 @@ A task id is reserved by the owner before a command or background job starts. `s
 part of `shell.write` answer `task_exists` for an id already in the table or an existing output
 log, and `invalid` for a missing output parent or an output path outside the shell directory. `wait` reports the terminal record and never removes it; a
 timeout stops the wait and answers `running`. `settle` releases only an ended task or an exited
-shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal. Some shells print the end marker after the interrupt, so the command's terminal is the interrupted line's own exit status — which can be success when the line continues past the interrupted command — and `kill` returns from that wait; a command still running after two seconds cannot end inside the live shell, so `kill` signals the terminal's foreground process group — where an interactive shell runs the command, outside the shell's own group — and terminates the shell, whose terminal sweeps the command as a reset. Command and job logs stay under the output directory the caller gives the owner; the
+shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal. Some shells print the end marker after the interrupt, so the command's terminal is the interrupted line's own exit status — which can be success when the line continues past the interrupted command — and `kill` returns from that wait; a command still running after two seconds cannot end inside the live shell, so `kill` signals the terminal's foreground process group — where an interactive shell runs the command, outside the shell's own group — and terminates the shell, whose terminal sweeps the command as a reset. Terminating a shell — this stop, a shell kill or a Session close — releases that foreground group the same way before the shell's terminal sweeps its children. Command and job logs stay under the output directory the caller gives the owner; the
 persistent shell defaults to `execRoot`. Logs are registered by the branch when the model is
 given their path.
 `removeOutputDirectory` accepts only a persistent-shell output directory below the canonical
@@ -170,9 +170,11 @@ process. macOS permits only the needed terminal ioctl commands.
 A persistent shell's first command is the init wrapper, and the shell may spend its first
 input on a startup consumer instead — zsh's newuser module runs a wizard when the user has no
 startup files. `ShellSession` writes that wrapper again until one copy's start marker and then
-its end marker reached the shell's tail, so no startup consumer can lose the initialization; an
-end marker a consumer emitted by itself does not count. The wrapper uses the same marker
-fragments as every command, so its echoed text cannot pass for the marker.
+its end marker reached the shell's tail, so no startup consumer can lose the initialization.
+Each copy carries its own marker pair, and a copy counts only when its own start marker precedes
+its end marker: an end marker a consumer emitted for an earlier copy or by itself does not count.
+The wrapper uses the same marker fragments as every command, so its echoed text cannot pass for
+the marker.
 
 ## Command construction
 
