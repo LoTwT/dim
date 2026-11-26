@@ -2282,3 +2282,81 @@ async fn gemini_capture_or_error(
         Err(error) => (None, Some(error.to_string())),
     }
 }
+
+/// Every effort the ChatGPT catalog may publish reaches the Responses wire
+/// exactly as the catalog offered it (#2189). dim's conversion passes the
+/// effort through unchanged, and the aimux Responses model — the request path
+/// the route actually runs — must serialize it without an unsupported
+/// warning: such a warning ends the turn before any content, so an effort
+/// that cannot survive here can never be offered. `gpt-6.2-sol` accepts
+/// low/medium/high/xhigh/max, and the major-only spelling keeps `none`. The
+/// negative control proves the harness sees a rejection: `minimal` is outside
+/// the table, so it must be dropped with a warning rather than serialized.
+#[test]
+fn the_chatgpt_effort_offer_survives_responses_serialization() {
+    let prepared = |model: &str, effort: &str| {
+        let mut request = request(json!({"reasoning": {"effort": effort}}));
+        request.model_id = model.into();
+        convert(
+            &request,
+            &ProviderKind::OpenaiResponses,
+            Some("openai-chatgpt"),
+        )
+        .unwrap()
+        .options
+    };
+    for effort in ["low", "medium", "high", "xhigh", "max"] {
+        let result = aimux_providers::openai::responses::build_responses_request_body(
+            "gpt-6.2-sol",
+            &prepared("gpt-6.2-sol", effort),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            result.body["reasoning"]["effort"],
+            json!(effort),
+            "the published effort must reach the wire unchanged"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|warning| !matches!(warning, aimux_core::types::Warning::Unsupported { .. })),
+            "the published effort must not fail the turn: {:?}",
+            result.warnings
+        );
+    }
+    let result = aimux_providers::openai::responses::build_responses_request_body(
+        "gpt-6-sol",
+        &prepared("gpt-6-sol", "none"),
+        false,
+    )
+    .unwrap();
+    assert_eq!(result.body["reasoning"]["effort"], json!("none"));
+    assert!(
+        result
+            .warnings
+            .iter()
+            .all(|warning| !matches!(warning, aimux_core::types::Warning::Unsupported { .. })),
+        "the accepted none effort must not fail the turn: {:?}",
+        result.warnings
+    );
+    let result = aimux_providers::openai::responses::build_responses_request_body(
+        "gpt-6.2-sol",
+        &prepared("gpt-6.2-sol", "minimal"),
+        false,
+    )
+    .unwrap();
+    assert!(
+        result.warnings.iter().any(|warning| matches!(
+            warning,
+            aimux_core::types::Warning::Unsupported { feature, .. } if feature == "reasoningEffort"
+        )),
+        "the control effort the table rejects must be dropped with a warning: {:?}",
+        result.warnings
+    );
+    assert!(
+        result.body["reasoning"]["effort"].is_null(),
+        "a rejected effort must not be serialized"
+    );
+}

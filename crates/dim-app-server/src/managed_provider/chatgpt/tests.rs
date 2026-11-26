@@ -147,10 +147,24 @@ fn chatgpt_reasoning_levels_stay_within_the_request_paths_acceptance() {
     let (capabilities, metadata) = project_remote_model(&model);
     assert!(capabilities.reasoning);
     let reasoning = metadata.unwrap().reasoning.unwrap();
+    let offered = reasoning.effort_options.unwrap();
     assert_eq!(
-        reasoning.effort_options.unwrap(),
+        offered,
         ["low", "medium", "high", "xhigh", "max"],
         "only levels the request path accepts, in catalog order"
+    );
+    // The offered set must be exactly the acceptance the request path itself
+    // reports for the slug, so a level the route accepts is never withheld
+    // and one it rejects is never published (#2189).
+    let accepted = dim_agent_aimux::accepted_reasoning_efforts("gpt-6.2-sol")
+        .expect("the request path constrains the slug");
+    let mut offered_sorted = offered.clone();
+    let mut accepted_sorted = accepted.to_vec();
+    offered_sorted.sort();
+    accepted_sorted.sort();
+    assert_eq!(
+        offered_sorted, accepted_sorted,
+        "the published set is the request path's accepted set"
     );
     assert_eq!(
         reasoning.effort, None,
@@ -171,10 +185,16 @@ fn chatgpt_reasoning_levels_stay_within_the_request_paths_acceptance() {
     }));
     let (_, metadata) = project_remote_model(&model);
     let reasoning = metadata.unwrap().reasoning.unwrap();
-    assert_eq!(
-        reasoning.effort_options.unwrap(),
-        ["none", "low", "high", "max"]
-    );
+    let offered = reasoning.effort_options.unwrap();
+    assert_eq!(offered, ["none", "low", "high", "max"]);
+    for effort in &offered {
+        assert!(
+            dim_agent_aimux::accepted_reasoning_efforts("gpt-6-sol")
+                .expect("the request path constrains the slug")
+                .contains(&effort.as_str()),
+            "{effort} must survive the request path"
+        );
+    }
     assert_eq!(reasoning.effort.as_deref(), Some("high"));
 
     // A slug the request path does not constrain is not filtered: every
