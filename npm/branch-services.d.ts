@@ -1429,12 +1429,12 @@ export interface SessionScope {
    * Calls one of this Session's own data faces.
    * @throws {RouteErrorThrown}
    */
-  call(call: SessionCall): Promise<import('./plugin.js').BridgeJsonValue>
+  call(call: SessionCall): Promise<import('./plugin.js').BridgeJsonValue | null>
   /**
    * Calls one of this Session's lines' data faces.
    * @throws {RouteErrorThrown}
    */
-  lineCall(call: LineCall): Promise<import('./plugin.js').BridgeJsonValue>
+  lineCall(call: LineCall): Promise<import('./plugin.js').BridgeJsonValue | null>
 }
 
 export type SessionInstanceDefinition = {

@@ -904,7 +904,12 @@ impl HostDispatch for SessionsService {
                 (Some(index), Ok(args)) => call(&index, &method, args, row.as_ref()).await,
             }
         };
-        Ok(Value::future(async move { Ok(envelope(operation.await)) }))
+        Ok(Value::future(async move {
+            match operation.await {
+                Ok(reply) if reply.get("ok").is_some() => Ok(reply.into()),
+                other => Ok(envelope(other)),
+            }
+        }))
     }
 }
 
@@ -1013,7 +1018,20 @@ async fn call(
             index.delete(&session_id).await?;
             reply(json!({}))
         }
-        "call" => index.call(request(args)?).await.map_err(routed),
+        "call" => index
+            .call(request(args)?)
+            .await
+            .map_err(routed)
+            .map(|value| {
+                let mut reply = serde_json::Map::new();
+                reply.insert("ok".into(), serde_json::Value::Bool(true));
+                // A method that answers nothing leaves `value` out: a caller reads
+                // absent as `undefined`, while `null` stays the owner's reply.
+                if let Some(value) = value {
+                    reply.insert("value".into(), value);
+                }
+                serde_json::Value::Object(reply)
+            }),
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

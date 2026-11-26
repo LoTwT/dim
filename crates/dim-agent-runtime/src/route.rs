@@ -306,7 +306,7 @@ pub fn routed_scope(session: &Session) -> Option<Arc<SessionScope>> {
 #[rutis::service]
 impl SessionScope {
     /// Calls one of this Session's own data faces.
-    pub async fn call(&self, call: SessionCall) -> Routed<serde_json::Value> {
+    pub async fn call(&self, call: SessionCall) -> Routed<Option<serde_json::Value>> {
         let session = self.live()?;
         let (catalog, faces) = session.reach();
         face(catalog, faces, &call.service, &call.method, SESSION_GROUP)?;
@@ -330,7 +330,7 @@ impl SessionScope {
     }
 
     /// Calls one of this Session's lines' data faces.
-    pub async fn line_call(&self, call: LineCall) -> Routed<serde_json::Value> {
+    pub async fn line_call(&self, call: LineCall) -> Routed<Option<serde_json::Value>> {
         let line = self.line_context(&call.line_id)?;
         face(
             line.catalog(),
@@ -413,7 +413,7 @@ pub(crate) async fn call_face(
     service: &str,
     method: &str,
     args: &[serde_json::Value],
-) -> Routed<serde_json::Value> {
+) -> Routed<Option<serde_json::Value>> {
     let dispatch = ctx
         .get_at::<dyn HostDispatch>(&host_key_in(service, instance))
         .ok_or_else(|| RouteError::Owner {
@@ -430,7 +430,18 @@ pub(crate) async fn call_face(
     );
     let reply = dispatch.invoke(method, args).map_err(owner)?;
     let value = settle(reply).await.map_err(owner)?;
-    decode_value::<serde_json::Value>(value).map_err(owner)
+    reply_value(value)
+}
+
+/// A method that answers nothing crosses as `undefined`; `null` is a value the
+/// owner chose to reply with, and a caller reads the two differently.
+fn reply_value(value: BridgeValue) -> Routed<Option<serde_json::Value>> {
+    if matches!(value, BridgeValue::Undefined) {
+        return Ok(None);
+    }
+    decode_value::<serde_json::Value>(value)
+        .map(Some)
+        .map_err(owner)
 }
 
 /// The owner's failure as the target wrote it, under the name it carries.
@@ -537,6 +548,15 @@ impl From<BridgeError> for Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_void_reply_is_undefined_and_a_null_reply_is_a_value() {
+        assert_eq!(reply_value(BridgeValue::Undefined).unwrap(), None);
+        assert_eq!(
+            reply_value(serde_json::Value::Null.into()).unwrap(),
+            Some(serde_json::Value::Null)
+        );
+    }
 
     #[test]
     fn an_owner_failure_keeps_its_code() {

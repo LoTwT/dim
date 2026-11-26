@@ -1647,7 +1647,7 @@ impl AgentIndex {
     pub(crate) async fn call(
         &self,
         request: crate::agents::sessions::CallRequest,
-    ) -> std::result::Result<serde_json::Value, RouteError> {
+    ) -> std::result::Result<Option<serde_json::Value>, RouteError> {
         let id = request.session_id.clone();
         // A replaced or stopping index is transient: the caller retries the
         // Session it knows against the next generation (#2127).

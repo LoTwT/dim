@@ -64,9 +64,9 @@ impl Rig {
             ("permission", "branch"),
             ("timeline", "branch"),
             ("sessionConfig", "session"),
-            ("sessionIdentity", "session"),
             ("treeCommands", "session"),
             ("uiResources", "session"),
+            ("sessionLoader", "session"),
         ] {
             builder.catalog_mut().register_shared_instance(name, group);
         }
@@ -174,7 +174,7 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         .unwrap();
     assert_eq!(
         sequence,
-        serde_json::json!(session.sequence("main").unwrap())
+        Some(serde_json::json!(session.sequence("main").unwrap()))
     );
     assert_eq!(
         scope
@@ -191,7 +191,10 @@ async fn a_session_part_reaches_its_own_line_and_its_own_faces() {
         .call(SessionCall::new("sessionConfig", "get", vec![]))
         .await
         .unwrap();
-    assert_eq!(config, serde_json::to_value(session.config()).unwrap());
+    assert_eq!(
+        config,
+        Some(serde_json::to_value(session.config()).unwrap())
+    );
 
     rig.host.close().await.unwrap();
 }
@@ -395,6 +398,35 @@ async fn an_owner_failure_keeps_its_code_through_the_route() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_void_reply_stays_undefined_and_a_value_stays_a_value() {
+    let rig = Rig::start().await;
+    let session = rig.open().await;
+    let scope = rig.scope(&session);
+
+    let void = scope
+        .call(SessionCall::new(
+            "sessionLoader",
+            "remove",
+            vec![serde_json::json!({"instanceId": 0})],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        void, None,
+        "a method that answers nothing crosses as undefined"
+    );
+
+    // A value the owner replied stays a value.
+    let value = scope
+        .line_call(LineCall::new("main", "timeline", "sequence", vec![]))
+        .await
+        .unwrap();
+    assert!(value.is_some(), "a reply stays a value: {value:?}");
+    session.close().await.unwrap();
+    rig.host.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     let rig = Rig::start().await;
     let session = rig.open().await;
@@ -437,11 +469,11 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     );
     assert_eq!(
         scope
-            .call(SessionCall::new("sessionLoader", "new", vec![]))
+            .call(SessionCall::new("sessionIdentity", "get", vec![]))
             .await
             .unwrap_err(),
         RouteError::NotDataFace {
-            service: "sessionLoader".into()
+            service: "sessionIdentity".into()
         },
         "a native-only registration is not a data face"
     );
