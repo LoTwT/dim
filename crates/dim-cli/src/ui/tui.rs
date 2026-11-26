@@ -317,6 +317,7 @@ fn run_terminal(
         active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
     let mut dirty = true;
+    let mut click_scroll = None;
     let mut last_frame: Option<Instant> = None;
     let mut resize: Option<PendingResize> = None;
     let code = loop {
@@ -516,6 +517,11 @@ fn run_terminal(
                 dirty = true;
             }
         }
+        if !mouse || full.is_some() {
+            click_scroll = None;
+        } else if !dirty {
+            click_scroll.get_or_insert(app.composer.rendered_scroll());
+        }
         let wait = match (dirty && resize.is_none(), last_frame) {
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
@@ -587,6 +593,8 @@ fn run_terminal(
                         && event.kind == crate::ui::terminal::MouseKind::Press
                         && screen.size() == terminal.size()
                         && let Some((area, cell)) = screen.composer_hit(event.column, event.row)
+                        && click_scroll.replace(app.composer.rendered_scroll())
+                            == Some(app.composer.rendered_scroll())
                     {
                         app.composer.click(cell, area);
                         dirty = true;
