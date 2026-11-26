@@ -597,8 +597,8 @@ impl ToolEffect {
     /// longer one is cut there and marked with a trailing `…`; a path stays
     /// verbatim, an exact identifier. The cut is ContextCompaction §5.10's
     /// rule for the digest and the timeline branches design's rule for a read
-    /// page. The digest calls this, and both read pages call it through
-    /// [`ToolResult::shortened_effects`], so the three cannot drift.
+    /// page. The digest calls this, and the read page calls it through
+    /// [`ToolResult::shortened_effects`], so the two cannot drift.
     pub fn shortened(&self) -> ToolEffect {
         match self {
             ToolEffect::CommandRun {
