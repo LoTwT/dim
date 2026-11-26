@@ -1910,10 +1910,11 @@ export type LineCall = Call<LineFaces, { lineId: string }>
 /** A call to one of the caller's own Session's data faces. */
 export type SessionCall = Call<SessionFaces, {}>
 
-/** A call through Agents: a Session's face, or one of its lines' faces. */
+/** A call through Agents: a Session's face, or one of its lines' faces. A Session
+ * face takes no `lineId`. */
 export type SessionsCall =
   | Call<LineFaces, { sessionId: string; lineId: string }>
-  | Call<SessionFaces, { sessionId: string }>
+  | Call<SessionFaces, { sessionId: string; lineId?: never }>
 
 /** The reply of one call: the target method's own return type. */
 export type ReplyOf<C> = C extends { service: infer S; method: infer M }

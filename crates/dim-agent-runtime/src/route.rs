@@ -170,6 +170,10 @@ impl SessionCall {
 /// inside that generation
 /// ([ADR 027](../../../docs/adr/027-cross-scope-access-by-id.md) D3), and the
 /// scope lifecycle services the runtime provides.
+/// The code a marked Rust service reports for `AgentError::Reloading`: the
+/// owner's own word for "try again later".
+const RELOADING: &str = "Reloading";
+
 const REGISTRATION_POINTS: [&str; 5] = [
     "sessionMethods",
     "toolRegistry",
@@ -334,20 +338,6 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
     }
 }
 
-/// Whether an owner's error graph names a reload: the marked service reports
-/// an `AgentError::Reloading` with that code, and only that is worth retrying.
-fn reloading_code(graph: &Option<serde_json::Value>) -> bool {
-    graph
-        .as_ref()
-        .and_then(|graph| graph.get("nodes"))
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|node| node.get("code"))
-        .filter_map(serde_json::Value::as_str)
-        .any(|code| code.to_ascii_lowercase().contains("reload"))
-}
-
 /// A failure's name and message, from either error surface a read answers
 /// with.
 pub(crate) struct Failure {
@@ -369,25 +359,71 @@ impl From<AgentError> for Failure {
 impl From<BridgeError> for Failure {
     fn from(error: BridgeError) -> Self {
         match error {
-            BridgeError::Remote {
-                name,
-                message,
-                graph,
-            } => Self {
-                reloading: reloading_code(&graph),
-                name,
-                message,
-            },
-            BridgeError::Binding { code, message, .. } => Self {
-                reloading: code == Some("reloading"),
-                name: code.unwrap_or("BindingError").into(),
-                message,
-            },
+            error @ (BridgeError::Remote { .. } | BridgeError::Binding { .. }) => {
+                // The owner's own code says whether it may be retried; a Rust
+                // service reports a reload as `Reloading` (`AgentError`'s variant
+                // code), and the wire keeps it in the error graph.
+                let reloading = error.code() == Some(RELOADING);
+                let name = match &error {
+                    BridgeError::Remote { name, .. } => name.clone(),
+                    BridgeError::Binding { code, .. } => code.unwrap_or("BindingError").into(),
+                    other => other.to_string(),
+                };
+                match error {
+                    BridgeError::Remote { message, .. } | BridgeError::Binding { message, .. } => {
+                        Self {
+                            reloading,
+                            name,
+                            message,
+                        }
+                    }
+                    other => Self {
+                        reloading,
+                        name,
+                        message: other.to_string(),
+                    },
+                }
+            }
             other => Self {
                 name: "BridgeError".into(),
                 message: other.to_string(),
                 reloading: false,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_owner_failure_is_retryable_only_when_its_code_says_reloading() {
+        let reloading = owner(AgentError::Reloading("timeline".into()));
+        assert!(
+            matches!(
+                reloading,
+                RouteError::Owner {
+                    reloading: true,
+                    ..
+                }
+            ),
+            "{reloading:?}"
+        );
+        let permanent = owner(BridgeError::Binding {
+            code: Some("not_reloadable"),
+            message: "a permanent failure whose name mentions reload".into(),
+            data: None,
+        });
+        assert!(
+            matches!(
+                permanent,
+                RouteError::Owner {
+                    reloading: false,
+                    ..
+                }
+            ),
+            "{permanent:?}"
+        );
     }
 }
