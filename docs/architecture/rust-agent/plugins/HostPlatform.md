@@ -37,7 +37,10 @@ given their path.
 `ShellSession`. A shell command capture is read by its command id and records the bounded output,
 tail and task log. `wait`, `kill`, `output` and `tail` address shell command and job ids as well
 as exec tasks. A shell command ends from its marker; shell exit sweeps its command and job
-children. A terminal shell answers `write`/`resize` with `task_ended`, and `settle` is
+children. Before a shell writes its terminal, it releases every live job with a SIGKILL
+escalation and waits for it, so a job that ignores SIGTERM is gone before the job's own terminal
+exists; the sweep keeps a SIGKILL backstop. A terminal shell answers `write`/`resize` with
+`task_ended`, and `settle` is
 idempotent. A shell `outputPath` is registered before the reply and survives settle until
 `removeOutputDirectory` or Session deletion; `retainOutput` is idempotent. `ShellJobStart.outputPath`
 is an absolute path inside the shell output directory and its file stem equals the task id; `childPath` takes UTF-8 data, while the

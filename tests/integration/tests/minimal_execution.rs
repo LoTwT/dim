@@ -20,7 +20,7 @@ use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::*;
 use dim_agent_types::*;
-use process_support::{gone, pid_in};
+use process_support::{alive, gone, pid_in};
 use rutis::host::CtxHost;
 use rutis::{Ctx, Plugin};
 use serde_json::{Value, json};
@@ -1354,6 +1354,11 @@ async fn a_term_ignoring_job_is_gone_before_its_terminal() {
     let (_, end) = &ended(&events)[0];
     assert_eq!(end.task_id, task_id);
     assert_eq!(end.status, ExecStatus::Failed);
+    assert!(
+        !alive(&pid),
+        "process {pid} was alive when its terminal was published: result={:?}",
+        end.result
+    );
     assert!(
         gone(&pid).await,
         "background process {pid} survived the shell exit: result={:?}, process={:?}",
