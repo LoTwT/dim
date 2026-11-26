@@ -9978,6 +9978,150 @@ async fn a_reseed_does_not_pin_the_bundles_own_capability_changes() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The invariant the static edit path owes the normalization (#2189): the
+/// clone an edit stores may be declared normalized only because its pin set
+/// is complete. The static path clones the effective entry, which the read
+/// has already pinned, so an edit that starts from a legacy clone fastens
+/// every pin the clone carries before the record says so.
+#[tokio::test]
+async fn a_static_edit_marks_every_pin_before_declaring_the_set_complete() {
+    let home = std::env::temp_dir().join(format!("provider-edit-pin-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin::new(None)),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let catalog = provider
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let version = catalog.version;
+    // The pre-upgrade user pins reasoning off on `gpt-5.5`; the edit path of
+    // that era wrote the same clone without the capability marks.
+    provider
+        .update_model_config(
+            "openai".into(),
+            version,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"reasoning":{"supported":false}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    // Rewriting the stored override without the capability marks and without
+    // the normalization record reproduces exactly the shape an upgrade
+    // reads.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        let mut record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+        let rewrite_version = record["version"].as_u64().unwrap() as u32;
+        let entry = record["modelConfigOverrides"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["modelId"] == "gpt-5.5")
+            .expect("the edit wrote the override");
+        let marks = &mut entry["metadata"]["capabilityOverrideFields"];
+        *marks = json!(
+            marks
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|field| !matches!(
+                    field.as_str().unwrap(),
+                    "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+                ))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        entry.as_object_mut().unwrap().remove("normalizedOverride");
+        dim_app_server::provider::testing::replace_provider(
+            &db,
+            "openai",
+            rewrite_version,
+            &record.to_string(),
+        )
+        .unwrap();
+    }
+    // The first operation after the upgrade is another edit on the same
+    // model, before any row-replacing write could normalize the legacy clone.
+    let edited = provider
+        .update_model_config(
+            "openai".into(),
+            version + 1,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"contextWindow":100000})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let model = edited
+        .models
+        .iter()
+        .find(|model| model.id == "gpt-5.5")
+        .unwrap();
+    assert!(
+        !model.capabilities.reasoning,
+        "the unmarked pin the legacy clone carried must survive the first edit"
+    );
+    assert_eq!(
+        model.capabilities.context_window,
+        Some(100000),
+        "the edit itself lands beside the pin"
+    );
+    // The override the edit stores names every pin it carries, including the
+    // one the legacy clone never marked, and only then records the pin set
+    // as complete.
+    let record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+    let clone = record["modelConfigOverrides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["modelId"] == "gpt-5.5")
+        .expect("the override survives the edit");
+    let marks = clone["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    for pin in ["reasoning", "contextWindow"] {
+        assert!(
+            marks.iter().any(|mark| mark == pin),
+            "the pin must be marked before the set is declared complete: {marks:?}"
+        );
+    }
+    assert!(
+        !marks.iter().any(|mark| mark == "vision"),
+        "a capability the user never edited must not pin: {marks:?}"
+    );
+    assert_eq!(
+        clone["normalizedOverride"],
+        json!(true),
+        "only the complete pin set may carry the record: {}",
+        clone["metadata"]
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// A recorded protocol that is present but does not parse still rejects a
 /// preference update: the route guard compares the recorded value itself, not
 /// the readable readback. An absent record passes as before.

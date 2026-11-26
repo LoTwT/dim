@@ -1,7 +1,8 @@
 use dim_app_server::model_catalog::{
-    BundledCatalog, ModelEdit, ModelEntry, ModelIdentification, ModelSource, ProviderProjection,
-    infer_capability_edits, rebase_override,
+    BundledCatalog, CatalogCapabilities, ModelEdit, ModelEntry, ModelIdentification, ModelSource,
+    ProviderProjection, infer_capability_edits, rebase_override,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -2927,5 +2928,93 @@ fn an_override_is_rebased_on_the_refreshed_row_and_keeps_only_its_pins() {
         raw.get("modalityCapabilities"),
         Some(&json!([])),
         "the modalityCapabilities edit itself is pinned"
+    );
+}
+
+/// The shape an older release deserializes a stored model entry with (#2189):
+/// capability marks and metadata validation as they stood before this change,
+/// without the normalization record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DowngradedEntry {
+    model_id: String,
+    display_name: String,
+    status: dim_app_server::model_catalog::ModelStatus,
+    capabilities: CatalogCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_guide_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<DowngradedMetadata>,
+}
+
+/// The metadata the same older release expects: the field-by-field
+/// validation rejects any key it does not know, which is why the completion
+/// record must sit beside the descriptor rather than inside it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DowngradedMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capability_override_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    raw: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The downgrade half of the format decision (#2189): a record written with
+/// the completion record reads back in the shape an older release
+/// deserializes, because the flag sits beside the descriptor where unknown
+/// keys are ignored. The older read cannot tell the override from a legacy
+/// clone, so the clone degrades to the conservative inference instead of the
+/// record being rejected outright — which is what the flag inside the
+/// metadata would cause, since the metadata validates unknown keys.
+#[test]
+fn a_record_with_the_completion_record_reads_in_the_downgraded_shape() {
+    let entry: ModelEntry = serde_json::from_value(json!({
+        "modelId": "zz-downgrade",
+        "displayName": "Downgrade fixture",
+        "status": "active",
+        "capabilities": {"modalities": ["text"], "toolCalling": true,
+            "streaming": true, "structuredOutput": true, "vision": false,
+            "audio": false, "reasoning": false,
+            "contextWindow": 32000, "maxOutputTokens": 4096},
+    }))
+    .unwrap();
+    // The override a normalizing write stores: the entry it clones plus the
+    // completion record.
+    let mut stored = entry.clone();
+    stored
+        .metadata
+        .get_or_insert_default()
+        .capability_override_fields
+        .push("contextWindow".into());
+    stored.normalized_override = true;
+    let body = serde_json::to_string(&stored).unwrap();
+    assert!(
+        body.contains("normalizedOverride"),
+        "the write records the complete pin set: {body}"
+    );
+    // The older release reads the entry whole: the record it does not know
+    // is ignored where it sits, and the descriptor itself round-trips.
+    let downgraded: DowngradedEntry = serde_json::from_str(&body).unwrap();
+    assert_eq!(downgraded.model_id, stored.model_id);
+    assert_eq!(downgraded.capabilities, stored.capabilities);
+    assert_eq!(
+        downgraded
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.capability_override_fields.clone()),
+        stored
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.capability_override_fields.clone()),
+        "the pins the override carries survive the downgrade read"
+    );
+    // The same flag inside the metadata is what the metadata validation
+    // rejects, which is the failure the placement avoids.
+    let mut inside: serde_json::Value = serde_json::from_str(&body).unwrap();
+    inside["metadata"]["normalizedOverride"] = json!(true);
+    inside.as_object_mut().unwrap().remove("normalizedOverride");
+    assert!(
+        serde_json::from_str::<DowngradedEntry>(&inside.to_string()).is_err(),
+        "the metadata validation rejects the key the placement keeps outside it"
     );
 }

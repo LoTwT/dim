@@ -591,8 +591,11 @@ move, so the clone never falls behind the row it compares against. The write
 whose replacement drops a row is part of that chain: it is the last chance to
 compare the clone against the row before the row is gone, so the inference
 runs there too and the pins are recorded before the row disappears. An
-override whose pins are complete carries `normalizedOverride` in its metadata
-— set by the edit that writes it and by each of these normalizing writes —
+override whose pins are complete carries `normalizedOverride` beside the
+descriptor, set by the edit that writes it and by each of these normalizing
+writes — the edit path is part of the same chain, because an edit that clones
+the record's stored override may clone a legacy one, so it fastens the pins
+the clone carries against the row before it may declare the pin set complete —
 and neither a read nor a later write infers further edits from it: when the
 model returns to the listing, exactly the recorded pins are applied and every
 other declaration follows the returning row, even across a gap in which the
@@ -606,6 +609,19 @@ against. A record whose rows were last replaced before this normalization
 existed may carry a clone the replaced rows left behind; its differences are
 pinned the same way, because the record cannot tell them from the user's
 edits.
+
+The format decision behind the placement (#2189): `normalizedOverride` is a
+new optional key on the persisted override entry. The entry ignores keys it
+does not know, so a release from before this change reads the record back
+with the flag dropped, and the override reads as a legacy clone — the
+conservative inference it already had; writing the record back loses the
+flag, and the next upgrade infers the clone again, which may pin what the
+row's own movement left in it, the behavior the inference exists for. The
+metadata, where the capability marks live, rejects keys it does not know
+instead, so the flag cannot sit there without the older release refusing the
+whole record. The record format otherwise keeps its shape: no key is renamed
+or removed, no migration runs, and a record written before the flag existed
+reads exactly as a legacy clone.
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain

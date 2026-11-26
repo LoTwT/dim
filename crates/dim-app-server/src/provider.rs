@@ -1221,7 +1221,7 @@ fn normalize_overrides(
             // itself: the rebase output is built from the row, which never
             // carries it.
             if normalized {
-                result.metadata.get_or_insert_default().normalized_override = true;
+                result.normalized_override = true;
             }
             result
         })

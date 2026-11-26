@@ -751,6 +751,7 @@ impl ChatGpt {
                     capabilities,
                     model_guide_prompt: None,
                     metadata,
+                    normalized_override: false,
                 },
                 protocol: ModelProtocol::OpenaiResponses,
                 unavailable_reason: Some("limits_undeclared".into()),

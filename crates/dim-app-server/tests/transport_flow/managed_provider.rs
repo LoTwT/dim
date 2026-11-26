@@ -1903,8 +1903,8 @@ async fn a_pre_upgrade_capability_edit_is_pinned_on_the_first_read() {
             .collect::<Vec<_>>()
     );
     assert_eq!(marks, &json!([]));
-    if let Some(metadata) = record["modelConfigOverrides"][0]["metadata"].as_object_mut() {
-        metadata.remove("normalizedOverride");
+    if let Some(entry) = record["modelConfigOverrides"][0].as_object_mut() {
+        entry.remove("normalizedOverride");
     }
     rewrite_stored(&home, &record);
     // The first read after the upgrade, before any refresh: the pin must
@@ -2376,8 +2376,8 @@ async fn a_pre_upgrade_clone_applies_only_its_pins_across_a_listing_gap() {
             .cloned()
             .collect::<Vec<_>>()
     );
-    if let Some(metadata) = override_entry["metadata"].as_object_mut() {
-        metadata.remove("normalizedOverride");
+    if let Some(entry) = override_entry.as_object_mut() {
+        entry.remove("normalizedOverride");
     }
     rewrite_stored(&home, &record);
     // The model disappears before any refresh can rebase the legacy clone
@@ -2423,6 +2423,106 @@ async fn a_pre_upgrade_clone_applies_only_its_pins_across_a_listing_gap() {
     assert_eq!(
         model["capabilities"]["modalities"],
         json!(["text", "image"])
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A regression for the legacy clone the first edit carries across the
+/// upgrade (#2189): an account-model edit on a record whose stored override
+/// predates capability marks must fasten the pins the clone holds before the
+/// edit declares the override normalized, or the pin the pre-upgrade user
+/// wrote is lost inside that same edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_legacy_clone_keeps_its_unmarked_pins_through_the_first_edit() {
+    let (server, _fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The pre-upgrade user pins reasoning off; the edit path of that era
+    // wrote the same clone without the capability marks.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"reasoning":{"supported":false}}}),
+            )
+            .await,
+    );
+    // Rewriting the stored override without the capability marks and without
+    // the normalization record reproduces exactly the shape an upgrade
+    // reads.
+    let mut record = stored(&home);
+    let override_entry = &mut record["modelConfigOverrides"][0];
+    let marks = &mut override_entry["metadata"]["capabilityOverrideFields"];
+    *marks = json!(
+        marks
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|field| !matches!(
+                field.as_str().unwrap(),
+                "toolCalling" | "vision" | "reasoning" | "modalityCapabilities"
+            ))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    if let Some(entry) = override_entry.as_object_mut() {
+        entry.remove("normalizedOverride");
+    }
+    rewrite_stored(&home, &record);
+    // The first operation after the upgrade is another edit on the same
+    // model, before any refresh could normalize the legacy clone. The edit
+    // must keep the pin the clone carried rather than dropping it inside the
+    // write that declares the override normalized.
+    let edited = client
+        .rpc(
+            "provider.models.edit",
+            json!({"providerId":"managed-fixture","expectedVersion":2,
+                "modelId":"fixture-model",
+                "edit":{"contextWindow":100000}}),
+        )
+        .await;
+    assert_ok(&edited);
+    let model = &edited["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["reasoning"], false,
+        "the unmarked pin the legacy clone carried must survive the first edit: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edit itself lands beside the pin"
+    );
+    // The stored override the edit wrote pins every difference it carries
+    // and records the pin set as complete.
+    let record = stored(&home);
+    let override_entry = &record["modelConfigOverrides"][0];
+    assert_eq!(
+        override_entry["normalizedOverride"],
+        json!(true),
+        "the edit records the pin set as complete: {}",
+        override_entry
+    );
+    let marks = override_entry["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        marks.iter().any(|field| field == "reasoning"),
+        "the pin the clone carried must be marked before the set is declared complete: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|field| field == "contextWindow"),
+        "the edit's own mark lands beside it: {marks:?}"
     );
     assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
     server.join().await.unwrap();

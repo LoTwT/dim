@@ -70,6 +70,19 @@ pub struct ModelEntry {
     pub model_guide_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ModelMetadata>,
+    /// Set on a stored descriptor override whose pin set is complete (#2189):
+    /// every capability the user edited is named in the metadata's
+    /// `capability_override_fields`, so neither a read nor a row-replacing
+    /// write may infer further edits from it. Absent on a clone written
+    /// before this normalization existed, which the inference treats as a
+    /// legacy clone. Only overrides carry it; catalog rows and user models
+    /// never do. The flag sits beside the descriptor rather than inside the
+    /// metadata, which the stored record validates field by field: a record
+    /// an older release reads back ignores the flag and the clone it marks
+    /// reads as a legacy one, so a downgrade degrades to the conservative
+    /// inference instead of refusing the record.
+    #[serde(default, skip_serializing_if = "omitted_when_false")]
+    pub normalized_override: bool,
 }
 
 impl ModelEntry {
@@ -160,15 +173,6 @@ pub struct ModelMetadata {
     pub identification: Option<ModelIdentification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_override_fields: Vec<String>,
-    /// Set on a stored descriptor override whose pin set is complete (#2189):
-    /// every capability the user edited is named in
-    /// `capability_override_fields`, so neither a read nor a row-replacing
-    /// write may infer further edits from it. Absent on a clone written
-    /// before this normalization existed, which the inference treats as a
-    /// legacy clone. Only overrides carry it; catalog rows and user models
-    /// never do.
-    #[serde(default, skip_serializing_if = "omitted_when_false")]
-    pub normalized_override: bool,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub raw: Map<String, Value>,
 }
@@ -1148,6 +1152,7 @@ fn descriptor_entry(
         capabilities: caps,
         model_guide_prompt: None,
         metadata: Some(metadata),
+        normalized_override: false,
     })
 }
 
@@ -1330,11 +1335,7 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
 /// on a write — must be the row the clone was taken from, and callers run
 /// this once per read or write, before `rebase_override`.
 pub fn infer_capability_edits(base: &ModelEntry, pinned: &mut ModelEntry) {
-    if pinned
-        .metadata
-        .as_ref()
-        .is_some_and(|metadata| metadata.normalized_override)
-    {
+    if pinned.normalized_override {
         return;
     }
     let marks: Vec<String> = pinned
