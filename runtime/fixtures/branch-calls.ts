@@ -39,6 +39,32 @@ export async function readByCalls(
   const config = await scope.call({ service: 'sessionConfig', method: 'get', args: [] })
   const cwd: string = config.cwd
   void [status, committed, cwd]
+
+  // @ts-expect-error a service the route does not resolve is refused.
+  void scope.lineCall({ lineId: 'main', service: 'inputQueueX', method: 'withdraw', args: [] })
+  // @ts-expect-error a method the service does not have is refused.
+  void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'submitX', args: [] })
+  // @ts-expect-error arguments follow the method's parameters.
+  void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: ['wrong'] })
+  // @ts-expect-error a Session call reaches a Session face, not a line's.
+  void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
+  // @ts-expect-error a reply keeps the target method's own type.
+  void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
+  // @ts-expect-error an operation bound to the calling row is direct-only.
+  void scope.call({ service: 'uiResources', method: 'publishFile', args: [{}] })
+  // @ts-expect-error a subscription an operation hands the caller is not routed.
+  void scope.lineCall({ lineId: 'main', service: 'dispatcher', method: 'listen', args: ['n', [], (_e: unknown) => {}] })
+  // @ts-expect-error an operation that needs a caller-side cancellation is not routed.
+  void scope.lineCall({ lineId: 'main', service: 'wait', method: 'wait', args: [] })
+  // @ts-expect-error a Session service takes no lineId.
+  void sessions.call({ sessionId, lineId: 'main', service: 'sessionConfig', method: 'get', args: [] })
+  // @ts-expect-error a line call takes no Session id.
+  void sessions.call({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] })
+  // @ts-expect-error `lineCall` takes no `sessionId`: it reaches its own Session only.
+  void scope.lineCall({ sessionId, lineId: 'main', service: 'timeline', method: 'sequence', args: [] })
+  // @ts-expect-error `SessionScope.call` takes neither `lineId` nor `sessionId`.
+  void scope.call({ sessionId, lineId: 'main', service: 'sessionConfig', method: 'get', args: [] })
+
   await sessions.call({
     sessionId,
     lineId: 'main',
@@ -48,24 +74,3 @@ export async function readByCalls(
   })
   await sessions.call({ sessionId, service: 'sessionConfig', method: 'get', args: [] })
 }
-
-// @ts-expect-error a service the route does not resolve is refused.
-void scope.lineCall({ lineId: 'main', service: 'inputQueueX', method: 'withdraw', args: [] })
-// @ts-expect-error a method the service does not have is refused.
-void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'submitX', args: [] })
-// @ts-expect-error arguments follow the method's parameters.
-void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw', args: ['wrong'] })
-// @ts-expect-error a Session call reaches a Session face, not a line's.
-void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
-// @ts-expect-error a reply keeps the target method's own type.
-void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
-// @ts-expect-error an operation bound to the calling row is direct-only.
-void scope.call({ service: 'uiResources', method: 'publishFile', args: [{}] })
-// @ts-expect-error a subscription an operation hands the caller is not routed.
-void scope.lineCall({ lineId: 'main', service: 'dispatcher', method: 'listen', args: ['n', [], (_e: unknown) => {}] })
-// @ts-expect-error an operation that needs a caller-side cancellation is not routed.
-void scope.lineCall({ lineId: 'main', service: 'wait', method: 'wait', args: [] })
-// @ts-expect-error a Session service takes no lineId.
-void sessions.call({ sessionId, lineId: 'main', service: 'sessionConfig', method: 'get', args: [] })
-// @ts-expect-error a line call takes no Session id.
-void sessions.call({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] })

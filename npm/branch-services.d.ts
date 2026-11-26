@@ -1919,10 +1919,10 @@ type Call<Faces, Address> = {
 }[keyof Faces]
 
 /** A call to one of the caller's own Session's lines. */
-export type LineCall = Call<LineFaces, { lineId: string }>
+export type LineCall = Call<LineFaces, { lineId: string; sessionId?: never }>
 
 /** A call to one of the caller's own Session's data faces. */
-export type SessionCall = Call<SessionFaces, {}>
+export type SessionCall = Call<SessionFaces, { lineId?: never; sessionId?: never }>
 
 /** A call through Agents: a Session's face, or one of its lines' faces. A Session
  * face takes no `lineId`. */

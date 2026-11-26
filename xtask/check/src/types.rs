@@ -106,8 +106,8 @@ fn calls(root: &Path, services: &str) -> Result<String> {
     text += "\n/** The data faces a Session reaches. */\n";
     text += &faces(&session, "SessionFaces");
     text += "\n/** One call a route resolves: `service` and `method` name a data face and one of its methods, and `args` are that method's parameters. */\ntype Call<Faces, Address> = {\n  [S in keyof Faces]: {\n    [M in keyof Faces[S]]: Address & {\n      service: S\n      method: M\n      args: Faces[S][M] extends (...args: infer A) => unknown ? A : never\n    }\n  }[keyof Faces[S]]\n}[keyof Faces]\n";
-    text += "\n/** A call to one of the caller's own Session's lines. */\nexport type LineCall = Call<LineFaces, { lineId: string }>\n";
-    text += "\n/** A call to one of the caller's own Session's data faces. */\nexport type SessionCall = Call<SessionFaces, {}>\n";
+    text += "\n/** A call to one of the caller's own Session's lines. */\nexport type LineCall = Call<LineFaces, { lineId: string; sessionId?: never }>\n";
+    text += "\n/** A call to one of the caller's own Session's data faces. */\nexport type SessionCall = Call<SessionFaces, { lineId?: never; sessionId?: never }>\n";
     text += "\n/** A call through Agents: a Session's face, or one of its lines' faces. A Session\n * face takes no `lineId`. */\nexport type SessionsCall =\n  | Call<LineFaces, { sessionId: string; lineId: string }>\n  | Call<SessionFaces, { sessionId: string; lineId?: never }>\n";
     text += "\n/** The reply of one call: the target method's own return type. */\nexport type ReplyOf<C> = C extends { service: infer S; method: infer M }\n  ? S extends keyof (LineFaces & SessionFaces)\n    ? M extends keyof (LineFaces & SessionFaces)[S]\n      ? Awaited<\n          (LineFaces & SessionFaces)[S][M] extends (...args: never[]) => infer R ? R : never\n        >\n      : never\n    : never\n  : never\n";
     text += "\n/** A Session's own faces, typed per operation: `service` and `method` choose the reply. */\nexport interface SessionScope {\n  call<C extends SessionCall>(call: C): Promise<ReplyOf<C>>\n  lineCall<C extends LineCall>(call: C): Promise<ReplyOf<C>>\n}\n";
