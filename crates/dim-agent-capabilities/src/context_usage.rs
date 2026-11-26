@@ -1109,12 +1109,7 @@ impl ContextUsage {
             .request_tools(through)
             .await?
             .unwrap_or_else(|| self.registry.visible_definitions());
-        let tools_fingerprint = fingerprint(
-            &tools
-                .iter()
-                .map(|tool| (&tool.name, &tool.description))
-                .collect::<Vec<_>>(),
-        )?;
+        let tools_fingerprint = fingerprint(&tools)?;
         let versions = format!("{versions}:{tools_fingerprint}");
         if let Some(cached) = self
             .dynamic_fixed
@@ -1452,5 +1447,28 @@ impl DynPlugin for ContextUsagePlugin {
             ctx.provide_at(self.usage.clone(), owner)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tool_fingerprint_covers_the_input_schema() {
+        let plain = crate::tool_registry::definition(
+            "execute",
+            "Run a command.",
+            serde_json::json!({"type": "object"}),
+        );
+        let mut typed = plain.clone();
+        typed.input_schema = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+        }))
+        .unwrap();
+        let before = fingerprint(&vec![plain]).unwrap();
+        let after = fingerprint(&vec![typed]).unwrap();
+        assert_ne!(before, after, "a schema-only change changes the cache key");
     }
 }
