@@ -589,7 +589,10 @@ impl ShellSession {
                     }
                 }
             }
-            let started = matches!(&tail, Ok(tail) if copies.iter().any(|(start, _)| tail.text.contains(start)));
+            let started = match &tail {
+                Ok(tail) => copies.iter().any(|(start, _)| tail.text.contains(start)),
+                Err(_) => false,
+            };
             let now = tokio::time::Instant::now();
             // A started copy is left to finish: another would only queue behind it.
             if now >= write_at && !started {
