@@ -4235,6 +4235,12 @@ pub(crate) mod shell {
         Some((task_id.to_owned(), pid))
     }
 
+    fn zsh_startup_files(home: &Path) -> bool {
+        [".zshenv", ".zprofile", ".zshrc", ".zlogin"]
+            .iter()
+            .any(|name| home.join(name).is_file())
+    }
+
     fn last_full_marker(line: &str) -> Option<(&'static str, &str)> {
         let mut found: Option<(usize, (&'static str, &str))> = None;
         for (prefix, position) in [
@@ -4391,11 +4397,15 @@ pub(crate) mod shell {
                     return Err(ProcessSpecError { code, reason });
                 }
             };
-            let args: &[&str] = match runtime.edition {
+            let args: Vec<&str> = match runtime.edition {
                 ShellEdition::Pwsh | ShellEdition::WindowsPowershell => {
-                    &["-NoLogo", "-NoProfile", "-Command"]
+                    vec!["-NoLogo", "-NoProfile", "-Command"]
                 }
-                _ => &["-i"],
+                // zsh's newuser module runs a startup wizard when the user has
+                // none of its startup files, and that wizard reads the first
+                // command as its answer.
+                ShellEdition::Zsh if !zsh_startup_files(&self.home) => vec!["-i", "-f"],
+                _ => vec!["-i"],
             };
             let spec = ProcessSpec {
                 executable: PathBuf::from(&runtime.executable_path),

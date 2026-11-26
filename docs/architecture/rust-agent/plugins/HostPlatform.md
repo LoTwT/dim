@@ -162,6 +162,9 @@ stores the typed PID in the owner record; the calling task owner keeps only the 
 the public signal helper is unchanged.
 A running shell keeps the boundary it started with; changing the switches applies to the next
 process. macOS permits only the needed terminal ioctl commands.
+A zsh whose user home has none of `.zshenv`, `.zprofile`, `.zshrc` or `.zlogin` starts with
+`NO_RCS`: zsh's newuser module would otherwise run a startup wizard that reads the first command
+as its answer. With any of those files the shell loads them as before.
 
 ## Command construction
 
