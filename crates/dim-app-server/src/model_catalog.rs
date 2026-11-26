@@ -1382,10 +1382,11 @@ pub fn rebase_override(base: &ModelEntry, pinned: &ModelEntry) -> ModelEntry {
     if marked("reasoning") {
         merged.capabilities.reasoning = pinned.capabilities.reasoning;
     }
-    if marks
-        .iter()
-        .any(|field| field == "reasoning" || field == "modalityCapabilities")
-    {
+    // A pin that lives in the metadata survives a base row that declares
+    // none: the row offers nowhere to hang the marks, so they are written into
+    // a default metadata, or the clone the write stores reads as unmarked and
+    // the next rebase serves the row's values instead of the user's (#2189).
+    if !marks.is_empty() {
         merged.metadata.get_or_insert_default();
     }
     if let Some(metadata) = merged.metadata.as_mut() {

@@ -2023,3 +2023,148 @@ async fn a_reasoning_pin_survives_a_row_without_reasoning_metadata() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// A regression for the limits pin a metadata-less row silently reverted
+/// (#2189): the rebase copies the pinned values onto a row that declares no
+/// metadata, but the row offers nowhere to hang the marks, so unless the
+/// marks are kept the stored override reads as unmarked afterwards and the
+/// next rebase serves the row's values instead of the user's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn limits_marks_survive_a_row_without_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user edits only the limits.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"contextWindow":100000,"maxOutputTokens":8192}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning, so the refreshed row carries
+    // no metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must win over the row without metadata: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output must win over the row without metadata"
+    );
+    let marks = |home: &std::path::Path| {
+        let record = stored(home);
+        record["modelConfigOverrides"][0]["metadata"]["capabilityOverrideFields"]
+            .as_array()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|field| field.as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    assert!(
+        marks(&home).iter().any(|field| field == "contextWindow")
+            && marks(&home).iter().any(|field| field == "maxOutputTokens"),
+        "the stored override must keep the limits marks, or the next refresh reverts the edit: {:?}",
+        marks(&home)
+    );
+    // One refresh later the same edit must still stand: the values the first
+    // metadata-less rebase stored are the base every later read compares
+    // against.
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["capabilities"]["contextWindow"],
+        json!(100000),
+        "the edited window must survive the second refresh too: {}",
+        model["capabilities"]
+    );
+    assert_eq!(
+        model["capabilities"]["maxOutputTokens"],
+        json!(8192),
+        "the edited output must survive the second refresh too"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The modality half of the pin that a refreshed row without metadata must
+/// not drop (#2189): the edit writes two raw keys, and both the projection
+/// and the mark must survive the row that offers nothing to hang them on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_modality_capabilities_pin_survives_a_row_without_metadata() {
+    let (server, fixture, home) = override_fixture().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&created);
+    // The user declares the model's modality capabilities where the catalog
+    // row declares none.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":"managed-fixture","expectedVersion":1,
+                    "modelId":"fixture-model",
+                    "edit":{"modalityCapabilities":["image.generate"]}}),
+            )
+            .await,
+    );
+    // The same account stops declaring reasoning, so the refreshed row carries
+    // no metadata at all.
+    *fixture.limited.lock().unwrap() = Limited::Stripped;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let model = &refreshed["result"]["models"][0];
+    assert_eq!(
+        model["metadata"]["raw"]["imageGeneration"],
+        json!(true),
+        "the pinned image-generation projection must survive the row without metadata: {}",
+        model["metadata"]
+    );
+    assert_eq!(
+        model["metadata"]["raw"]["modalityCapabilities"],
+        json!(["image.generate"]),
+        "the pinned capability list must survive the row without metadata"
+    );
+    let marks = model["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "modalityCapabilities"),
+        "the mark must survive the row without metadata, or the next refresh loses the pin: {marks:?}"
+    );
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
