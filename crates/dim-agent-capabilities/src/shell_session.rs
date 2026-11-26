@@ -574,8 +574,26 @@ impl ShellSession {
             let Some(task_id) = task_id else {
                 return Err("shell exited during initialization".into());
             };
+            let tail = self
+                .host
+                .tail(TaskRequest {
+                    task_id: task_id.clone(),
+                })
+                .await;
+            let (started, complete) = match (&current, &tail) {
+                (Some((start_marker, end_marker)), Ok(tail)) => (
+                    tail.text.contains(start_marker),
+                    init_complete(&tail.text, start_marker, end_marker),
+                ),
+                _ => (false, false),
+            };
+            if complete {
+                return Ok(());
+            }
             let now = tokio::time::Instant::now();
-            if now >= write_at {
+            // A copy that started is left to finish: replacing it would drop a
+            // completion that arrives after the retry interval.
+            if now >= write_at && !started {
                 let (start, end) = marker_pair();
                 let wrapped = match dialect {
                     ShellDialect::Posix => posix_command(command, &start, &end),
@@ -586,17 +604,6 @@ impl ShellSession {
                     .map_err(|error| error.to_string())?;
                 current = Some((start.full(), end.full()));
                 write_at = now + INIT_RETRY;
-            }
-            let tail = self
-                .host
-                .tail(TaskRequest {
-                    task_id: task_id.clone(),
-                })
-                .await;
-            if let (Some((start_marker, end_marker)), Ok(tail)) = (&current, &tail)
-                && init_complete(&tail.text, start_marker, end_marker)
-            {
-                return Ok(());
             }
             if let Err(_) = &tail
                 && self
