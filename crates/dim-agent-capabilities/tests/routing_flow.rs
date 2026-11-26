@@ -95,9 +95,13 @@ impl Rig {
     }
 
     fn scope(&self, session: &Session) -> Arc<SessionScope> {
-        // The facade offers no read for the router; its owner exposes it.
-        dim_agent_runtime::route::routed_scope(session)
+        // The facade offers no read for the router; its owner hands out a
+        // handle only the runtime can build.
+        self.host
+            .routed_session(session.id())
             .expect("the owning instance serves its scope")
+            .scope()
+            .clone()
     }
 }
 

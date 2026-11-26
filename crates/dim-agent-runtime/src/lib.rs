@@ -12,7 +12,7 @@ mod memory_timeline_store;
 pub mod names;
 mod parts;
 mod registrations;
-pub mod route;
+mod route;
 mod scope;
 mod state;
 #[cfg(feature = "testing")]
@@ -36,7 +36,7 @@ pub use memory_timeline_store::*;
 pub use names::Names;
 pub use parts::{Feature, Generator, Mount, PartRegistry, PartScope};
 pub use registrations::{Registration, Registrations};
-pub use route::*;
+pub use route::{LineCall, RouteError, RoutedSession, SessionCall, SessionScope, resolves};
 pub use rutis::host::BoxFuture;
 pub use scope::*;
 pub use state::*;

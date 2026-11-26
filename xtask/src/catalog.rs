@@ -166,7 +166,7 @@ fn reach(
     }
     let mut refused = Vec::new();
     for (name, group) in &offered {
-        if !dim_agent_runtime::route::resolves(catalog, faces, name, group) {
+        if !dim_agent_runtime::resolves(catalog, faces, name, group) {
             refused.push(format!("{name} ({group})"));
         }
     }
@@ -197,9 +197,7 @@ fn reach(
             group @ ("session" | "branch") => group,
             _ => continue,
         };
-        if service.face != "data"
-            || !dim_agent_runtime::route::resolves(catalog, faces, name, group)
-        {
+        if service.face != "data" || !dim_agent_runtime::resolves(catalog, faces, name, group) {
             continue;
         }
         let declared = text.lines().any(|line| {

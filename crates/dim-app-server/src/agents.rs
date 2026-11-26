@@ -1671,16 +1671,15 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
-        let Some(scope) = dim_agent_runtime::route::routed_scope(session) else {
-            return Err(if session.is_closing() {
-                RouteError::SessionClosing(id)
-            } else {
-                RouteError::SessionUnavailable {
-                    session: id,
-                    reason: "the Session's scope is not provided".into(),
-                }
+        // The router comes from the owning instance: the runtime hands out a
+        // handle it alone can build, so a bare `Session` has no path to it.
+        let Some(routed) = used.host.agent.routed_session(&id) else {
+            return Err(RouteError::SessionUnavailable {
+                session: id,
+                reason: "the Session's scope is not provided".into(),
             });
         };
+        let scope = routed.scope().clone();
         match request.line_id {
             Some(line_id) => {
                 scope

@@ -278,29 +278,50 @@ impl SessionScope {
     }
 }
 
-/// The routed-call entry for the Session `session`: the owning instance's own
-/// router, so the Session facade offers no read for it (ADR 027 appendix F).
-/// Agents is the only caller; a part of another language reaches it as the
-/// `sessionScope` data face. The typed read remains impossible:
+/// A Session with the router its owning instance provides: what Agents routes
+/// through. Only the runtime builds one, when a Session is loaded, so a crate
+/// that merely holds a [`Session`] has no path to the router (ADR 027 appendix
+/// F). A part of another language reaches the same router as the
+/// `sessionScope` data face.
 ///
-/// ```compile_fail
-/// use dim_agent_runtime::{Session, SessionScope};
-/// fn read(session: &Session) {
-///     let _ = session.session_service::<SessionScope>();
-/// }
-/// ```
+/// A bare [`Session`] cannot reach the router in any of these ways:
 ///
 /// ```compile_fail
 /// use dim_agent_runtime::Session;
 /// fn read(session: &Session) {
-///     let _ = session.routed_scope();
+///     let _ = session.routed();
 /// }
 /// ```
-pub fn routed_scope(session: &Session) -> Option<Arc<SessionScope>> {
-    let loaded = session.assembly().loaded().ok()?;
-    loaded
-        .ctx
-        .get_at::<SessionScope>(&loaded.scope.key::<SessionScope>())
+///
+/// ```compile_fail
+/// use dim_agent_runtime::{routed_scope, Session};
+/// fn read(session: &Session) {
+///     let _ = routed_scope(session);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use dim_agent_runtime::RoutedSession;
+/// fn build() {
+///     let _ = RoutedSession::new(todo!(), todo!());
+/// }
+/// ```
+#[derive(Clone)]
+pub struct RoutedSession {
+    session: Session,
+    scope: Arc<SessionScope>,
+}
+
+impl RoutedSession {
+    pub(crate) fn new(session: Session, scope: Arc<SessionScope>) -> Self {
+        Self { session, scope }
+    }
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+    pub fn scope(&self) -> &Arc<SessionScope> {
+        &self.scope
+    }
 }
 
 #[rutis::service]
