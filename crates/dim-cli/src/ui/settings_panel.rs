@@ -18,11 +18,11 @@
 //! │   Notify when agent ...  on                  │
 //! │   Show ACP sessions      off                 │
 //! │   Prompt suggestion      off                 │
-//! │   Tools                                      │
-//! │   Tool mode              Normal ›            │
 //! │   Permissions                                │
 //! │   Permission             Workspace write ›   │
 //! │   Process isolation      ›                   │
+//! │   Tools                                      │
+//! │   Tool mode              Normal ›            │
 //! │ 1 / 11 · ↑↓ move · enter select · ←→/space change · esc close │
 //! ╰──────────────────────────────────────────────╯
 //! ```
@@ -250,13 +250,13 @@ impl SettingsPanel {
                 prompt_origin(values.prompts[index]),
             ));
         }
-        items.push(Item::heading(t("Tools")));
-        items.push(row(Setting::ToolMode, "Tool mode", link(&values.tool_mode)));
         items.extend([
             Item::heading(t("Permissions")),
             row(Setting::Permission, "Permission", link(&values.permission)),
             row(Setting::Isolation, "Process isolation", link("")),
         ]);
+        items.push(Item::heading(t("Tools")));
+        items.push(row(Setting::ToolMode, "Tool mode", link(&values.tool_mode)));
         let mut list = ListPanel::new("Settings", HINT, "", "", "", false).without_filter();
         list.set_items(Ok(items), Some(select.id()));
         list.set_hint(t(hint_for(select)).to_owned());

@@ -501,6 +501,7 @@ const RUN_TOOLS: &[&str] = &[
     "grep",
     "exec",
     "exec_stop",
+    "execute",
     "agent",
     "ask_user",
     "branch",
