@@ -157,3 +157,48 @@ async fn a_routed_call_loads_and_holds_an_admitted_session() {
     rig.server.shutdown();
     rig.server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_during_an_agents_restart_is_retryable() {
+    let rig = Rig::start().await;
+    let launched = rig
+        .call("launch", json!({"cwd": rig.home.path().to_string_lossy()}))
+        .await;
+    let id = launched["value"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a Session launches through Agents: {launched}"))
+        .to_owned();
+    let call = json!({"sessionId": id, "service": "sessionConfig", "method": "get"});
+    let calls = async {
+        let mut transient = 0usize;
+        let mut answered = 0usize;
+        for _ in 0..150 {
+            let reply = rig.call("call", call.clone()).await;
+            if reply["error"]["code"] == "session_reloading" {
+                transient += 1;
+                assert_eq!(reply["error"]["retryable"], true, "{reply}");
+            } else if reply["ok"] == true {
+                answered += 1;
+            }
+        }
+        (transient, answered)
+    };
+    let ((transient, answered), restarted) = tokio::join!(calls, async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        rig.server.restart("Agents").await
+    });
+    restarted.expect("Agents restarts");
+    println!("transient={transient} answered={answered}");
+    assert!(
+        transient > 0,
+        "a call during the restart answers a retryable session_reloading: transient={transient} answered={answered}"
+    );
+    let retried = rig.call("call", call.clone()).await;
+    assert_eq!(
+        retried["ok"], true,
+        "the retry after the restart answers: {retried}"
+    );
+    println!("transient={transient} answered={answered}");
+    rig.server.shutdown();
+    rig.server.join().await.unwrap();
+}
