@@ -30,6 +30,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+use ratatui::layout::{Position, Rect};
+
 use crate::ui::render::Frame;
 use crate::ui::render::panel::{clip, escape_len, strip_escapes};
 use crate::ui::render::screen::scrub;
@@ -139,6 +141,10 @@ pub enum MouseOutcome {
     Task(String),
     /// A click landed on the composer's model label.
     Models,
+    Composer {
+        cell: Position,
+        area: Rect,
+    },
     /// A click landed on a branch panel thought header or expanded body.
     Thought {
         key: String,
@@ -351,6 +357,7 @@ pub struct FullScreen {
     task_rows: HashMap<usize, String>,
     thought_rows: HashMap<usize, PanelThought>,
     model_label: Option<(usize, std::ops::Range<usize>)>,
+    composer: Option<(Rect, usize)>,
     /// Where the last press landed and the row it showed: a click counts
     /// only while that row still shows the same text at the release, so
     /// output that moves the transcript in between cannot redirect it.
@@ -410,6 +417,7 @@ impl FullScreen {
             task_rows: HashMap::new(),
             thought_rows: HashMap::new(),
             model_label: None,
+            composer: None,
             press: None,
             pointer: None,
             hovered: None,
@@ -449,6 +457,7 @@ impl FullScreen {
         self.task_rows.clear();
         self.thought_rows.clear();
         self.model_label = None;
+        self.composer = None;
         self.invalidate();
         true
     }
@@ -654,12 +663,16 @@ impl FullScreen {
         self.selection = None;
     }
 
-    /// Cancels a deferred body click, including an unreleased body press.
+    /// Cancels a deferred body click or an unreleased body or composer press.
     /// Call when disabling mouse input or changing the active view.
     pub fn cancel_click(&mut self) {
         self.pending = None;
         if self.press.as_ref().is_some_and(|press| {
-            press.body.is_some() || matches!(press.spot, MouseOutcome::Thought { .. })
+            press.body.is_some()
+                || matches!(
+                    press.spot,
+                    MouseOutcome::Thought { .. } | MouseOutcome::Composer { .. }
+                )
         }) {
             self.press = None;
         }
@@ -924,6 +937,26 @@ impl FullScreen {
         self.pin(next);
     }
 
+    fn dock_action(&self, column: usize, row: usize) -> Option<MouseOutcome> {
+        if self
+            .model_label
+            .as_ref()
+            .is_some_and(|(y, columns)| *y == row && columns.contains(&column))
+        {
+            return Some(MouseOutcome::Models);
+        }
+        if column < content_width(self.size.0 as usize)
+            && let Some(task) = self.task_rows.get(&row)
+        {
+            return Some(MouseOutcome::Task(task.clone()));
+        }
+        let (area, skipped_rows) = self.composer?;
+        let dock_row = row.checked_sub(self.view_rows)? + skipped_rows;
+        let cell = Position::new(column as u16, u16::try_from(dock_row).ok()?);
+        area.contains(cell)
+            .then_some(MouseOutcome::Composer { cell, area })
+    }
+
     fn hover(&mut self, doc: &dyn Document) -> bool {
         let next = if self.overlay_open || self.selecting() {
             None
@@ -1032,20 +1065,7 @@ impl FullScreen {
                     || hovered
                     || self.press.as_ref().is_some_and(|p| p.target.is_some());
                 self.press = None;
-                let action = if self
-                    .model_label
-                    .as_ref()
-                    .is_some_and(|(y, columns)| *y == row && columns.contains(&column))
-                {
-                    Some(MouseOutcome::Models)
-                } else if column < content_width(self.size.0 as usize)
-                    && let Some(task) = self.task_rows.get(&row)
-                {
-                    Some(MouseOutcome::Task(task.clone()))
-                } else {
-                    None
-                };
-                if let Some(spot) = action {
+                if let Some(spot) = self.dock_action(column, row) {
                     self.clicks = None;
                     self.press = Some(Press {
                         spot,
@@ -1150,12 +1170,8 @@ impl FullScreen {
                 }
             }
             MouseKind::Drag => {
-                if self.press.as_ref().is_some_and(|press| {
-                    matches!(press.spot, MouseOutcome::Task(_) | MouseOutcome::Models)
-                }) {
-                    self.press = None;
-                }
                 let Some(selection) = self.selection else {
+                    self.press = None;
                     return MouseOutcome::Ignored;
                 };
                 if selection.panel {
@@ -1205,34 +1221,12 @@ impl FullScreen {
             }
             MouseKind::Release => {
                 let press = self.press.take();
-                if let Some(Press {
-                    spot: MouseOutcome::Models,
-                    cell,
-                    ..
-                }) = &press
+                if let Some(press) = &press
+                    && press.cell == (column, row)
+                    && let Some(action) = self.dock_action(column, row)
+                    && action == press.spot
                 {
-                    return if *cell == (column, row)
-                        && self
-                            .model_label
-                            .as_ref()
-                            .is_some_and(|(y, columns)| *y == row && columns.contains(&column))
-                    {
-                        MouseOutcome::Models
-                    } else {
-                        MouseOutcome::Ignored
-                    };
-                }
-                if let Some(Press {
-                    spot: MouseOutcome::Task(task),
-                    cell,
-                    ..
-                }) = &press
-                {
-                    return if *cell == (column, row) && self.task_rows.get(&row) == Some(task) {
-                        MouseOutcome::Task(task.clone())
-                    } else {
-                        MouseOutcome::Ignored
-                    };
+                    return action;
                 }
                 let changed = hovered || press.as_ref().is_some_and(|p| p.target.is_some());
                 let Some(selection) = self.selection else {
@@ -1311,6 +1305,7 @@ impl FullScreen {
             .max(1);
         let dock_skip = dock.len().saturating_sub(dock_rows);
         self.view_rows = rows - dock_rows.min(rows);
+        self.composer = frame.composer.map(|area| (area, dock_skip));
         let model_label = frame.model_label.as_ref().and_then(|(row, columns)| {
             row.checked_sub(split + dock_skip)
                 .filter(|row| *row < dock_rows)
@@ -1410,9 +1405,12 @@ impl FullScreen {
             if press.spot == MouseOutcome::Models {
                 return false;
             }
-            let (_, row) = press.cell;
-            if let MouseOutcome::Task(task) = &press.spot {
-                return self.task_rows.get(&row) != Some(task);
+            let (column, row) = press.cell;
+            if matches!(
+                press.spot,
+                MouseOutcome::Task(_) | MouseOutcome::Composer { .. }
+            ) {
+                return self.dock_action(column, row).as_ref() != Some(&press.spot);
             }
             if let MouseOutcome::Thought { key, body } = &press.spot {
                 return self.thought_rows.get(&row).is_none_or(|thought| {

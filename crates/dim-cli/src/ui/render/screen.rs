@@ -43,6 +43,8 @@ pub struct Frame {
     pub thought_rows: Vec<(usize, std::ops::Range<usize>, String, bool)>,
     /// Model label row and columns in `live`, for the fullscreen model picker.
     pub model_label: Option<(usize, std::ops::Range<usize>)>,
+    /// Editable text cells relative to the start of the fullscreen dock.
+    pub composer: Option<Rect>,
     /// Cursor position inside the live region (row, column), `None` hides it.
     pub cursor: Option<(u16, u16)>,
     /// Index in `live` where the dock (queue, composer, panels, status)

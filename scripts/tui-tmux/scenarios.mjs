@@ -504,6 +504,35 @@ const scenarios = [
     },
   },
   {
+    name: 'fullscreen_composer_click_places_the_cursor',
+    area: 'composer',
+    title: 'Clicking an editable cell inserts there in single-line and scrolled, wrapped drafts',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--fullscreen'], {cols: 40, rows: 18, waitForComposer: true});
+      const click = async (text, cellOffset) => {
+        await terminal.waitFor(text);
+        const lines = terminal.capture({join: false}).split('\n');
+        const row = lines.findIndex((line) => line.includes(text));
+        assert(row >= 0, lines.join('\n'));
+        const column = lines[row].indexOf(text) + cellOffset + 1;
+        const report = `\x1b[<0;${column};${row + 1}`;
+        terminal.bytes(Buffer.from(`${report}M${report}m`));
+      };
+
+      terminal.send('abcdef');
+      await click('abcdef', 2);
+      terminal.send('X');
+      await terminal.waitFor('abXcdef');
+
+      terminal.key('End', 'C-j');
+      terminal.send('pad '.repeat(120) + '中界tail');
+      await click('中界tail', 2);
+      terminal.send('Y');
+      await terminal.waitFor('中Y界tail');
+    },
+  },
+  {
     name: 'composer_edits_multiline_and_stores_a_large_paste',
     area: 'composer',
     title: 'The composer edits a newline draft and stores a multi-line paste as an attachment',
