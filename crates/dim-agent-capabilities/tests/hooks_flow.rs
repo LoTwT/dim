@@ -1663,11 +1663,16 @@ async fn an_async_handler_does_not_delay_the_turn_or_the_next_point() {
     let late = env.path("late");
     let now = env.path("now");
     let done = env.path("now.done");
+    let gate = env.path("gate");
     env.sources.set(document(serde_json::json!({
         "PostToolUse": [
             command(serde_json::json!({
                 "type": "command", "async": true,
-                "command": format!("{}; printf 'late' > {}", sleep(1500), late.display()),
+                "command": format!(
+                    "while [ ! -f {} ]; do sleep 0.01; done; printf 'late' > {}",
+                    gate.display(),
+                    late.display(),
+                ),
             })),
             command(serde_json::json!({
                 "type": "command",
@@ -1692,6 +1697,7 @@ async fn an_async_handler_does_not_delay_the_turn_or_the_next_point() {
     assert!(!late.exists(), "the async handler is still running");
     let blocks = wait_blocks(&session, "post-tool", 1).await;
     assert_eq!(blocks.len(), 1, "the async handler writes no context");
+    std::fs::write(&gate, "").unwrap();
     wait_file(&late, "the async handler did not finish").await;
     assert_eq!(std::fs::read_to_string(&late).unwrap(), "late");
     assert_eq!(hook_blocks(&session, "post-tool").await.len(), 1);
