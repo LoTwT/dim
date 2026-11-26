@@ -26,7 +26,7 @@ A task id is reserved by the owner before a command or background job starts. `s
 part of `shell.write` answer `task_exists` for an id already in the table or an existing output
 log, and `invalid` for a missing output parent or an output path outside the shell directory. `wait` reports the terminal record and never removes it; a
 timeout stops the wait and answers `running`. `settle` releases only an ended task or an exited
-shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal; because the interrupt aborts the wrapper line before its end marker, a command that does not end within two seconds leaves the owner no way to end it inside the live shell, so `kill` terminates the shell and its terminal sweeps the command as a reset. Command and job logs stay under the output directory the caller gives the owner; the
+shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal. Some shells print the end marker after the interrupt, so the command ends with its interrupted status and `kill` returns from that wait; a command still running after two seconds cannot end inside the live shell, so `kill` terminates the shell and its terminal sweeps the command as a reset. Command and job logs stay under the output directory the caller gives the owner; the
 persistent shell defaults to `execRoot`. Logs are registered by the branch when the model is
 given their path.
 `removeOutputDirectory` accepts only a persistent-shell output directory below the canonical
@@ -162,9 +162,11 @@ stores the typed PID in the owner record; the calling task owner keeps only the 
 the public signal helper is unchanged.
 A running shell keeps the boundary it started with; changing the switches applies to the next
 process. macOS permits only the needed terminal ioctl commands.
-A zsh whose user home has none of `.zshenv`, `.zprofile`, `.zshrc` or `.zlogin` starts with
-`NO_RCS`: zsh's newuser module would otherwise run a startup wizard that reads the first command
-as its answer. With any of those files the shell loads them as before.
+A persistent shell's first command is the init wrapper, and the shell may spend its first
+input on a startup consumer instead — zsh's newuser module runs a wizard when the user has no
+startup files. `ShellSession` writes that wrapper again until its end marker reaches the shell's
+tail, so no startup consumer can lose the initialization; the wrapper uses the same marker
+fragments as every command, so its echoed text cannot pass for the marker.
 
 ## Command construction
 

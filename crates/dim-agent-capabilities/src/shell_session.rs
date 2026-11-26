@@ -36,6 +36,9 @@ const OUTPUT_LIMIT: usize = 16_000;
 const MAX_TIMEOUT_MS: u64 = 3_600_000;
 const DESCRIPTION_CHARS: usize = 200;
 const INIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one init wrapper may take before another copy is written: a
+/// startup consumer can eat the first one.
+const INIT_RETRY: Duration = Duration::from_secs(1);
 const STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// Configuration for the shell session.
@@ -545,8 +548,13 @@ impl ShellSession {
         Ok(reset_note)
     }
 
-    /// Sends the init command and waits for its terminal; a timeout
-    /// terminates the shell and fails the call.
+    /// Writes the init wrapper until its end marker reaches the shell's tail;
+    /// a timeout terminates the shell and fails the call.
+    ///
+    /// A shell can spend its first input on a startup consumer — zsh's newuser
+    /// wizard, for example — instead of the shell prompt, so the wrapper is
+    /// written again until one copy runs. The typed line carries the marker
+    /// fragments separately, so its echo cannot satisfy the check.
     async fn send_initial(self: &Arc<Self>, command: &str) -> Result<(), String> {
         let (start, end) = marker_pair();
         let dialect = {
@@ -557,67 +565,64 @@ impl ShellSession {
             ShellDialect::Posix => posix_command(command, &start, &end),
             ShellDialect::Pwsh => pwsh_command(command, &start, &end),
         };
-        let command_id = format!("shell-init-{}", uuid::Uuid::new_v4().simple());
-        let output_path = self.config.output_dir.join(format!("{command_id}.log"));
-        self.start_command(&command_id, &start.full(), &end.full(), &wrapped)
-            .await
-            .map_err(|error| error.to_string())?;
-        let reply = self
-            .host
-            .wait(
-                WaitRequest {
-                    task_id: command_id.clone(),
-                    timeout_ms: Some(INIT_TIMEOUT.as_millis() as u64),
-                },
-                never_cancelled(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = std::fs::remove_file(&output_path);
-        if reply.status == WaitStatus::Running {
+        let start_marker = start.full();
+        let end_marker = end.full();
+        let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
+        let mut write_at = tokio::time::Instant::now();
+        loop {
             let task_id = {
-                let mut inner = self.inner.lock().await;
-                inner.had_reset = true;
-                inner.shell.take()
+                let inner = self.inner.lock().await;
+                inner.shell.clone()
             };
-            let captured = match &task_id {
-                Some(task_id) => self
-                    .host
-                    .tail(TaskRequest {
-                        task_id: task_id.clone(),
-                    })
-                    .await
-                    .map(|tail| tail.text)
-                    .unwrap_or_default(),
-                None => String::new(),
+            let Some(task_id) = task_id else {
+                return Err("shell exited during initialization".into());
             };
-            if let Some(task_id) = task_id {
-                self.stop_shell(&task_id).await;
-            }
-            let _ = self
+            let tail = self
                 .host
-                .settle(TaskRequest {
-                    task_id: command_id.clone(),
+                .tail(TaskRequest {
+                    task_id: task_id.clone(),
                 })
                 .await;
-            return Err(format!(
-                "shell did not initialize; captured output: {captured}"
-            ));
+            let started = match &tail {
+                Ok(tail) => tail.text.contains(&start_marker),
+                Err(_) => false,
+            };
+            let now = tokio::time::Instant::now();
+            if now >= write_at && !started {
+                self.write_shell(format!("{wrapped}\n").as_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                write_at = now + INIT_RETRY;
+            }
+            match &tail {
+                Ok(tail) if tail.text.contains(&end_marker) => return Ok(()),
+                Ok(_) => {}
+                Err(_) => {
+                    if self
+                        .host
+                        .task(&task_id)
+                        .is_none_or(|record| record.is_terminal())
+                    {
+                        return Err("shell exited during initialization".into());
+                    }
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let captured = tail.map(|tail| tail.text).unwrap_or_default();
+                let taken = {
+                    let mut inner = self.inner.lock().await;
+                    inner.had_reset = true;
+                    inner.shell.take()
+                };
+                if let Some(task_id) = taken {
+                    self.stop_shell(&task_id).await;
+                }
+                return Err(format!(
+                    "shell did not initialize; captured output: {captured}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let _ = self
-            .host
-            .settle(TaskRequest {
-                task_id: command_id.clone(),
-            })
-            .await;
-        if matches!(
-            reply.failure,
-            Some(crate::host_platform::TaskFailure::ShellReset)
-                | Some(crate::host_platform::TaskFailure::ShellExited)
-        ) {
-            return Err("shell exited during initialization".into());
-        }
-        Ok(())
     }
 
     /// Writes a wrapped command and starts its owner-side capture.

@@ -47,9 +47,10 @@ pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellCh
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
 pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
 
-/// How long a shell command's interrupt may take to produce its end marker
-/// before the shell is terminated. An interrupt aborts the whole wrapper line,
-/// so a command that did not end in this window never prints one.
+/// How long a shell command's interrupt may take to record its terminal before
+/// the shell is terminated. Some shells print the end marker after the
+/// interrupt and the command ends with its interrupted status; one still
+/// running after this window cannot end inside the live shell.
 const SHELL_COMMAND_STOP_WAIT_MS: u64 = 2_000;
 
 #[cfg(windows)]
@@ -1245,9 +1246,10 @@ impl HostPlatform {
                 if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status != WaitStatus::Running {
                     return Ok(());
                 }
-                // The interrupt aborted the wrapper line before its end marker
-                // printed, so the command cannot end inside the live shell.
-                // Terminating the shell sweeps the command to its terminal.
+                // A command still running after the interrupt did not end
+                // inside the live shell (some shells abort the whole wrapper
+                // line, so no end marker can print). Terminating the shell
+                // sweeps the command to its terminal.
                 command.shell.terminate();
                 if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status == WaitStatus::Running {
                     return Err(HostPlatformError::Failed(
@@ -3569,21 +3571,6 @@ impl Drop for PtyProcessTree {
     }
 }
 
-/// Terminates a background job by its root pid: the process group it leads
-/// on POSIX, the process tree under it on Windows.
-pub fn terminate_job(pid: u32) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        // SAFETY: plain syscall on the addressed group.
-        if unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(windows)]
-    native::terminate_tree(pid)
-}
-
 async fn observe_job_release(
     record: Arc<TaskRecord>,
     job: Arc<shell::ShellJob>,
@@ -3616,9 +3603,8 @@ async fn observe_job_release(
     }
 }
 
-/// Kills a background job that outlived its shell and confirms it is gone:
-/// the process group it leads on POSIX, the process tree under it on
-/// Windows.
+/// Kills a background job and confirms it is gone: the process group it leads
+/// on POSIX, the process tree under it on Windows.
 pub async fn kill_job(pid: u32, tree: Option<Vec<u32>>) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -3988,7 +3974,7 @@ pub(crate) mod shell {
         ExecShellRuntime, HostPlatform, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
         ShellEdition, ShellStatus,
     };
-    use super::{TaskKind, TaskRecord, terminate_job};
+    use super::{TaskKind, TaskRecord, job_tree, kill_job};
     use crate::workspace_tools::background::{
         OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page,
     };
@@ -4235,12 +4221,6 @@ pub(crate) mod shell {
         Some((task_id.to_owned(), pid))
     }
 
-    fn zsh_startup_files(home: &Path) -> bool {
-        [".zshenv", ".zprofile", ".zshrc", ".zlogin"]
-            .iter()
-            .any(|name| home.join(name).is_file())
-    }
-
     fn last_full_marker(line: &str) -> Option<(&'static str, &str)> {
         let mut found: Option<(usize, (&'static str, &str))> = None;
         for (prefix, position) in [
@@ -4397,15 +4377,11 @@ pub(crate) mod shell {
                     return Err(ProcessSpecError { code, reason });
                 }
             };
-            let args: Vec<&str> = match runtime.edition {
+            let args: &[&str] = match runtime.edition {
                 ShellEdition::Pwsh | ShellEdition::WindowsPowershell => {
-                    vec!["-NoLogo", "-NoProfile", "-Command"]
+                    &["-NoLogo", "-NoProfile", "-Command"]
                 }
-                // zsh's newuser module runs a startup wizard when the user has
-                // none of its startup files, and that wizard reads the first
-                // command as its answer.
-                ShellEdition::Zsh if !zsh_startup_files(&self.home) => vec!["-i", "-f"],
-                _ => vec!["-i"],
+                _ => &["-i"],
             };
             let spec = ProcessSpec {
                 executable: PathBuf::from(&runtime.executable_path),
@@ -4605,6 +4581,20 @@ pub(crate) mod shell {
                     reader_finished,
                 )
                 .await;
+                // A job outlives its shell only until it is released: confirm
+                // that before the shell's terminal sweeps it to its own.
+                for child in worker.children_list() {
+                    if child.is_terminal() {
+                        continue;
+                    }
+                    let pid = match &child.kind {
+                        TaskKind::Job(job) => *job.pid.borrow(),
+                        _ => None,
+                    };
+                    if let Some(pid) = pid {
+                        let _ = kill_job(pid, job_tree(pid)).await;
+                    }
+                }
                 let terminal =
                     shell_terminal(&worker_record, worker.output_record(), exit, status, error);
                 worker_record.finish(terminal);
@@ -4705,7 +4695,7 @@ pub(crate) mod shell {
                     super::TaskKind::ShellCommand(command) => command.output_record(),
                     super::TaskKind::Job(job) => {
                         if let Some(pid) = *job.pid.borrow() {
-                            let _ = terminate_job(pid);
+                            super::native::kill_tree(pid);
                         }
                         job.output_record().0
                     }

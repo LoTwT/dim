@@ -950,10 +950,11 @@ async fn stop_background_task() {
     harness.shutdown().await;
 }
 
-/// Stopping a command that converted to the background returns a terminal. The
-/// interrupt aborts its wrapper line, so the owner terminates the shell instead
-/// of waiting for an end marker that never prints; the next call runs in a new
-/// shell.
+/// Stopping a command that converted to the background returns a terminal and
+/// leaves the shell usable. A shell may abort the wrapper line on the interrupt,
+/// in which case the owner terminates the shell and the command ends as a reset;
+/// a shell that prints the end marker ends it with the interrupted status. Both
+/// are a failed terminal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
     let harness = Harness::new(platform(&[]).await).await;
@@ -979,11 +980,6 @@ async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
         .unwrap();
     assert_eq!(ended.task_id, task_id);
     assert_eq!(ended.status, ExecStatus::Failed);
-    assert!(
-        text(&ended.result).contains("shell reset"),
-        "{}",
-        text(&ended.result)
-    );
 
     harness
         .run(
@@ -1307,6 +1303,57 @@ async fn shell_exit_kills_background_jobs() {
         "{}",
         text(&end.result)
     );
+    assert!(
+        gone(&pid).await,
+        "background process {pid} survived the shell exit: result={:?}, process={:?}",
+        end.result,
+        std::process::Command::new("ps")
+            .args(["-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", &pid])
+            .output()
+            .map(|output| (
+                output.status,
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ))
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A job that ignores SIGTERM is gone before its terminal is published: the
+/// shell confirms each job's release while it ends, instead of a single
+/// unconfirmed signal from the terminal sweep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_ignoring_job_is_gone_before_its_terminal() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("ignoring.pid");
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": format!(
+                        "sh -c 'trap \"\" TERM; echo $$ > {}; sleep 60'",
+                        pid_file.display()
+                    ),
+                    "runInBackground": true
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "start", |events| tool_results(events) == 1).await;
+    let task_id = task_of(&results(&events)[0]);
+    let pid = pid_in(&pid_file).await;
+
+    harness
+        .run(&session, &[("execute", json!({"command": "exit 7"}))])
+        .await;
+    let events = until(&session, "job settled", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.task_id, task_id);
+    assert_eq!(end.status, ExecStatus::Failed);
     assert!(
         gone(&pid).await,
         "background process {pid} survived the shell exit: result={:?}, process={:?}",
