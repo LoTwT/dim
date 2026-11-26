@@ -3,25 +3,22 @@
 Owner: [shell_session.rs](../../../../crates/dim-agent-capabilities/src/shell_session.rs).
 The branch's persistent shell: one PTY per branch, started on its first
 command, with cwd, environment, shell variables and jobs kept across calls.
-It provides the branch's `ShellSession` and its `dyn ExecStop`, so the
-Session's `execute` tool and the stop route reach it per branch.
+It provides the branch's `ShellSession`, so the Session's `execute` tool reaches
+it per branch; `session.exec.stop` reaches the branch's `BackgroundExec`.
 
 ## ShellSession
 
 The branch part is mounted by the profile's ShellSession feature. It owns the
-PTY, the command queue and the background jobs; `execute` resolves the calling
-branch's service, and `session.exec.stop` asks the same branch's `ExecStop`
-before falling back to `BackgroundExec`.
+PTY and the command queue and hands its background tasks to `BackgroundExec`;
+`execute` resolves the calling branch's service, and `session.exec.stop` goes to
+the same branch's `BackgroundExec`.
 
 ### Dependencies
 
 | Service | Purpose |
 | --- | --- |
-| `B:BackgroundExec` | Recover a shell task whose facts were committed but whose owner is gone. |
-| `B:Timeline` | Commit command starts, output and terminal ends. |
-| `B:Dispatcher` | Deliver the completion notice and wake the Session. |
+| `B:BackgroundExec` | Hand off background tasks and recover a shell task whose facts were committed but whose owner is gone. |
 | `B:BranchLifecycle` | Wait for the branch to be published and stop the shell on closing. |
-| `S:SessionLifecycle` | Wait for the Session to be published and stop the shell when it closes. |
 | `P:HostPlatform` | The shell executable and platform dialect. |
 | `S:SessionConfig` | The Session's cwd and execution preferences. |
 | `B:TimelineIdentity` | Identify the branch in its facts and notices. |

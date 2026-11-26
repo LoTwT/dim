@@ -1689,7 +1689,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
         ("fileReads", "hot-path"),
-        ("execStop", "control"),
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
