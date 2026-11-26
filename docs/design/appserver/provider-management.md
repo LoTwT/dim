@@ -571,14 +571,19 @@ overrides, preferences and explicit disables, with its existing
 admitted-configuration conflict check. A managed refresh for a different account
 clears preferences together with descriptor overrides and disables; a same-account
 refresh preserves them. Preserving a descriptor override means rebasing it on
-the row the refresh serves: the override was written as a clone of the row it
-edited, so its unedited values are the old row's, not the user's. Every field
-whose name the override marks in `capabilityOverrideFields` (§3.5) — a limit
-the edit stated, and `vision`, `toolCalling`, `reasoning` or
-`modalityCapabilities` for the capability the user chose (#2189) — keeps its
-overridden value; every other capability declaration follows the refreshed
-row, so an account that starts declaring vision or new reasoning levels serves
-them without losing the user's limits.
+the row the refresh serves, and the refresh stores the rebased clone, so the
+clone never falls behind the row it compares against: the override was written
+as a clone of the row it edited, so its unedited values are the old row's, not
+the user's. Every field whose name the override marks in
+`capabilityOverrideFields` (§3.5) — a limit the edit stated, and `vision`,
+`toolCalling`, `reasoning` or `modalityCapabilities` for the capability the
+user chose (#2189) — keeps its overridden value; every other capability
+declaration follows the refreshed row, so an account that starts declaring
+vision or new reasoning levels serves them without losing the user's limits. A
+clone written before capability edits were marked carries the same edit
+without the mark: where its capability differs from the row it cloned, the
+difference can only be the user's edit, so the first read and the row-writing
+refresh pin it as marked (#2189).
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain
@@ -734,7 +739,7 @@ already records:
 | --- | --- | --- |
 | Provider descriptor | `capabilityOverrideFields` on the stored descriptor; a non-positive descriptor value reads as absent | The model that descriptor describes |
 | Bundled catalog | `metadataSource` naming the matched bundled provider: an entry declares a limit only where its `metadata.raw` does, and the bundle drops every other limit when it is loaded; that provider's `contextWindowOverride` and `contextWindowFallback` metadata stay declarations | The models the lookup matches, or every model of the provider |
-| User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps | The model the override names |
+| User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps. The same field also marks the capability edits of §3.2 (`vision`, `toolCalling`, `reasoning`, `modalityCapabilities`); those marks do not declare a limit | The model the override names |
 
 The bundled `openai-codex` chat rows declare a default `contextWindow` and a
 read-only `metadata.raw.max_context_window` for user configuration. These are the
