@@ -1669,8 +1669,10 @@ async fn an_async_handler_does_not_delay_the_turn_or_the_next_point() {
             command(serde_json::json!({
                 "type": "command", "async": true,
                 "command": format!(
-                    "while [ ! -f {} ]; do sleep 0.01; done; printf 'late' > {}",
+                    "while [ ! -f {} ]; do sleep 0.01; done; printf 'late' > {}.tmp && mv {}.tmp {}; printf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"async context\"}}}}'",
                     gate.display(),
+                    late.display(),
+                    late.display(),
                     late.display(),
                 ),
             })),
