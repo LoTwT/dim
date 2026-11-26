@@ -675,10 +675,11 @@ ended task at once and otherwise waits for its dispatch until `timeoutMs` elapse
 For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it stops
 a running task and answers the owner's terminal, and an already ended task keeps
 its record and wake. The terminal decides the wake: `cancelled` stays silent and
-every other status posts the completion notice. A shell task is interrupted in
-its persistent shell; its terminal is `failed` (the interrupted command's exit
-status, or a shell reset when the shell had to be terminated), so stopping a
-shell task does wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+every other status posts the completion notice. A command that started as a
+native process and a persistent shell's background job both end `cancelled`, so
+neither wakes. A shell command is interrupted in its persistent shell; its
+terminal is `failed` (the interrupted command's exit status, or a shell reset
+when the shell had to be terminated), so stopping a shell command does wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live
 process, so it is the caller's own operation — the `exec` tool and `ShellSession` —
 and is not on the face.
