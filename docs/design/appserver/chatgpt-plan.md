@@ -75,8 +75,11 @@ declares each model's reasoning levels, its default level and its input
 modalities; these are the only sources of reasoning and vision capabilities for
 this route, and Dim does not inherit them from the bundled catalog. Reasoning
 levels are offered in the endpoint's declared order, restricted to the effort
-values the inference endpoint accepts; a default level outside them is dropped,
-and a model with no surviving level declares no reasoning. Input modalities
+values the inference endpoint accepts and further intersected with the per-slug
+acceptance table the request path applies (#2189), so a choice the request
+would reject is never offered and the implicit default cannot name one either;
+a default level outside them is dropped, and a model with no surviving level
+declares no reasoning. Input modalities
 fill the entry's modalities and vision capability. Model entries that
 lack required limits remain unselectable until the limits are declared. Model
 resolution requires a native local client Session. This grant is scoped to the
