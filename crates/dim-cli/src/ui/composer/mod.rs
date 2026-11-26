@@ -13,7 +13,7 @@ pub mod mentions;
 pub mod palette;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
@@ -1233,6 +1233,24 @@ impl Composer {
             }
             token.label = label.clone();
             self.area.set_element_display(id, Some(token_line(&label)));
+        }
+    }
+
+    /// Wrapped row at the top of the rendered textarea.
+    pub fn rendered_scroll(&self) -> u16 {
+        self.state.scroll
+    }
+
+    /// Place the cursor at `cell` and clear the selection. Both `cell` and the
+    /// rendered textarea `area` use screen columns and rows counted from the
+    /// top of the unclipped dock. Clicks outside `area` are ignored.
+    pub fn click(&mut self, cell: Position, area: Rect) {
+        if let Some(offset) = self
+            .area
+            .buffer_pos_at_screen(cell.x, cell.y, area, self.state)
+        {
+            self.area.clear_selection();
+            self.area.set_cursor(offset);
         }
     }
 

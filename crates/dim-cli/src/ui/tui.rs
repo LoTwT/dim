@@ -4,6 +4,7 @@
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
 use dim_agent_types::ROOT_BRANCH_ID;
+use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -127,7 +128,7 @@ enum Placement {
     },
 }
 
-/// `config.json` key of the fullscreen mouse switch (`"on"` / `"off"`).
+/// `config.json` key of the mouse switch (`"on"` / `"off"`).
 const MOUSE_KEY: &str = "tuiMouseMode";
 
 /// Where a palette action or a sent message moves the fullscreen view.
@@ -316,6 +317,7 @@ fn run_terminal(
         active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
     let mut dirty = true;
+    let mut click_scroll = None;
     let mut last_frame: Option<Instant> = None;
     let mut resize: Option<PendingResize> = None;
     let code = loop {
@@ -399,11 +401,16 @@ fn run_terminal(
             app.host.shutdown();
             return code;
         }
-        let mouse = app.mouse && !app.native_selection();
+        let mouse = app.mouse
+            && if full.is_some() {
+                !app.native_selection()
+            } else {
+                app.keyboard_free() && !app.composer.is_empty()
+            };
         if !mouse && let Some(full) = &mut full {
             full.cancel_click();
         }
-        if full.is_some() && terminal.mouse() != mouse && terminal.set_mouse(mouse).is_err() {
+        if terminal.set_mouse(mouse).is_err() {
             let code = terminal.lost();
             app.host.shutdown();
             return code;
@@ -464,6 +471,7 @@ fn run_terminal(
                 std::env::var_os("TERMUX_VERSION").is_some(),
             );
             if reflow || !keyboard {
+                terminal.discard_queued_mouse();
                 let rows = app.reflow_history(size.0 as usize);
                 let frame = app.frame(size);
                 let wanted = screen.wanted_for(size, frame.live.len());
@@ -487,7 +495,10 @@ fn run_terminal(
             let frame = app.frame(size);
             let bytes = match &mut full {
                 Some(full) => full.render(&frame, size, &app.palette, &app),
-                None => screen.render(&frame, size),
+                None => {
+                    terminal.discard_queued_mouse();
+                    screen.render(&frame, size)
+                }
             };
             if terminal.write(&bytes).is_err() || terminal.write_failed() {
                 let code = terminal.lost();
@@ -505,6 +516,11 @@ fn run_terminal(
                 apply_jump(full, &app, jump);
                 dirty = true;
             }
+        }
+        if !mouse || full.is_some() {
+            click_scroll = None;
+        } else if !dirty {
+            click_scroll.get_or_insert(app.composer.rendered_scroll());
         }
         let wait = match (dirty && resize.is_none(), last_frame) {
             (true, Some(at)) if !terminal.writing() => {
@@ -570,7 +586,21 @@ fn run_terminal(
                 }
             }
             Wait::Event(InputEvent::Mouse(event)) => {
-                let Some(full) = &mut full else { continue };
+                let Some(full) = &mut full else {
+                    if mouse
+                        && !dirty
+                        && !terminal.writing()
+                        && event.kind == crate::ui::terminal::MouseKind::Press
+                        && screen.size() == terminal.size()
+                        && let Some((area, cell)) = screen.composer_hit(event.column, event.row)
+                        && click_scroll.replace(app.composer.rendered_scroll())
+                            == Some(app.composer.rendered_scroll())
+                    {
+                        app.composer.click(cell, area);
+                        dirty = true;
+                    }
+                    continue;
+                };
                 dirty |= full.resize(terminal.size());
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
@@ -602,6 +632,13 @@ fn run_terminal(
                     MouseOutcome::Models => {
                         app.run_command("models", "");
                         dirty = true;
+                    }
+                    MouseOutcome::Composer { cell, area } => {
+                        if mouse && app.prompt.is_none() && !app.composer.palette_open() {
+                            full.clear_focus();
+                            app.composer.click(cell, area);
+                            dirty = true;
+                        }
                     }
                     MouseOutcome::Thought { key, body } => {
                         dirty |= app.click_panel_thought(&key, body);
@@ -1295,8 +1332,7 @@ struct App {
     /// The `/models` picker a Provider's management area was opened from:
     /// closing the area goes back to the picker, as it was left.
     models_return: Option<ModelsPanel>,
-    /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
-    /// and the wheel to the terminal.
+    /// Mouse input in both TUI modes (`tuiMouseMode`); off leaves selection and scrolling native.
     pub mouse: bool,
     /// Ask the terminal to notify when the run needs the user
     /// (`tuiNotifyOnComplete`).
@@ -6577,13 +6613,21 @@ impl App {
             }
             (cursor.1 as usize, prompt_width + cursor.0 as usize)
         };
+        let box_top = live.len();
+        if self.prompt.is_none() && !palette_overlay {
+            frame.composer = Some(Rect::new(
+                (MARGIN + 2 + prompt_width) as u16,
+                (box_top + 1 - frame.dock) as u16,
+                text_width as u16,
+                rows.len() as u16,
+            ));
+        }
         if self.fullscreen {
             let minimum = FULLSCREEN_COMPOSER_ROWS.min((size.1 as usize).saturating_sub(7).max(1));
             if rows.len() < minimum {
                 rows.resize(minimum, String::new());
             }
         }
-        let box_top = live.len();
         let shell_title = shell.map(|shell| match shell {
             Shell::Recorded => t("! shell mode"),
             Shell::Private => t("!! shell mode · not sent to the model"),
