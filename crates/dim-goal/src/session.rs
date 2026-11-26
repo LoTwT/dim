@@ -117,6 +117,9 @@ impl DynPlugin for GoalSession {
                             let Ok(read) = changes.current(&key).await else {
                                 continue;
                             };
+                            if let Err(error) = changes.await_pause(&key).await {
+                                return Err(HostError::failed(error.to_string()));
+                            }
                             let active = matches!(
                                 read.goal.as_ref().map(|goal| &goal.status),
                                 Some(GoalViewStatus::Active)

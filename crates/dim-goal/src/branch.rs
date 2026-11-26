@@ -128,6 +128,17 @@ impl Changes {
             .map(|owner| owner.queued.lock().unwrap().clone())
             .unwrap_or_default()
     }
+    /// Waits for a pause a failed settle left unconfirmed applied.
+    pub(crate) async fn await_pause(&self, key: &TimelineKey) -> Result<(), AgentError> {
+        let owner = self
+            .owners
+            .lock()
+            .unwrap()
+            .get(key)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
+        owner.await_pending_pause().await
+    }
     /// Forgets one id a settle withdrew; a failed withdrawal keeps it for a
     /// retry.
     pub(crate) fn forget_queued(&self, key: &TimelineKey, input_id: &str) {
@@ -271,6 +282,7 @@ impl DynPlugin for GoalBranch {
                 ready,
                 write_status,
                 queued: Mutex::default(),
+                pause_pending: Mutex::default(),
                 state: Mutex::new(State::default()),
                 write: tokio::sync::Mutex::new(()),
             });
@@ -510,6 +522,8 @@ struct Owner {
     session: Arc<SessionLifecycle>,
     tools: Arc<ToolRegistry>,
     queued: Mutex<Vec<String>>,
+    /// The pause input whose application the settle still owes.
+    pause_pending: Mutex<Option<String>>,
     stop: CancellationToken,
     tasks: TaskTracker,
     work: TaskTracker,
@@ -636,6 +650,17 @@ impl Owner {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// Waits for a pause a failed settle recorded but did not confirm applied.
+    async fn await_pending_pause(self: &Arc<Self>) -> Result<(), AgentError> {
+        let pending = self.pause_pending.lock().unwrap().clone();
+        let Some(input_id) = pending else {
+            return Ok(());
+        };
+        self.await_applied(&input_id).await?;
+        *self.pause_pending.lock().unwrap() = None;
+        Ok(())
     }
 
     /// Waits until this generation's rebuild has returned and folded the facts
@@ -833,7 +858,9 @@ impl Owner {
                 self.queued.lock().unwrap().push(events[1].id.clone());
             }
             if matches!(change, Change::PauseMode) {
+                *self.pause_pending.lock().unwrap() = Some(events[1].id.clone());
                 self.await_applied(&events[1].id).await?;
+                *self.pause_pending.lock().unwrap() = None;
             }
             let sequence = events[1].sequence;
             let mut lock = self.state.lock().unwrap();
