@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -41,11 +41,16 @@ esac\n`, { mode: 0o755 });
     assert.equal(run.status === 0, ok, run.stderr);
   }
   const install = () => spawnSync('sh', [path.join(import.meta.dirname, 'install-nightly.sh')], { env, encoding: 'utf8' });
-  const installed = () => execFileSync(file('.local/bin/dim-nightly'), ['--version'], { env, encoding: 'utf8' }).trim();
+  const installed = (command = 'dim-nightly') => execFileSync(file('.local/bin', command), ['--version'], { env, encoding: 'utf8' }).trim();
+  const shortcut = file('.local/bin/dimn');
   const release = () => JSON.parse(readFileSync(file('release'))).name;
   publish(8);
   assert.equal(install().status, 0);
   assert.equal(installed(), 'dimcode 1.2.3-nightly.8');
+  assert.equal(installed('dimn'), 'dimcode 1.2.3-nightly.8');
+  rmSync(shortcut);
+  assert.equal(install().status, 0);
+  assert.equal(installed('dimn'), 'dimcode 1.2.3-nightly.8');
   writeFileSync(file('.local/bin/dima'), 'npm installation');
   writeFileSync(file('assets/unrelated.txt'), 'keep');
   writeFileSync(file('interrupt'), '');
@@ -68,6 +73,33 @@ esac\n`, { mode: 0o755 });
     const run = install();
     assert.equal(run.status, 0, run.stderr);
     assert.equal(installed(), 'dimcode 1.2.3-nightly.11');
+    assert.equal(installed('dimn'), 'dimcode 1.2.3-nightly.11');
   }
+  rmSync(shortcut);
+  symlinkSync('unrelated-command', shortcut);
+  const conflict = install();
+  assert.equal(conflict.status, 0, conflict.stderr);
+  assert.match(conflict.stderr, /Keeping existing .*dimn/);
+  assert.equal(readlinkSync(shortcut), 'unrelated-command');
+  assert.equal(installed(), 'dimcode 1.2.3-nightly.11');
+  rmSync(shortcut);
+  writeFileSync(file('ln'), `#!/bin/sh
+set -eu
+case "$*" in *dimn*)
+  if [ ! -e "$HOME/.local/bin/dimn" ]; then
+    if [ -f "$HOME/race-directory" ]; then mkdir "$HOME/.local/bin/dimn"; else echo foreign >"$HOME/.local/bin/dimn"; fi
+  fi;;
+esac
+exec /bin/ln "$@"\n`, { mode: 0o755 });
+  for (const directory of [false, true]) {
+    if (directory) writeFileSync(file('race-directory'), '');
+    const collision = install();
+    assert.equal(collision.status, 0, collision.stderr);
+    assert.match(collision.stderr, /Keeping existing .*dimn/);
+    if (directory) assert.deepEqual(readdirSync(shortcut), []);
+    else assert.equal(readFileSync(shortcut, 'utf8'), 'foreign\n');
+    rmSync(shortcut, { recursive: true });
+  }
+  assert.equal(installed(), 'dimcode 1.2.3-nightly.11');
   assert.equal(readFileSync(file('.local/bin/dima'), 'utf8'), 'npm installation');
 });
