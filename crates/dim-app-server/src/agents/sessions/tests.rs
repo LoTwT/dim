@@ -162,6 +162,9 @@ async fn exists_answers_loaded_unloaded_closed_and_deleted() {
         builder,
         crate::ServerConfig {
             database_path: Some(directory.join("dimcode.sqlite")),
+            // This test does not exercise the startup deadline; a whole-suite
+            // run can make assembly slower than the product default.
+            startup_timeout: Duration::from_secs(30),
             ..Default::default()
         },
     )
