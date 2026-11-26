@@ -20,7 +20,7 @@ use dim_agent_runtime::{BranchOptions, Session};
 use dim_agent_types::{
     BranchSource, ContextBaselineEntry, ContextCompactData, ContextCompactionData,
     ContextCompactionResult, EventKind, InputMode, Message, MessageContent, ModelRequest, Role,
-    ToolCall,
+    ToolCall, ToolMode,
 };
 use serde_json::{Value, json};
 use support::texts;
@@ -2481,5 +2481,77 @@ async fn an_effective_shell_update_withdraws_a_queued_resume_trigger() {
             EventKind::InputDeleted(data) if data.input_id == resume.id
         )),
         "the queued resume trigger is withdrawn: {events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_shell_request_in_the_settle_window_carries_the_pause() {
+    let mut fixture = Fixture::start().await;
+    let session = fixture
+        .new_session_with_mode(&["echo", "wait", "execute"], "normal")
+        .await;
+    fixture
+        .goal_on(&session, "set", json!({"objective": "keep going"}))
+        .await
+        .unwrap();
+    let idle = fixture
+        .client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    assert!(idle.get("error").is_none(), "{idle}");
+    let loaded = fixture
+        .server
+        .agent()
+        .unwrap()
+        .get_session(&session)
+        .unwrap();
+    let registry = loaded
+        .session_service::<dim_agent_capabilities::tool_registry::ToolRegistry>()
+        .unwrap();
+    registry.set_tool_mode(ToolMode::Shell);
+    registry.begin_entry(ToolMode::Shell);
+    let submitted = fixture
+        .client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "tool:execute {}"}),
+        )
+        .await
+        .unwrap();
+    assert!(submitted.get("error").is_none(), "{submitted}");
+    registry.settle_entry(ToolMode::Shell).await;
+    let idle = fixture
+        .client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    assert!(idle.get("error").is_none(), "{idle}");
+    let events = branch_events(&loaded, "main", ..).await.unwrap();
+    let request = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(data)
+                if data
+                    .request
+                    .tools
+                    .as_ref()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool.name == "execute")) =>
+            {
+                Some(&data.request)
+            }
+            _ => None,
+        })
+        .expect("a shell model request");
+    let text = format!("{:?}", request.messages);
+    assert!(
+        text.contains("paused the goal"),
+        "the settle window's first shell request carries the pause: {text}"
     );
 }

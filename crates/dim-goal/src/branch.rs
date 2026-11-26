@@ -347,29 +347,6 @@ impl DynPlugin for GoalBranch {
                 }
                 resolve.resolved.send_replace(true);
             });
-            let mode_check = owner.clone();
-            let mode_changes = self.changes.clone();
-            owner.tasks.spawn(async move {
-                let active = tokio::select! {
-                    active = mode_check.phase.activated() => active,
-                    _ = mode_check.stop.cancelled() => false,
-                };
-                if !active || mode_check.tools.effective_tool_mode_now() != ToolMode::Shell {
-                    return;
-                }
-                let Ok(read) = mode_check.current().await else {
-                    return;
-                };
-                if !matches!(
-                    read.goal.as_ref().map(|goal| &goal.status),
-                    Some(GoalViewStatus::Active)
-                ) {
-                    return;
-                }
-                if let Err(error) = mode_changes.change(&mode_key, Change::PauseMode).await {
-                    mode_check.dispatcher.fail(error);
-                }
-            });
             let rebuilding = owner.clone();
             let consuming = owner.clone();
             dispatcher

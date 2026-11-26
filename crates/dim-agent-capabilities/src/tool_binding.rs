@@ -78,6 +78,11 @@ fn current(registry: &ToolRegistry) -> (ToolSetAdoption, Vec<Arc<ToolSourceSet>>
 }
 
 impl ToolBinding {
+    /// The mode an entry registration is settling, if any.
+    pub fn settling(&self) -> Option<ToolMode> {
+        self.registry.settling()
+    }
+
     /// The mode in force for a step with no open turn.
     pub fn effective_mode(&self) -> ToolMode {
         self.registry.effective_tool_mode_now()

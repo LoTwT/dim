@@ -1135,7 +1135,10 @@ impl ContextUsage {
             .timeline
             .query(TimelineQuery {
                 scope: TimelineQueryScope::Branch,
-                from: None,
+                from: ended.map(|end| TimelinePosition {
+                    branch_id: self.timeline.branch_id().to_owned(),
+                    sequence: end,
+                }),
                 through: Some(start),
                 include_publishing: false,
                 query: QuerySpec {

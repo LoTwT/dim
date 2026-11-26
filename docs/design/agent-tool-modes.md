@@ -140,7 +140,9 @@ hands Goal the pending mode and Goal checks that it would be effective.
   precedes the next turn (Goal state alone does not enter the model context), and withdraws the
   input it queued — the `set`/`resume` trigger and any automatic continuation — when the InputQueue
   has not applied it. An applied input was already handed over; the settle does not withdraw it.
-  The applied record carries the mode and the turn keeps it (§4).
+  The applied record carries the mode and the turn keeps it (§4). A restored Session whose stored
+  choice is `shell` is covered by the Goal reload rule instead: its active goal is paused with
+  `interrupted_reload`, and the registration settle does not rewrite that reason.
 - **Order.** The update runs under the Session's mode gate with Goal's settle first; its order and
   failure rule are §5's. A Goal failure stops the update before the mode changes.
 - **Activation.** `session.goal.set` and `resume` take the same mode gate and check the effective
