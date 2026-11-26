@@ -278,7 +278,15 @@ impl SessionScope {
         let session = self.live()?;
         let (catalog, faces) = session.reach();
         face(catalog, faces, &call.service, &call.method, SESSION_GROUP)?;
-        let loaded = session.loaded().map_err(owner)?;
+        let loaded = session.loaded().map_err(|error| {
+            // The loaded scope goes away when the Session closes, so that
+            // answer wins over the owner's wrapper.
+            if session.closing.is_cancelled() {
+                RouteError::SessionClosing(self.session_id.clone())
+            } else {
+                owner(error)
+            }
+        })?;
         call_face(
             &loaded.ctx,
             loaded.scope.instance,

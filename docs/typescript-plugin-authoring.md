@@ -88,7 +88,7 @@ type and reads the reply as that operation's reply type.
 | Need | Service and scope | Availability |
 | --- | --- | --- |
 | Persist a process plugin's own data | `pluginFiles`, process | Implemented when the host supplies an authorized product root and provisions parent directories; use its native transactions and lifecycle scope. |
-| Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. `call({sessionId, lineId?, service, method, args})` reaches a Session's or a line's data face by id ([Calling a Session or line by id](#calling-a-session-or-line-by-id)). |
+| Start or drive another Session | `sessions`, process | Implemented by Agents; every method is typed. `call({sessionId, lineId?, service, method, args})` reaches a Session's or a line's data face by id ([Calling a Session or line by id](#calling-a-session-or-line-by-id)). |
 | Publish events to subscribed branches | `eventHub`, process | Implemented by EventHub: `declare` and `publish`, served to the calling row. Inject it: the row loads only while EventHub runs and declares at `apply`. |
 | Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
 | Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |

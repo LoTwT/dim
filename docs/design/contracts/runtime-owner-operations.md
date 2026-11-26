@@ -37,7 +37,10 @@ owner's face, and the owner of the line's index resolves it
 ([#2127](https://github.com/arcships/dim/issues/2127),
 [ADR 027](../../adr/027-cross-scope-access-by-id.md)): `sessionScope.lineCall` reaches a
 line of the caller's own Session, `sessions.call` a Session and a line of it for the
-process, and both pass the owner's arguments, reply and error through. Agents loads the
+process, and both pass the owner's arguments, reply and error through. The two surfaces spell
+the same failure differently: the `sessions` envelope answers snake_case codes, and a Session
+part's scope throws `RouteError`, whose variants are camelCase and whose owner variant carries
+the owner's name, message, data and reloading flag. Agents loads the
 Session for the call and holds it while it runs (ADR 027 D5). A target that cannot be
 selected answers `no_session`, `session_closing`, `session_reloading` (retry later),
 `session_unavailable` (report the reason) or `no_line` (final for that line), before the
