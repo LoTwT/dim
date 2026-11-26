@@ -587,6 +587,7 @@ pub(crate) async fn session_create_from_options(
     options: &Options,
 ) -> Result<serde_json::Value> {
     let mut params = session_create_params(options);
+    add_creation_tool_mode(client, options, &mut params);
     options.creation_startup(&mut params);
     add_creation_worktree(client, options, &mut params)?;
     if let Some(preferences) = options.creation_preferences() {
@@ -598,6 +599,20 @@ pub(crate) async fn session_create_from_options(
 /// The daemon a `--worktree` creation needs: one without
 /// `session.create.worktree` refuses the member as an unknown field.
 const WORKTREE_UNSUPPORTED: &str = "This daemon cannot create a Session in a managed worktree; upgrade it or start the Session without --worktree";
+
+/// Adds the saved tool mode when the daemon serves it.
+pub(crate) fn add_creation_tool_mode(
+    client: &client::Client,
+    options: &Options,
+    params: &mut serde_json::Value,
+) {
+    if client.offers("session.create.toolMode")
+        && let Some(mode) = crate::configure::saved_tool_mode(&options.home)
+        && matches!(mode.as_str(), "normal" | "codemode" | "shell")
+    {
+        params["toolMode"] = serde_json::json!(mode);
+    }
+}
 
 /// Adds the `worktree` member `--worktree` asks for. It is sent only when the
 /// request asks for one, and only to a daemon whose `hello.features` names

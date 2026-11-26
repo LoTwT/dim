@@ -265,6 +265,11 @@ pub struct ToolRegistry {
     offered: Mutex<HashMap<String, Offered>>,
     /// Configured names nothing has registered, reported once each.
     missing: Mutex<HashSet<String>>,
+    /// The operator's chosen mode; the effective one may fall back to
+    /// `normal` when its entry tool is not mounted.
+    mode: Mutex<ToolMode>,
+    /// Serializes the record write and the live replacement of an update.
+    mode_update: tokio::sync::Mutex<()>,
     session_id: String,
     config: Arc<SessionConfig>,
     /// Serializes refreshes from read to commit, so an earlier read never
@@ -401,6 +406,59 @@ impl ToolRegistry {
             .values()
             .cloned()
             .collect()
+    }
+    /// The mode in force if `mode` were chosen now.
+    pub fn effective_of_mode(&self, mode: ToolMode) -> ToolMode {
+        let declared = self.snapshot().0;
+        match mode.entry_tool() {
+            Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
+            _ => ToolMode::Normal,
+        }
+    }
+    /// The operator's chosen mode.
+    pub fn tool_mode(&self) -> ToolMode {
+        *self.mode.lock().unwrap()
+    }
+    /// The mode in force: the chosen one, or `normal` when its entry tool is
+    /// not mounted.
+    pub fn effective_tool_mode(&self) -> ToolMode {
+        let declared = self.snapshot().0;
+        self.effective_of(&declared)
+    }
+    /// The effective mode from the current sets, without reading providers:
+    /// for callers on the input or prompt path that must not wait on a
+    /// source read.
+    pub fn effective_tool_mode_now(&self) -> ToolMode {
+        let sources = self.sources.lock().unwrap();
+        let declared = self.declared(&sources);
+        self.effective_of(&declared)
+    }
+    fn effective_of(&self, declared: &[ToolDefinition]) -> ToolMode {
+        let mode = self.tool_mode();
+        match mode.entry_tool() {
+            Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
+            _ => ToolMode::Normal,
+        }
+    }
+    /// Holds the update gate across the record write and the live change.
+    pub async fn lock_mode(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mode_update.lock().await
+    }
+    /// Replaces the live mode. It does not re-adopt a tool set: the next
+    /// request projects the same callable set under the new mode.
+    pub fn set_tool_mode(&self, mode: ToolMode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+    /// The declarations the model request carries: the callable set projected
+    /// by the effective mode.
+    pub fn visible_definitions(&self) -> Vec<ToolDefinition> {
+        let declared = self.snapshot().0;
+        project(self.effective_of(&declared), &declared).0
+    }
+    /// The tool names a Code Mode program may call; empty in the other modes.
+    pub fn delegated_definitions(&self) -> Vec<ToolDefinition> {
+        let declared = self.snapshot().0;
+        project(self.tool_mode(), &declared).1
     }
     /// The current or a still-held replaced version of a key.
     pub fn source(&self, key: &str, version: &str) -> Option<Arc<ToolSourceSet>> {
@@ -850,6 +908,45 @@ impl HostDispatch for ForeignRegistry {
     }
 }
 
+/// Whether `name` is declared under `mode` (§2): `normal` hides both entry
+/// tools, `codemode` declares only its entry and `skill`, and `shell`
+/// declares only its entry and the dialogue tools.
+fn visible_under(mode: ToolMode, name: &str) -> bool {
+    match mode {
+        ToolMode::Normal => !matches!(name, "codemode" | "execute"),
+        ToolMode::Codemode => matches!(name, "codemode" | "skill"),
+        ToolMode::Shell => matches!(name, "execute" | "ask_user" | "goal_update" | "recall"),
+    }
+}
+
+/// Projects `declared` under `mode`: the request's `visible` declarations and
+/// the child `delegated` set. A mode whose entry tool is not in `declared`
+/// runs `normal`.
+pub(crate) fn project(
+    mode: ToolMode,
+    declared: &[ToolDefinition],
+) -> (Vec<ToolDefinition>, Vec<ToolDefinition>) {
+    let mode = match mode.entry_tool() {
+        Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
+        _ => ToolMode::Normal,
+    };
+    let visible = declared
+        .iter()
+        .filter(|tool| visible_under(mode, &tool.name))
+        .cloned()
+        .collect();
+    let delegated = if mode == ToolMode::Codemode {
+        declared
+            .iter()
+            .filter(|tool| tool.name != "codemode")
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (visible, delegated)
+}
+
 pub fn definition(name: &str, description: &str, schema: serde_json::Value) -> ToolDefinition {
     ToolDefinition {
         name: name.into(),
@@ -930,6 +1027,8 @@ impl DynPlugin for ToolRegistryPlugin {
                 providers: Arc::default(),
                 offered: Mutex::default(),
                 missing: Mutex::default(),
+                mode: Mutex::new(config.tool_mode),
+                mode_update: tokio::sync::Mutex::new(()),
                 session_id: identity.session_id.clone(),
                 config: config.clone(),
                 refreshing: Mutex::default(),
@@ -988,7 +1087,7 @@ impl DynPlugin for ToolRegistryPlugin {
                 ),
                 Arc::new(ForeignRegistry(registry.clone())),
             )?;
-            ctx.provide_at(self.registry.clone(), registry)?;
+            ctx.provide_at(self.registry.clone(), registry.clone())?;
             Ok(Effect::Done)
         })
     }
@@ -1028,12 +1127,123 @@ mod tests {
             providers: Arc::default(),
             offered: Mutex::default(),
             missing: Mutex::default(),
+            mode: Mutex::new(ToolMode::Normal),
+            mode_update: tokio::sync::Mutex::new(()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),
             sources: Mutex::default(),
             state: watch::Sender::new(ToolSourcesState::default()),
         }
+    }
+
+    fn projected(mode: ToolMode, names: &[&str]) -> (Vec<String>, Vec<String>) {
+        let config = Arc::new(SessionConfig {
+            tools: Some(names.iter().map(|name| (*name).to_owned()).collect()),
+            ..Default::default()
+        });
+        let registry = ToolRegistry {
+            host: names
+                .iter()
+                .map(|name| {
+                    Arc::new(ToolContribution {
+                        definition: definition(name, "test", json!({"type": "object"})),
+                        handler: Arc::new(Noop),
+                    })
+                })
+                .collect(),
+            configured: config.tools.clone(),
+            excluded: HashSet::new(),
+            tools: Arc::default(),
+            providers: Arc::default(),
+            offered: Mutex::default(),
+            missing: Mutex::default(),
+            mode: Mutex::new(mode),
+            mode_update: tokio::sync::Mutex::new(()),
+            session_id: "session".into(),
+            config,
+            refreshing: Mutex::default(),
+            sources: Mutex::default(),
+            state: watch::Sender::new(ToolSourcesState::default()),
+        };
+        let names = |definitions: Vec<dim_agent_types::ToolDefinition>| {
+            definitions
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>()
+        };
+        (
+            names(registry.visible_definitions()),
+            names(registry.delegated_definitions()),
+        )
+    }
+
+    #[test]
+    fn the_mode_projects_the_callable_set() {
+        let names = [
+            "read",
+            "skill",
+            "ask_user",
+            "goal_update",
+            "recall",
+            "codemode",
+            "execute",
+        ];
+        assert_eq!(
+            projected(ToolMode::Normal, &names),
+            (
+                vec!["read", "skill", "ask_user", "goal_update", "recall"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                vec![],
+            )
+        );
+        assert_eq!(
+            projected(ToolMode::Codemode, &names),
+            (
+                vec!["skill", "codemode"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                vec![
+                    "read",
+                    "skill",
+                    "ask_user",
+                    "goal_update",
+                    "recall",
+                    "execute"
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            )
+        );
+        assert_eq!(
+            projected(ToolMode::Shell, &names).0,
+            vec!["ask_user", "goal_update", "recall", "execute"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(projected(ToolMode::Shell, &names).1.is_empty());
+    }
+
+    #[test]
+    fn a_mode_whose_entry_tool_is_absent_runs_normal() {
+        assert_eq!(
+            projected(ToolMode::Shell, &["read", "write"]).0,
+            vec![String::from("read"), String::from("write")]
+        );
+        assert_eq!(
+            projected(ToolMode::Codemode, &["read", "write"]).0,
+            vec![String::from("read"), String::from("write")]
+        );
+        assert!(
+            projected(ToolMode::Codemode, &["read", "write"])
+                .1
+                .is_empty()
+        );
     }
 
     #[test]

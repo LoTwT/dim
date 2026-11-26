@@ -157,7 +157,7 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 
 形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
 [WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)（`backgroundExec`）。
-`backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`BackgroundExec` 只保存 branch task id、host task id 和 output path，实时读取走 `hostPlatform.tail`/`output`。`backgroundExec.stop` 是 kill。持久 PTY 由 `HostPlatform` 拥有，`ShellSession` 持有策略；公共 PTY 操作只有 `shell`/`write`/`resize`。
+`backgroundExec.start` 需要活的进程对象，仍是调用方自己的操作——`exec` 工具和 `ShellSession`——不在数据面上；`BackgroundExec` 只保存 branch task id、host task id 和 output path，实时读取走 `hostPlatform.tail`/`output`。`backgroundExec.stop` 是唯一的停止入口，也是 kill。持久 PTY 由 `HostPlatform` 拥有，`ShellSession` 持有策略；公共 PTY 操作只有 `shell`/`write`/`resize`。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
 `hostPlatform`、`fileStorage`、`timelineStore` 不按对象分类保留：服务本身就是公开契约；一个 service 的公开方法就是它的接口，没有单独的 face 对象，也没有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform` 的公开方法包括 `info`、`execShell`、`persistentShell`、`sandboxBackend`、`execRoot`，以及命令任务和持久 shell 的操作（见 §3.4）；`toolHost`、`backgroundExec`、`sessionMethods.shell` 通过该数据面调用它们。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store services](resource-faces.md) §6）。

@@ -135,6 +135,10 @@ pub(super) async fn stop(
         Err(super::background::TaskError::Closed) => Err(HostError::Cancelled(
             dim_agent_runtime::CAPABILITY_RELOADING.into(),
         )),
+        Err(super::background::TaskError::Running) => Ok(failed(
+            "The stop was requested; the command is still running because the owner has not confirmed its release. It is not stopped yet, and its result will follow.",
+            "exec_task_running",
+        )),
     }
 }
 
@@ -2196,11 +2200,13 @@ fn settled_from_reply(reply: &WaitReply) -> (Settled, Option<CommandExit>) {
         inline: reply.text.clone().unwrap_or_default(),
         failure: reply.failure.clone(),
     };
-    let exit =
-        matches!(reply.status, WaitStatus::Exited | WaitStatus::Signaled).then(|| CommandExit {
-            code: reply.exit_code,
-            signal: reply.signal.clone(),
-        });
+    // The owner records a known exit even when the terminal is `failed` (a
+    // shell command that ended with a non-zero status, for example), so the
+    // exit travels with the fields, not with the wait status.
+    let exit = (reply.exit_code.is_some() || reply.signal.is_some()).then(|| CommandExit {
+        code: reply.exit_code,
+        signal: reply.signal.clone(),
+    });
     (settled, exit)
 }
 
@@ -2219,9 +2225,12 @@ pub(super) fn background_result(task_id: &str, reply: &WaitReply) -> (ExecStatus
         ),
         _ if settled.failure.is_some() => {
             let failure = settled.failure.as_ref().expect("guarded");
-            let summary = match failure {
-                TaskFailure::OutputWriteFailed { message } => {
+            let summary = match (failure, &exit) {
+                (TaskFailure::OutputWriteFailed { message }, _) => {
                     format!("exec output offload failed: {message}")
+                }
+                (TaskFailure::CommandFailed | TaskFailure::UnknownExit, Some(exit)) => {
+                    exit_failure_summary(exit)
                 }
                 _ => failure.to_string(),
             };

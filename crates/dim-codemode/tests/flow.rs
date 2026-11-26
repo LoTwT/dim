@@ -192,6 +192,7 @@ impl Fixture {
                     tools: Some(tools),
                     interactive,
                     permission_policy,
+                    tool_mode: dim_agent_runtime::ToolMode::Codemode,
                     ..SessionConfig::default()
                 },
                 Default::default(),

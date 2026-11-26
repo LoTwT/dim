@@ -21,6 +21,8 @@
 //! │   Permissions                                │
 //! │   Permission             Workspace write ›   │
 //! │   Process isolation      ›                   │
+//! │   Tools                                      │
+//! │   Tool mode              Normal ›            │
 //! │ 1 / 11 · ↑↓ move · enter select · ←→/space change · esc close │
 //! ╰──────────────────────────────────────────────╯
 //! ```
@@ -54,6 +56,7 @@ pub struct Values {
     /// `None` is a read that has not happened or failed.
     pub prompts: [Option<bool>; 3],
     pub permission: String,
+    pub tool_mode: String,
 }
 
 /// One row: a switch flips in place, a link opens its picker.
@@ -74,9 +77,10 @@ pub enum Setting {
     SkillsPrompt,
     Permission,
     Isolation,
+    ToolMode,
 }
 
-const ROWS: [(Setting, &str); 15] = [
+const ROWS: [(Setting, &str); 16] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
@@ -92,6 +96,7 @@ const ROWS: [(Setting, &str); 15] = [
     (Setting::SkillsPrompt, "skills-prompt"),
     (Setting::Permission, "permission"),
     (Setting::Isolation, "isolation"),
+    (Setting::ToolMode, "tool-mode"),
 ];
 
 impl Setting {
@@ -250,6 +255,8 @@ impl SettingsPanel {
             row(Setting::Permission, "Permission", link(&values.permission)),
             row(Setting::Isolation, "Process isolation", link("")),
         ]);
+        items.push(Item::heading(t("Tools")));
+        items.push(row(Setting::ToolMode, "Tool mode", link(&values.tool_mode)));
         let mut list = ListPanel::new("Settings", HINT, "", "", "", false).without_filter();
         list.set_items(Ok(items), Some(select.id()));
         list.set_hint(t(hint_for(select)).to_owned());
@@ -283,6 +290,12 @@ impl SettingsPanel {
             self.list
                 .set_detail(prompt_row(field).id(), prompt_origin(self.prompts[index]));
         }
+    }
+
+    /// Shows the mode a read or write reported.
+    pub fn set_tool_mode(&mut self, value: &str) {
+        self.list
+            .set_detail(Setting::ToolMode.id(), format!("{value} ›"));
     }
 
     /// Shows that the prompts source could not be read.

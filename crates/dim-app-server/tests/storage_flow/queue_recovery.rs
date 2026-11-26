@@ -1,6 +1,7 @@
 use super::*;
 use dim_agent_runtime::InputSnapshot;
 use serde_json::json;
+use std::sync::Arc;
 
 fn builder(store: &Arc<SqliteTimelineStore>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());

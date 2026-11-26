@@ -2384,3 +2384,118 @@ async fn a_job_write_terminalizes_and_reads_its_output() {
         .unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A job whose pid never arrives answers a bounded `task_running` and keeps its
+/// record running; the shell's sweep writes its terminal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_without_a_pid_stays_running_until_the_shell_sweep() {
+    let dir = std::env::temp_dir().join(unique("dim-host-job-pid"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    let catalog = dim_agent_capabilities::catalog();
+    let build = Default::default();
+    let names = dim_agent_runtime::Names::copy(&catalog, &build);
+    let _execution = root
+        .provide(ExecutionSettingsHost::fixed(Default::default()))
+        .unwrap();
+    let _toolchain = root.provide(ToolchainSourceHost::fixed(vec![])).unwrap();
+    let plugin = root.plugin(
+        HostPlatformPlugin::new(
+            &names,
+            HostPlatformConfig {
+                execution: names.key().unwrap(),
+                toolchain: names.key().unwrap(),
+                exec_shell_file: None,
+                home: Some(dir.clone()),
+            },
+        )
+        .unwrap(),
+    );
+    (&plugin).await.unwrap();
+    let platform = root.get::<HostPlatform>().unwrap();
+    platform
+        .shell(ShellRequest {
+            task_id: "pid-shell".into(),
+            cwd: path_string(&dir),
+            workspace: path_string(&dir),
+            roots: Vec::new(),
+            output_dir: path_string(&dir),
+            cols: 80,
+            rows: 24,
+        })
+        .await
+        .unwrap();
+    let output_path = dir.join("job-1.log");
+    platform
+        .write(ShellWrite {
+            task_id: "pid-shell".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(b"sleep 30\n"),
+            command: None,
+            job: Some(ShellJobStart {
+                task_id: "job-1".into(),
+                end_marker: "__DIM_END_aaaabbbb_ccccdddd__".into(),
+                output_path: output_path.to_string_lossy().into_owned(),
+            }),
+        })
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let killed = platform
+        .kill(TaskRequest {
+            task_id: "job-1".into(),
+        })
+        .await;
+    assert!(
+        matches!(killed, Err(HostPlatformError::TaskRunning)),
+        "{killed:?}"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(1_800),
+        "the stop must be bounded by the pid wait: {:?}",
+        started.elapsed()
+    );
+    let reply = platform
+        .wait(
+            WaitRequest {
+                task_id: "job-1".into(),
+                timeout_ms: Some(0),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status, WaitStatus::Running, "{reply:?}");
+
+    platform
+        .kill(TaskRequest {
+            task_id: "pid-shell".into(),
+        })
+        .await
+        .unwrap();
+    let reply = platform
+        .wait(
+            WaitRequest {
+                task_id: "job-1".into(),
+                timeout_ms: Some(5_000),
+            },
+            never_cancelled(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.status, WaitStatus::Failed, "{reply:?}");
+    assert!(
+        matches!(
+            reply.failure,
+            Some(TaskFailure::ShellExited | TaskFailure::ShellReset)
+        ),
+        "{reply:?}"
+    );
+    platform
+        .settle(TaskRequest {
+            task_id: "pid-shell".into(),
+        })
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}

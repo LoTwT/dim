@@ -88,6 +88,7 @@ from branch adoption.
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, environment and shell/platform context. |
+| `S:ToolRegistry` | The effective tool mode: `shell` drops the Windows file-encoding guidance. |
 | `S:SessionConfig` | Working directory, Session context and the reply language a record carries. |
 | `S:PromptRegistry` | Register each of its sources by name, until this part unloads. |
 

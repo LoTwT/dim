@@ -70,6 +70,13 @@ impl Store {
     ) -> impl Future<Output = Result<()>> {
         self.0.set_session_language(session_id, language)
     }
+    pub fn set_session_tool_mode(
+        &self,
+        session_id: &str,
+        mode: dim_agent_runtime::ToolMode,
+    ) -> impl Future<Output = Result<()>> {
+        self.0.set_session_tool_mode(session_id, mode)
+    }
     pub fn creation_record(
         &self,
         session_id: &str,

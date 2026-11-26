@@ -26,7 +26,9 @@ A task id is reserved by the owner before a command or background job starts. `s
 part of `shell.write` answer `task_exists` for an id already in the table or an existing output
 log, and `invalid` for a missing output parent or an output path outside the shell directory. `wait` reports the terminal record and never removes it; a
 timeout stops the wait and answers `running`. `settle` releases only an ended task or an exited
-shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a stop is pending answers `task_running`. Command and job logs stay under the output directory the caller gives the owner; the
+shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. A job with no pid answers `task_running` after two seconds and keeps a pid watcher, and a
+kill that fails keeps the watcher too: the job record stays running, and its terminal comes from
+the confirmed release or from the shell's sweep. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal. Some shells print the end marker after the interrupt, so the command's terminal is the interrupted line's own exit status — which can be success when the line continues past the interrupted command — and `kill` returns from that wait; a command still running after two seconds cannot end inside the live shell, so `kill` signals the terminal's foreground process group — where an interactive shell runs the command, outside the shell's own group — and terminates the shell, whose terminal sweeps the command as a reset. Terminating a shell — this stop, a shell kill or a Session close — releases that foreground group the same way before the shell's terminal sweeps its children. Command and job logs stay under the output directory the caller gives the owner; the
 persistent shell defaults to `execRoot`. Logs are registered by the branch when the model is
 given their path.
 `removeOutputDirectory` accepts only a persistent-shell output directory below the canonical
@@ -37,7 +39,12 @@ given their path.
 `ShellSession`. A shell command capture is read by its command id and records the bounded output,
 tail and task log. `wait`, `kill`, `output` and `tail` address shell command and job ids as well
 as exec tasks. A shell command ends from its marker; shell exit sweeps its command and job
-children. A terminal shell answers `write`/`resize` with `task_ended`, and `settle` is
+children. Before a shell writes its terminal, it attempts to release each live job whose pid is
+known: SIGKILL to the job's group and, where the platform can enumerate them, its descendants, then
+a wait of up to two seconds. The sweep keeps a SIGKILL backstop. This is best effort: `kill_job`'s
+result is dropped, so a failed kill is not reported, and a descendant that left the job's group or
+session can outlive the job's terminal. A terminal shell answers `write`/`resize` with
+`task_ended`, and `settle` is
 idempotent. A shell `outputPath` is registered before the reply and survives settle until
 `removeOutputDirectory` or Session deletion; `retainOutput` is idempotent. `ShellJobStart.outputPath`
 is an absolute path inside the shell output directory and its file stem equals the task id; `childPath` takes UTF-8 data, while the
@@ -157,11 +164,21 @@ switches: declarations are read once, while each process start reads them.
 For a persistent shell, background PIDs enter through the
 existing PTY marker. `PtyProcessTree::job_pid` uses portable-pty's foreground-group handle and
 Linux's namespace/session metadata to resolve the native host identity once. `ShellJob.pid`
-stores the typed PID in the owner record; `ShellSession` keeps only the task id and calls
+stores the typed PID in the owner record; the calling task owner keeps only the task id and calls
 `host.kill` by id. A bounded native stop waits for release before the cancelled terminal fact;
 the public signal helper is unchanged.
 A running shell keeps the boundary it started with; changing the switches applies to the next
 process. macOS permits only the needed terminal ioctl commands.
+A persistent shell's first command is the init wrapper, and the shell may spend its first
+input on a startup consumer instead — zsh's newuser module runs a wizard when the user has no
+startup files. `ShellSession` writes that wrapper again until a copy's own start marker and then
+its end marker reached the shell's tail, and it watches every written copy until the init
+deadline, so neither a startup consumer nor a shell slower than the retry interval can lose the
+initialization. Each copy carries its own marker pair, and a copy counts only when its own start
+marker precedes its end marker: an end marker a consumer emitted for another copy or by itself
+does not count. A copy that started is not replaced, because another would only queue behind it.
+The wrapper uses the same marker fragments as every command, so its echoed text cannot pass for
+the marker.
 
 ## Command construction
 

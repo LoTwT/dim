@@ -62,6 +62,10 @@ pub enum TaskError {
     /// This instance was unloaded.
     #[error("BackgroundExec is closed")]
     Closed,
+    /// The stop is pending: the owner has not confirmed the task's release, so
+    /// the task is still running and its terminal will follow.
+    #[error("the task is still running; the stop is pending")]
+    Running,
 }
 
 /// Why one paged read of a task's registered output file answered nothing.
@@ -188,6 +192,11 @@ pub(crate) fn decode_page(
     })
 }
 
+/// How long `stop` waits for a terminal before it answers the pending stop: the
+/// owner confirms the release first, and a terminal that cannot be confirmed
+/// stays pending instead of blocking the caller.
+const STOP_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How far a page may exceed its budget to hold a whole character: a UTF-8
 /// character is at most four bytes, so at most three lie past the limit.
 pub(crate) const PAGE_CHAR_TRAILING_BYTES: usize = 3;
@@ -206,6 +215,8 @@ struct Task {
     final_preview: Option<String>,
     /// The dispatched `exec/ended`, once its wake decision is done.
     ended: watch::Sender<Option<ExecEndedData>>,
+    /// Set when the owner answered the stop as unconfirmed; the terminal follows.
+    pending_stop: watch::Sender<bool>,
 }
 impl Task {
     fn new(
@@ -221,6 +232,7 @@ impl Task {
             output_path,
             final_preview: None,
             ended: watch::Sender::new(None),
+            pending_stop: watch::Sender::new(false),
         }
     }
 }
@@ -246,6 +258,7 @@ async fn wait_owner(
     platform: &HostPlatform,
     host_task_id: &str,
     cancel: &CancellationToken,
+    pending: Option<&watch::Sender<bool>>,
 ) -> Option<WaitReply> {
     let waited = platform
         .wait(
@@ -259,11 +272,19 @@ async fn wait_owner(
     match waited {
         Ok(reply) => Some(reply),
         Err(HostPlatformError::Cancelled) => {
-            let _ = platform
+            let killed = platform
                 .kill(TaskRequest {
                     task_id: host_task_id.to_owned(),
                 })
                 .await;
+            match killed {
+                Ok(()) | Err(HostPlatformError::TaskUnknown | HostPlatformError::TaskEnded) => {}
+                Err(_) => {
+                    if let Some(pending) = pending {
+                        pending.send_replace(true);
+                    }
+                }
+            }
             platform
                 .wait(
                     WaitRequest {
@@ -424,9 +445,10 @@ impl BackgroundExec {
         let platform = self.platform.clone();
         let supervised = task_id.clone();
         let parent = dim_agent_runtime::core::current_parent_call_id();
+        let pending = self.pending_stop(&supervised);
         self.tasks.spawn(async move {
             let run = async {
-                let reply = wait_owner(&platform, &host_task_id, &cancel).await;
+                let reply = wait_owner(&platform, &host_task_id, &cancel, pending.as_ref()).await;
                 if let Some(reply) = &reply {
                     let mut state = owner.state.lock().unwrap();
                     if let Some(task) = state.tasks.get_mut(&supervised) {
@@ -667,9 +689,22 @@ impl BackgroundExec {
         }
     }
 
-    /// Stops a task: cancels it while running, so it ends `cancelled` and
-    /// does not wake. Returns once its `exec/ended` is dispatched; a task that
-    /// already ended keeps its result and its wake.
+    fn pending_stop(&self, task_id: &str) -> Option<watch::Sender<bool>> {
+        self.state
+            .lock()
+            .unwrap()
+            .tasks
+            .get(task_id)
+            .map(|task| task.pending_stop.clone())
+    }
+
+    /// Stops a task and answers the owner's terminal: a native command or a
+    /// background job ends `cancelled` and does not wake, while a shell command
+    /// is interrupted and ends with the interrupted line's own status, so it
+    /// wakes. Returns once its `exec/ended` is dispatched; a task that already
+    /// ended keeps its result and its wake. When the owner has not confirmed the
+    /// release, answers `running`: the task keeps its record and hold, and its
+    /// terminal follows.
     pub async fn stop(&self, task_id: String) -> Result<ExecEndedData, TaskError> {
         let current = {
             let mut state = self.state.lock().unwrap();
@@ -680,10 +715,10 @@ impl BackgroundExec {
                 if task.ended.borrow().is_none() {
                     task.cancel.cancel();
                 }
-                task.ended.subscribe()
+                (task.ended.subscribe(), task.pending_stop.subscribe())
             })
         };
-        let Some(mut ended) = current else {
+        let Some((mut ended, mut pending)) = current else {
             if self
                 .started(&task_id, self.timeline.committed())
                 .await
@@ -706,11 +741,25 @@ impl BackgroundExec {
                 ))
             });
         };
-        ended
-            .wait_for(Option::is_some)
-            .await
-            .map(|done| done.clone().expect("waited for Some"))
-            .map_err(|_| TaskError::Closed)
+        if let Some(done) = ended.borrow().clone() {
+            return Ok(done);
+        }
+        if *pending.borrow() {
+            return Err(TaskError::Running);
+        }
+        let waited = tokio::time::timeout(STOP_REPLY_TIMEOUT, async {
+            tokio::select! {
+                result = ended.wait_for(Option::is_some) => result
+                    .map(|done| done.clone().expect("waited for Some"))
+                    .map_err(|_| TaskError::Closed),
+                _ = pending.wait_for(|pending| *pending) => Err(TaskError::Running),
+            }
+        })
+        .await;
+        match waited {
+            Ok(result) => result,
+            Err(_) => Err(TaskError::Running),
+        }
     }
 
     fn consume(

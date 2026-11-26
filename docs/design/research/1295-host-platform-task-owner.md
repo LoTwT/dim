@@ -340,10 +340,11 @@ does not claim a test that is not in the tree.
 ### 7.3 Scope and follow-up
 `task_ended` is in this PR: step 2 adds it, step 4 makes `write`/`resize` return it, and
 `write_to_a_terminated_shell_answers_task_ended` gates it; no `connection.rs` change for
-that case. `session.exec.stop` is step 6: the minimal `ShellSession` `ExecStop` provider
-serves shell tasks; the local profile keeps `BackgroundExec`. `BackgroundExec` gains no
-`ShellSession` dependency; `ShellSession`'s existing recovery dependency on `BackgroundExec`
-stays.
+that case. `session.exec.stop` is step 6: it calls the branch stop owner. `BackgroundExec` gains no
+`ShellSession` dependency; `ShellSession`'s dependency on `BackgroundExec` stays.
+[#2032](https://github.com/arcships/dim/issues/2032) board A replaced the two-provider route this
+record describes: shell tasks are registered with `BackgroundExec`, and `BackgroundExec.stop` is the
+only stop entry ([WorkspaceTools §BackgroundExec](../../architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec)).
 ## 8. Rule check
 | Rule | Application |
 | --- | --- |

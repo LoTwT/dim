@@ -569,6 +569,11 @@ pub struct Create {
     /// daemons reject unknown fields.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub language: Option<dim_agent_runtime::ReplyLanguage>,
+    /// The tool surface this Session runs (agent tool modes §5). Absent keeps
+    /// `normal`; clients send it only when `hello.features` names
+    /// `session.create.toolMode`, because older daemons reject unknown fields.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub tool_mode: Option<dim_agent_runtime::ToolMode>,
     /// The managed worktree to create with the Session; absent keeps `cwd`.
     #[serde(default, deserialize_with = "optional_worktree")]
     pub worktree: Option<CreateWorktree>,

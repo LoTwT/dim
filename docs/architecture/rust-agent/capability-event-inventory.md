@@ -34,7 +34,7 @@
 | TreeTimeline | 执行分支创建、结束命令及结算 | branch/create、branch/end、turn/end；branch 结果事实 | [实现](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) / [说明](plugins/TimelineTree.md) |
 | WaitBranch | 当前回合内的等待通知与单次等待 | input/message、turn/start、turn/end；不直接写事实 | [实现](../../../crates/dim-agent-capabilities/src/wait.rs) / [说明](plugins/Wait.md) |
 | HooksBranch | 按已消费事实运行 Hooks，采用有效输出 | input/message；读取 input、turn、approval、tool 等触发事实 | [实现](../../../crates/dim-agent-capabilities/src/hooks/runner.rs) / [说明](plugins/Hooks.md) |
-| ShellSession | 持续 shell 执行、后台任务和完成通知 | exec/*、input/message；读取中断与回合事实 | [实现](../../../crates/dim-agent-capabilities/src/shell_session.rs) |
+| ShellSession | 持续 shell 执行与命令队列，把后台任务和前台超时转后台的命令交给 BackgroundExec | 不直接写 Timeline 事实；命令终态由 BackgroundExec 发布 | [实现](../../../crates/dim-agent-capabilities/src/shell_session.rs) |
 
 ## 核心 Timeline 事件（50 个具体 key）
 
@@ -56,8 +56,8 @@
 | `approval/respond` | 对审批请求的决定 | Approval 响应入口 | Approval、HooksBranch、协作审批 |
 | `approval/cancelled` | 审批请求取消结算 | Approval | Approval 恢复、HooksBranch、协作审批 |
 | `permission/changed` | 分支权限策略变更 | Permission | Permission |
-| `exec/started` | 后台执行已开始 | BackgroundExec、ShellSession | 各执行所有者恢复、GoalBranch、执行历史 |
-| `exec/ended` | 后台执行终态 | BackgroundExec、ShellSession | 各执行所有者、GoalBranch；另由生产方发布唤醒输入 |
+| `exec/started` | 后台执行已开始 | BackgroundExec | 各执行所有者恢复、GoalBranch、执行历史 |
+| `exec/ended` | 后台执行终态 | BackgroundExec | 各执行所有者、GoalBranch；另由生产方发布唤醒输入 |
 | `turn/start` | 回合开始 | Loop | WaitBranch、Prompt、InputQueue、执行与协作部件 |
 | `turn/end` | 回合结束及结果 | Loop | WaitBranch、InputQueue、GoalBranch、HooksBranch、执行与协作部件 |
 | `prompt/changed` | 提示词快照已采用 | Prompt 经 ConfigurationPublisher | Prompt、ContextUsage/配置恢复 |

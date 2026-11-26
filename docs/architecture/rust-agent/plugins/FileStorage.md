@@ -26,6 +26,76 @@ opens leave `OBJECT_ATTRIBUTES.Attributes` at 0 so the actual directory's
 case-sensitivity setting governs lookup; forcing `OBJ_CASE_INSENSITIVE` or
 folding names would break case-sensitive directories and their aliases.
 
+## Authorized roots
+
+A root is its index and its path. Both are append-only: an index always names
+the same path, and a `FilePath` names its root for its generation's lifetime. A
+descriptor is not part of that identity. Registering an already registered path
+opens the directory the path names now and keeps the index: the root keeps
+serving the same directory when the path still names it, serves the new one when
+the path names another, and holds none when the path cannot be opened. Reading
+the directory's identity can fail, on a volume that does not report file IDs or
+while a deletion is pending; that comparison failing is not a registration
+failure, and the newly opened descriptor, whose component-wise walk already
+rejected links, serves the path.
+The root records no directory for that observation, so a later registration
+cannot mistake the path for one the root served before the failed read.
+
+Every observation of one root is serialized with the slot transition it
+publishes, so an observation never overtakes or is overtaken by another. A
+normal operation uses the descriptor the root last held; it does not check the
+path's current identity. A directory another process replaces at the path is
+therefore reached when that path is registered again or after a release, not by
+every operation on the root.
+
+`release_root(index)` drops the descriptor and keeps the index, its path and
+every `FilePath` naming it. The next operation opens the directory the path
+names then, so a release withdraws no authorization and changes no index. A
+released root costs no descriptor until then, and an open that began before a
+release does not put its descriptor back.
+
+A root's slot is Open or Unavailable, at a generation. A lease is bound to the
+generation it locked: `replace` and `backup` through it fail with `invalid`
+unless the slot is Open at that generation, so a lease never writes into a
+directory the path no longer names. The generation advances when an observation
+reads an identity for the path that differs from the one the root serves, and
+when it reads one after none was recorded: the root cannot show that the
+directory is one it already served. A release, which names the same directory,
+leaves the lease valid, and so does an identity that cannot be read while the
+slot is Open: the storage cannot tell whether the path names another directory.
+A slot an observation could not open refuses its leases' mutations. An
+observation that opens the path and reads the directory the root served before
+it restores them; one that opens another directory, or cannot read one, starts a
+generation, so only leases locked through that open are admitted. A release does
+not clear that state because it reads no path. Their reads keep the files they
+pinned, and dropping them releases their locks. An open that a release overtook
+keeps no descriptor for the root, because the release dropped it, and the
+observation serves that operation alone.
+
+The App Server releases a project's root once the last Session loaded from its
+cwd settles. `session.close`, `session.delete`, a Collaboration member's close,
+an idle unload and `agent.close` each end one Session's ownership; a load
+records it before the Session appears in an Agent's Session list, so a Session
+still restoring owns the root. A restore that loaded no Session ends the
+ownership it registered itself, before its caller can be told either way, so a
+caller that stopped waiting leaves none behind. A loaded Session's ownership
+ends with its close, which the process observes even when it did not start the
+close, so a Session the runtime's fault supervisor stops releases its project
+too. A guard settles only the ownership its own load registered: the idle pass
+and a load's guard watch one close, and a guard that reaches it after a later
+load of the same Session ID registered a new ownership leaves that ownership
+and the root it holds. `agent.close` ends every ownership the Agent registered,
+including a Session whose build reached the runtime after the close began, and
+an Agent scope that unloads ends the ownerships of the Sessions its own close
+ended. A `session.detach` ends no ownership: the Session stays loaded and may
+still use the project, and its later close or unload releases the root. An
+authorization no Session used, from `hooks.catalog` or MCP management, owns
+nothing and keeps its descriptor until the next settlement on the same cwd or
+the process closes.
+FileStorage close still releases every descriptor. A reopened descriptor is not
+revalidated against an earlier one, because the path is the authorization and
+the authorization did not change.
+
 ## Bounded reads
 
 `read_limited(path, limit, cancel)` preserves the same authorized-handle traversal and cancellation as `read`. It checks the opened file's length before allocating contents, then checks each chunk before extending the buffer to cover concurrent growth. Exceeding the byte limit returns `Io(InvalidData)` without partial bytes or a write. The lease's own `read_limited(limit, cancel)` applies the same rule under the held lock; `read` is its unbounded case. The business caller chooses its byte limit.
@@ -315,6 +385,13 @@ and starts again from its target if a directory it returns to was deleted.
 
 [file_storage_flow.rs](../../../../crates/dim-agent-capabilities/tests/file_storage_flow.rs):
 `late_roots_preserve_indices_and_generation_boundaries_on_reload`,
+`a_recreated_directory_at_a_registered_path_is_read_through_it` (a directory
+replaced at a registered path keeps the index and the new directory serves the
+same `FilePath`), `a_released_root_opens_the_directory_its_path_names` (the
+released descriptor is closed, and the next operation opens the directory the
+path names then), `a_lease_on_a_replaced_root_refuses_its_next_replacement` (a
+lease locked in the old directory fails its next replacement and leaves the new
+directory untouched), `a_lease_survives_a_root_release`,
 `file_storage_flow` (path, lock, permission and platform checks),
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
@@ -331,9 +408,46 @@ directories, a marker whose release failed) and
 `removal_scales_with_directory_size` (a directory that used 300 names and a
 1,000-level tree, removed under a 64-descriptor limit on a 256 KiB worker
 stack, where recursion overflowed at a few hundred levels). The unit
-test `lock_keys_stay_exclusive_across_concurrent_directory_removal` in the
-owner module drives the lock, removal and temporary-file interleavings that the
-public API cannot produce reliably.
+tests `a_generation_follows_the_directory_an_observation_reads` (the directory a
+root serves keeps its generation, another directory starts one, an observation
+that cannot open the path keeps it, and reading the served directory again
+admits that generation's leases),
+`an_observation_a_release_overtook_installs_no_descriptor` (a release keeps the
+generation and holds no descriptor, and the open it overtook serves that
+operation alone) and
+`lock_keys_stay_exclusive_across_concurrent_directory_removal` in the owner
+module cover the slot transitions, the generation and the lock, removal and
+temporary-file interleavings that the public API cannot produce reliably. The
+App Server flows
+`an_unloaded_session_releases_its_project_root`,
+`a_closed_session_releases_its_project_root`,
+`a_deleted_session_releases_its_project_root`,
+`a_runtime_close_releases_the_project_root_a_load_registers`,
+`an_agent_close_releases_its_sessions_project_roots`,
+`one_of_two_sessions_in_a_project_keeps_its_root_in_use` and
+`a_replaced_project_directory_is_served_after_a_session_is_created`
+([idle_unload.rs](../../../../crates/dim-app-server/tests/transport_flow/idle_unload.rs))
+check that a Session ending its use of a project releases the descriptor once no
+Session uses it, that a Session the runtime closes without an App Server call
+releases the root its load registered, that a replacement is served once the
+path is registered again, and that the authorization keeps its index. The unit
+test `a_closing_session_does_not_release_the_root_a_restore_owns`
+([slots.rs](../../../../crates/dim-app-server/src/agents/tests/slots.rs)) holds a
+restore inside its Session part and closes another Session on the same cwd, which
+the loaded Sessions alone would read as the last use, and
+`a_refused_restore_settles_the_ownership_of_its_cancelled_caller` ends the
+ownership a restore registered when its caller stopped waiting. The unit tests
+`settlements_end_only_the_ownership_they_name`,
+`a_guard_dropped_after_a_later_load_keeps_that_loads_ownership`,
+`a_runtime_close_ends_the_project_ownership_it_did_not_start` and
+`a_delayed_close_watcher_keeps_the_ownership_of_the_load_after_it`
+([tests.rs](../../../../crates/dim-app-server/src/agents/tests.rs)) check that a
+settlement answers its project only when it removed the last owner, that an
+Agent close ends every ownership it registered, that a guard dropped after a
+later load of the same Session leaves that load's ownership, that a guard a
+Session hands to its close settles an ownership this process did not close, and
+that a first load's watcher delayed past the idle pass and a second load of the
+same Session ID leaves the ownership the second load registered.
 
 ## Native streaming reads
 

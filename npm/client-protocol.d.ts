@@ -136,6 +136,12 @@ export type PermissionPolicy = {
 /** `session.permission.get`: the policy of `main` and the version a change must expect. */
 export type PermissionState = { version: number; policy: PermissionPolicy }
 
+/** The Session tool modes, named as the server's `ToolMode` serializes them. */
+export type ToolMode = "normal" | "codemode" | "shell"
+
+/** `session.tool_mode.get` and `.update`: the chosen mode and the mode in force. */
+export type ToolModeState = { mode: ToolMode; effective: ToolMode }
+
 /** A message the server holds in the queue of a running branch: the operator's own blocks in order, one line of them, its Skills and its stored images. */
 export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; content: OperatorBlock[]; user: UserInput }
 

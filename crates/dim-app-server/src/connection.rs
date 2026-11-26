@@ -7,7 +7,6 @@ use crate::{
     skills_management::skills_error,
 };
 use dim_agent_capabilities::{
-    exec_stop::{self, ExecStop},
     host::{ModelPortError, ModelSelectionRequest},
     methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},
     permission::{Permission, PermissionState, PermissionUpdateError},
@@ -1629,35 +1628,26 @@ impl Connection {
                 if p.task_id.is_empty() {
                     return Err(RpcError::invalid("taskId must not be empty"));
                 }
-                let result = if let Some(stop) =
-                    session.service_opt::<dyn ExecStop>(&p.branch_id)?
-                {
-                    stop.stop(p.task_id).await.map_err(|error| match error {
-                        exec_stop::TaskError::Unknown => RpcError::app(
+                let result = session
+                    .service::<BackgroundExec>(&p.branch_id)?
+                    .stop(p.task_id)
+                    .await
+                    .map_err(|error| match error {
+                        TaskError::Unknown => RpcError::app(
                             -32000,
                             "exec_task_unknown",
                             "Command is not a task of this branch",
                         ),
-                        exec_stop::TaskError::Closed => RpcError::reloading(),
-                        exec_stop::TaskError::Read => {
+                        TaskError::Closed => RpcError::reloading(),
+                        TaskError::Read(_) => {
                             RpcError::app(-32603, "exec_task_read", "Task facts could not be read")
                         }
-                    })?
-                } else {
-                    session
-                        .service::<BackgroundExec>(&p.branch_id)?
-                        .stop(p.task_id)
-                        .await
-                        .map_err(|error| match error {
-                            TaskError::Unknown => RpcError::app(
-                                -32000,
-                                "exec_task_unknown",
-                                "Command is not a task of this branch",
-                            ),
-                            TaskError::Closed => RpcError::reloading(),
-                            TaskError::Read(error) => error.into(),
-                        })?
-                };
+                        TaskError::Running => RpcError::app(
+                            -32000,
+                            "exec_task_running",
+                            "The stop was requested; the command is still running and its release is not confirmed",
+                        ),
+                    })?;
                 Reply::ExecEnded(result)
             }
             Call::SessionSkills(p) => {
@@ -2040,6 +2030,9 @@ impl Connection {
         }
         if let Some(language) = params.language {
             config.language = Some(language);
+        }
+        if let Some(mode) = params.tool_mode {
+            config.tool_mode = mode;
         }
         let origin = match params.origin {
             None | Some(SessionOrigin::Client) => SessionOrigin::Client,

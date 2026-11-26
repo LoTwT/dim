@@ -107,6 +107,13 @@ step's resumption starts. The turn accepts this automatic continuation at most
 once. An output-limit stop is not a failure of the turn:
 it ends Completed, and its `step/model-output-end` stays for diagnostics.
 
+### Tool mode
+
+A request declares the visible set of the Session's live effective mode at
+preparation. The mode is Session configuration, not a Timeline fact: a switch
+applies to the next request prepared after it, and a request already being
+prepared keeps the mode it read.
+
 ### The continuation's tool boundary
 
 This continuation declares tools because the failed request ran none of the

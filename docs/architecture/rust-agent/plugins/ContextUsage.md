@@ -12,7 +12,7 @@ contributions and request calibration under [ContextUsage](../../../design/plugi
 | `B:Dispatcher` | Observe publication and report owned failures. |
 | `B:BranchLifecycle` | Start after activation and stop when closing. |
 | `S:ContextModelHost` | Resolve the additive counter and algorithm. |
-| `S:ToolRegistry` | Read current declarations when configuration does not specify tools. |
+| `S:ToolRegistry` | Read the live projection as the fallback before the first request declares tools. |
 
 ## Events and lifetime
 
@@ -37,7 +37,7 @@ confirmed to retain that projection. A compaction adopted after that projection 
 Current reads use the in-memory totals. Earlier compression cuts seek cumulative
 numbers using epoch, branch ordinal and source sequence. A missing predecessor makes statistics unavailable until an actual request establishes a new total; no history recount fills that gap.
 
-Current dynamic tools use a small version/identity/fixed-number cache; no handler
+The fixed tool cost is the last model request's declarations; before the first request it falls back to the registry's live projection. Current dynamic tools use a small version/identity/fixed-number cache; no handler
 binding or extra Timeline event is required. New messages are counted once and
 fixed controls are reused. The first stable projection establishes the same existing request association before invocation, so its provider measurement can calibrate the next request. Settled-output projection is shared with history.
 Provider calibration uses one Weak reference to the actual numerically verified

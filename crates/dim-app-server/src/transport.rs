@@ -823,6 +823,8 @@ async fn run_connection(
                                             "session.branch_set_default",
                                             "session.create.origin",
                                             "session.language",
+                                            "session.tool_mode",
+                                            "session.create.toolMode",
                                             "session.attach.expectedCwd",
                                             "session.attach.expectedConfig",
                                         ]);
@@ -862,6 +864,17 @@ async fn run_connection(
                                         }
                                     }
                                     if trusted && hub.config().local_execution() {
+                                        for mode in &hub.config().tool_modes {
+                                            match mode {
+                                                dim_agent_types::ToolMode::Codemode => {
+                                                    features.push("session.tool_mode.codemode")
+                                                }
+                                                dim_agent_types::ToolMode::Shell => {
+                                                    features.push("session.tool_mode.shell")
+                                                }
+                                                dim_agent_types::ToolMode::Normal => {}
+                                            }
+                                        }
                                         features.extend(LOCAL_EXECUTION_METHODS);
                                     }
                                     if local {

@@ -2,7 +2,7 @@
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, useId, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy, QueuedInput, RestoredImage, SubmitMode, UserInput, WithdrawResult } from "../../rpc/protocol"
+import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy, QueuedInput, RestoredImage, SubmitMode, ToolMode, ToolModeState, UserInput, WithdrawResult } from "../../rpc/protocol"
 import { linkMentions, mentionTrigger, type FileMention, type MentionTrigger } from "../../mentions"
 import { SKILL_TOKEN_PREFIX, namesSkillToken, skillCommandQuery, skillSegments, startsWithSkillToken } from "../../skill-token"
 import { useComposerStore } from "../../stores/composer"
@@ -11,6 +11,7 @@ import { useSessionsStore } from "../../stores/sessions"
 import { useConnectionStore } from "../../stores/connection"
 import ComposerModelMenu from "./ComposerModelMenu.vue"
 import ComposerPermissionMenu from "./ComposerPermissionMenu.vue"
+import ComposerToolModeMenu from "./ComposerToolModeMenu.vue"
 import type { ModelMenuPreview } from "./new-session-model"
 import { quoteInto } from "./quote"
 
@@ -66,6 +67,8 @@ const props = withDefaults(defineProps<{
   searchFiles?: (query: string) => Promise<FileCandidate[]>
   /** The Session policy and its independent controls; absent where permission methods are unavailable. */
   permission?: { policy: PermissionPolicy | undefined; select: (preset: PermissionPreset) => Promise<void> }
+  /** The Session tool mode and its control; absent where mode methods are unavailable. */
+  toolMode?: { state: ToolModeState | undefined; available: ToolMode[]; select: (mode: ToolMode) => Promise<void> }
   stop?: (branchId?: string) => Promise<void>
   /**
    * The messages the server holds for this branch, oldest first: the composer
@@ -98,6 +101,7 @@ const field = ref<HTMLTextAreaElement>()
 const highlightBody = ref<HTMLElement>()
 const modelMenu = ref<InstanceType<typeof ComposerModelMenu>>()
 const permissionMenu = ref<InstanceType<typeof ComposerPermissionMenu>>()
+const toolModeMenu = ref<InstanceType<typeof ComposerToolModeMenu>>()
 const menuId = useId()
 const text = ref("")
 const sending = ref(false)
@@ -162,6 +166,7 @@ const availableCommands = computed(() => ([
   { category: "session", name: "loop", available: props.sessionCommands?.loop !== undefined },
   { category: "model", name: "effort", available: props.sessionCommands?.effort !== undefined },
   { category: "model", name: "permissions", available: props.permission !== undefined && props.variant !== "panel" },
+  { category: "model", name: "toolMode", available: props.toolMode !== undefined && props.variant !== "panel" },
   { category: "session", name: "lines", available: props.openLines !== undefined },
   { category: "session", name: "new", available: true },
   { category: "session", name: "scheduled", available: connection.supports("schedule.list") },
@@ -681,6 +686,7 @@ async function runCommand(name: typeof availableCommands.value[number]["name"]):
       error.value = cause instanceof Error ? cause.message : String(cause)
     }
   } else if (name === "permissions") permissionMenu.value?.open()
+  else if (name === "toolMode") toolModeMenu.value?.open()
   else if (name === "compact" || name === "usage") await props.sessionCommands?.[name]?.(line)
   else if (name === "fork") await props.sessionCommands?.fork?.()
 }
@@ -843,6 +849,7 @@ defineExpose({ focus: () => field.value?.focus(), quote })
       <footer class="composer-toolbar">
         <div class="composer-tool-group">
           <ComposerPermissionMenu v-if="permission && variant !== 'panel'" ref="permissionMenu" :policy="permission.policy" @select="permission.select" />
+          <ComposerToolModeMenu v-if="toolMode && variant !== 'panel'" ref="toolModeMenu" :state="toolMode.state" :available="toolMode.available" @select="toolMode.select" />
         </div>
         <div class="composer-run-group">
           <progress v-if="uploadProgress !== undefined" :value="uploadProgress" max="100" aria-label="File upload" />

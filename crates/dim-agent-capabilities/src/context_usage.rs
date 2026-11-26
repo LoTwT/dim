@@ -4,9 +4,9 @@ use crate::{
     tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
-    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput,
-    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result, Timeline, TimelineQuery,
-    TimelineQueryScope,
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOrder,
+    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
+    Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -1013,9 +1013,7 @@ impl ContextUsage {
             .await
             .map_err(ContextOpError::Read)?
             .ok_or_else(|| ContextOpError::Read(fault("missing initialized usage total")))?;
-        if let Some(Configuration::Ready { counter }) = &summary.configuration
-            && counter.configured_tools != Some(true)
-        {
+        if let Some(Configuration::Ready { counter }) = &summary.configuration {
             let model = view
                 .model
                 .as_ref()
@@ -1024,6 +1022,9 @@ impl ContextUsage {
                 .current_tools(counter, model.as_ref(), through)
                 .await
                 .map_err(ContextOpError::Read)?;
+            if fixed.fixed == counter.fixed {
+                return reading(through, &summary, None);
+            }
             let counter_model = model
                 .contribution_counter()
                 .ok_or_else(|| ContextOpError::Read(fault("missing additive counter")))?;
@@ -1043,24 +1044,60 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
+    /// The tools the last model request at or before `through` declared.
+    async fn request_tools(&self, through: u64) -> Result<Option<Vec<ToolDefinition>>> {
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec![serde_json::json!("model/call")],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["data.request.tools".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let Some(value) = (match &reply.result {
+            QueryOutput::Rows { rows } => {
+                rows.first().and_then(|row| match row.values.as_slice() {
+                    [QueryValue::Value { value }] => Some(value.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_value::<Option<Vec<ToolDefinition>>>(value)
+            .ok()
+            .flatten())
+    }
+
     async fn current_tools(
         &self,
         configuration: &CounterConfiguration,
         model: &dyn ContextModel,
         through: u64,
     ) -> Result<DynamicFixed> {
-        if configuration.configured_tools.is_none()
-            && self
-                .configured_tools(&configuration.event_id, through)
-                .await?
-        {
-            return Ok(DynamicFixed {
-                configuration: configuration.event_id.clone(),
-                versions: String::new(),
-                identity: configuration.request_identity.clone(),
-                fixed: configuration.fixed,
-            });
-        }
         let sources = self.registry.sources();
         let versions = fingerprint(
             &sources
@@ -1068,6 +1105,17 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
+        let tools = self
+            .request_tools(through)
+            .await?
+            .unwrap_or_else(|| self.registry.visible_definitions());
+        let tools_fingerprint = fingerprint(
+            &tools
+                .iter()
+                .map(|tool| (&tool.name, &tool.description))
+                .collect::<Vec<_>>(),
+        )?;
+        let versions = format!("{versions}:{tools_fingerprint}");
         if let Some(cached) = self
             .dynamic_fixed
             .lock()
@@ -1079,13 +1127,6 @@ impl ContextUsage {
         {
             return Ok(cached.clone());
         }
-        let (tools, sources) = self.registry.snapshot();
-        let versions = fingerprint(
-            &sources
-                .iter()
-                .map(|source| (&source.key, &source.version))
-                .collect::<Vec<_>>(),
-        )?;
         let mut system = self
             .fields(&configuration.event_id, through, &["data.system"])
             .await?;

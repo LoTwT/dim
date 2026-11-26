@@ -204,6 +204,12 @@ pub enum Command {
         line: String,
         session: Origin,
     },
+    /// Reads the Session's tool mode for the `/settings` row.
+    ReadToolMode,
+    /// Writes the Session's tool mode.
+    SetToolMode {
+        mode: String,
+    },
     /// Interrupt the run on the line the key was pressed on, unless the
     /// Session has changed since (design §14).
     Stop {
@@ -1343,6 +1349,13 @@ pub enum Update {
     /// draft it held back, or keeps it when `error` says the stop failed.
     Stopped {
         error: Option<String>,
+    },
+    /// The Session's tool mode, chosen and in force.
+    ToolMode {
+        mode: String,
+        effective: String,
+        available: Vec<String>,
+        saved: bool,
     },
     /// `session.branch_set_default` refused the chosen line: the lines panel
     /// shows the reason on the line the choice was made on (design §14).

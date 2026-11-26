@@ -28,7 +28,7 @@ use std::{
     num::NonZeroU64,
     path::Path,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -258,6 +258,13 @@ struct Entry {
     host: Arc<AgentHost>,
     view: FiberView,
 }
+/// The Agent a Session's project ownership belongs to, the cwd whose root this
+/// process holds for it, and the load that registered the ownership.
+struct Owner {
+    agent: String,
+    cwd: String,
+    load: u64,
+}
 #[derive(Default)]
 struct Inner {
     agents: BTreeMap<String, Entry>,
@@ -270,6 +277,14 @@ struct Inner {
     closing: HashMap<String, Arc<AgentHost>>,
     /// Session id -> owning agent id and negotiated protocol version.
     versions: HashMap<String, (String, u32)>,
+    /// Session id -> the Agent it belongs to and the cwd whose project root
+    /// this process holds for it. A Session is an owner from the load that
+    /// authorizes its project until its settlement, and the root is released
+    /// once the last owner of its cwd settles.
+    owners: HashMap<String, Owner>,
+    /// Counts the loads that registered an ownership, so one names the load
+    /// that registered it.
+    loads: u64,
     /// Loader instances of the Agents this index created, until they close.
     /// They outlive the index's entries: an unloading scope forgets its
     /// entry, and the index closes the instance when it unloads.
@@ -290,6 +305,35 @@ impl Inner {
         self.sessions
             .get(id)
             .map_or(0, |slot| slot.uses.load(Ordering::Acquire))
+    }
+    /// Ends Session `id`'s ownership and answers the cwd it owned. `load`
+    /// names whose ownership ends: `None` ends whoever owns the Session, as
+    /// the synchronous settlements do, and `Some` ends only the ownership that
+    /// load registered.
+    fn settle(&mut self, id: &str, load: Option<u64>) -> Option<String> {
+        let owner = self.owners.get(id)?;
+        if load.is_some_and(|load| owner.load != load) {
+            return None;
+        }
+        self.owners.remove(id).map(|owner| owner.cwd)
+    }
+    /// Records Session `id` as an owner of the cwd whose project root this
+    /// process holds for it, and answers the load that registered it.
+    fn own(&mut self, id: &str, agent: &str, cwd: &str) -> u64 {
+        self.loads += 1;
+        self.owners.insert(
+            id.to_owned(),
+            Owner {
+                agent: agent.to_owned(),
+                cwd: cwd.to_owned(),
+                load: self.loads,
+            },
+        );
+        self.loads
+    }
+    /// Whether a Session still owns `cwd`.
+    fn owns(&self, cwd: &str) -> bool {
+        self.owners.values().any(|owner| owner.cwd == cwd)
     }
     /// The Agent owning Session `id`: its recorded owner, live or closing,
     /// or the live Agent that has it loaded.
@@ -340,6 +384,10 @@ impl Inner {
 /// this state outlive a reload of the `Agents` directory logic.
 pub(crate) struct AgentDirectory {
     inner: Mutex<Inner>,
+    /// The Settings of the newest generation that provided one. An ownership
+    /// can settle after that generation reloaded, so the directory keeps the
+    /// weak reference rather than the service.
+    settings: Mutex<Weak<SettingsService>>,
     /// The first generation that loads a store removes unfinished delegations;
     /// later generations may run while a creation is in flight.
     finished: AtomicBool,
@@ -373,6 +421,102 @@ impl AgentDirectory {
         inner.pending.remove(agent_id);
         inner.versions.retain(|_, (owner, _)| owner != agent_id);
     }
+    /// A loaded Session owns the cwd whose project root this process holds for
+    /// it, from the load that authorizes that project until its settlement.
+    /// The guard ends the ownership when it is dropped; a Session that reaches
+    /// the process hands it to its close instead.
+    fn own(self: &Arc<Self>, id: &str, agent: &str, cwd: &str) -> ProjectOwnership {
+        let load = self.inner.lock().expect("agent index").own(id, agent, cwd);
+        ProjectOwnership {
+            directory: self.clone(),
+            session: id.to_owned(),
+            load,
+        }
+    }
+    /// Ends a Session's ownership and releases the project's root once no
+    /// Session owns its cwd. Removing the owner and reading the owners that
+    /// remain happen under one index lock, so two settlements cannot both
+    /// release one project. `load` names whose ownership ends: `None` ends
+    /// whoever owns the Session, as the closes, deletes and idle unloads this
+    /// process starts do, and `Some` ends only the ownership that load
+    /// registered, so a guard dropped after a later load of the same Session
+    /// leaves that load's ownership. Idempotent: an ownership the settlement
+    /// does not name is unchanged.
+    fn settle(&self, id: &str, load: Option<u64>) {
+        let cwd = {
+            let mut inner = self.inner.lock().expect("agent index");
+            let Some(cwd) = inner.settle(id, load) else {
+                return;
+            };
+            if inner.owns(&cwd) {
+                return;
+            }
+            cwd
+        };
+        let settings = self.settings.lock().unwrap().upgrade();
+        if let Some(settings) = settings {
+            settings.release_project(Path::new(&cwd));
+        }
+    }
+    /// Ends every ownership `agent` registered. An Agent close settles the
+    /// Sessions the runtime closed, whether or not a snapshot listed them, and
+    /// a scope that unloads settles the ones its own close ended.
+    fn settle_agent(&self, agent: &str) {
+        let released = {
+            let mut inner = self.inner.lock().expect("agent index");
+            let removed: Vec<String> = inner
+                .owners
+                .values()
+                .filter(|owner| owner.agent == agent)
+                .map(|owner| owner.cwd.clone())
+                .collect();
+            inner.owners.retain(|_, owner| owner.agent != agent);
+            let mut released: Vec<String> =
+                removed.into_iter().filter(|cwd| !inner.owns(cwd)).collect();
+            released.sort();
+            released.dedup();
+            released
+        };
+        let settings = self.settings.lock().unwrap().upgrade();
+        let Some(settings) = settings else {
+            return;
+        };
+        for cwd in released {
+            settings.release_project(Path::new(&cwd));
+        }
+    }
+    /// Records the Settings of the newest generation that provides one. An
+    /// ownership that settles after a reload releases through it.
+    fn set_settings(&self, settings: Option<&Arc<SettingsService>>) {
+        *self.settings.lock().unwrap() = settings.map(Arc::downgrade).unwrap_or_default();
+    }
+}
+
+/// One Session's ownership of its project's root. Dropping the guard settles
+/// the ownership, so a load that fails, is refused, or whose caller gives up
+/// before the Session reaches the process leaves none behind. A Session that
+/// stays loaded hands the guard to its close, which settles it the same way
+/// whether this process or the runtime's fault supervisor closes it.
+pub(crate) struct ProjectOwnership {
+    directory: Arc<AgentDirectory>,
+    session: String,
+    /// The load that registered this ownership. The guard settles only it: a
+    /// close watcher can reach its close after a later load of the same
+    /// Session registered a new ownership, which this one must leave.
+    load: u64,
+}
+impl ProjectOwnership {
+    /// Ends the ownership once `closed`, the Session's close, completes.
+    /// Callers spawn this, so a close the process did not start releases the
+    /// project's root the same way an explicit settlement does.
+    async fn when_closed(self, closed: BoxFuture<'static, dim_agent_runtime::Result<()>>) {
+        let _ = closed.await;
+    }
+}
+impl Drop for ProjectOwnership {
+    fn drop(&mut self) {
+        self.directory.settle(&self.session, Some(self.load));
+    }
 }
 /// Provides the [`AgentDirectory`] and the `sessions` service. Neither
 /// reloads, so consumers of `sessions` never reload with the index.
@@ -385,6 +529,7 @@ impl Plugin for AgentDirectoryPlugin {
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
         ctx.provide_as::<AgentDirectory>(Arc::new(AgentDirectory {
             inner: Mutex::new(Inner::default()),
+            settings: Mutex::new(Weak::new()),
             finished: AtomicBool::new(false),
             default_agent_id: OnceLock::new(),
             server_instance_id: uuid::Uuid::new_v4().to_string(),
@@ -704,6 +849,7 @@ impl AgentIndex {
             hold.wait().await;
         }
         self.remove_version(id);
+        self.directory.settle(id, None);
         result
     }
     /// Sessions can also close through the runtime fault supervisor.
@@ -975,6 +1121,7 @@ impl AgentIndex {
                 if slot.closing.load(Ordering::Acquire) {
                     return Err(AgentError::Closed(id.into()));
                 }
+                let mut ownership = None;
                 if self.settings.is_some() || expected_cwd.is_some() {
                     let config = self
                         .session_store
@@ -995,11 +1142,12 @@ impl AgentIndex {
                     }
                     if let Some(settings) = &self.settings {
                         settings
-                            .authorize_project(config.cwd.into(), &self.stopping)
+                            .authorize_project(config.cwd.clone().into(), &self.stopping)
                             .await
                             .map_err(|error| {
                                 AgentError::fault("project authorization", error.to_string())
                             })?;
+                        ownership = Some(self.directory.own(id, &host.agent_id, &config.cwd));
                     }
                 }
                 let version = self
@@ -1007,7 +1155,7 @@ impl AgentIndex {
                     .unwrap_or(crate::protocol::PROTOCOL_VERSION);
                 let host = host.clone();
                 let slot = slot.clone();
-                let id = id.to_owned();
+                let restoring = id.to_owned();
                 let ctx = self
                     .ctx
                     .get()
@@ -1017,28 +1165,37 @@ impl AgentIndex {
                     let session = host
                         .agent
                         .restore_session(
-                            id.clone(),
+                            restoring.clone(),
                             RestoreSessionOptions::default().protocol_version(version),
                         )
                         .await?;
                     if slot.closing.load(Ordering::Acquire) {
                         // The close stopped this Session's restoration while
-                        // this restore ran: release what it loaded and refuse
-                        // it.
+                        // this restore ran: release what it loaded and refuse it.
+                        // The ownership guard ends what the load registered.
                         if let Err(error) = session.close().await {
-                            tracing::warn!(%error, session_id = %id, "Restored Session close failed");
+                            tracing::warn!(%error, session_id = %restoring, "Restored Session close failed");
                         }
-                        return Err(AgentError::Closed(id));
+                        return Err(AgentError::Closed(restoring));
                     }
+                    // The Session is loaded: its ownership ends with its close,
+                    // including one this process did not start.
+                    if let Some(ownership) = ownership {
+                        tokio::spawn(ownership.when_closed(session.closed()));
+                    }
+                    // Announcing the load neither adds nor takes ownership away:
+                    // a refused announcement leaves the loaded Session owning
+                    // its project until it closes.
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
-                        session_id: id,
+                        session_id: restoring,
                     })
                     .await?;
                     Ok::<_, AgentError>((session, gate, activity))
                 })
                 .await
-                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))??
+                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))
+                .and_then(|restored| restored)?
             }
             None => return Err(AgentError::Closed(id.into())),
         };
@@ -1090,6 +1247,7 @@ impl AgentIndex {
                     match session.unload_if_idle().await {
                         Ok(true) => {
                             tracing::debug!(session_id = id, "Idle Session unloaded");
+                            self.directory.settle(id, None);
                             continue;
                         }
                         Ok(false) => {}
@@ -1472,37 +1630,50 @@ impl AgentIndex {
         leader: Option<&str>,
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
-    ) -> Option<(String, CreateSessionOptions)> {
+    ) -> Option<(String, CreateSessionOptions, Option<ProjectOwnership>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
         let agent_id = host.agent_id.clone();
         let leader = leader.map(str::to_owned);
-        Some(self.prepared(config.cwd.clone(), move |id| {
-            Box::pin(async move {
-                store
-                    .create_owned_session(
-                        &id,
-                        &stored,
-                        &agent_id,
-                        version,
-                        leader.as_deref(),
-                        origin,
-                        worktree,
-                    )
-                    .await
-            })
-        }))
+        Some(
+            self.prepared(config.cwd.clone(), &host.agent_id, move |id| {
+                Box::pin(async move {
+                    store
+                        .create_owned_session(
+                            &id,
+                            &stored,
+                            &agent_id,
+                            version,
+                            leader.as_deref(),
+                            origin,
+                            worktree,
+                        )
+                        .await
+                })
+            }),
+        )
     }
-    /// A new Session id and the options of its prepared creation: the project
-    /// of `cwd` is authorized, then `step` writes the Session's rows. Creation,
-    /// `launch` and a fork share it (S5c §9).
-    fn prepared<F>(&self, cwd: String, step: F) -> (String, CreateSessionOptions)
+    /// A new Session id, the options for its prepared creation, and the
+    /// ownership guard of the project its `cwd` names: the project is
+    /// authorized, then `step` writes the Session's rows. Creation, `launch`
+    /// and a fork share it (S5c §9). The guard ends the ownership if the load
+    /// fails or is abandoned before the Session reaches the process; a loaded
+    /// Session hands it to its close.
+    fn prepared<F>(
+        &self,
+        cwd: String,
+        agent: &str,
+        step: F,
+    ) -> (String, CreateSessionOptions, Option<ProjectOwnership>)
     where
         F: FnOnce(String) -> BoxFuture<'static, dim_agent_runtime::Result<()>> + Send + 'static,
     {
         let id = uuid::Uuid::new_v4().to_string();
         let settings = self.settings.clone();
         let stopping = self.stopping.clone();
+        let ownership = settings
+            .as_ref()
+            .map(|_| self.directory.own(&id, agent, &cwd));
         let options = CreateSessionOptions::default().prepare(id.clone(), move |id: String| {
             Box::pin(async move {
                 if let Some(settings) = settings {
@@ -1516,7 +1687,7 @@ impl AgentIndex {
                 step(id).await
             })
         });
-        (id, options)
+        (id, options, ownership)
     }
 
     pub(crate) async fn create_with_worktree(
@@ -1592,9 +1763,10 @@ impl AgentIndex {
             .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
-            Some((id, options)) => {
+            Some((id, options, ownership)) => {
                 let creation = host.agent.create_session(config, options);
-                self.admit(&id, &host.agent_id, version, creation).await
+                self.admit(&id, &host.agent_id, version, creation, ownership)
+                    .await
             }
             None => {
                 let session = host
@@ -1611,13 +1783,16 @@ impl AgentIndex {
     /// the rows, which `session.summaries` then shows, until the Session is
     /// published and its protocol version recorded. A delete of the id waits
     /// for the build and closes what it published. A failed creation keeps
-    /// no slot once nothing else holds it.
+    /// no slot once nothing else holds it. `ownership` is the project's guard
+    /// from the load that authorized it: a created Session hands it to its
+    /// close, and a failed one settles it here.
     pub(crate) async fn admit(
         &self,
         id: &str,
         agent_id: &str,
         version: u32,
         creation: impl Future<Output = dim_agent_runtime::Result<Session>>,
+        ownership: Option<ProjectOwnership>,
     ) -> dim_agent_runtime::Result<Session> {
         let _activity = self
             .activity
@@ -1627,10 +1802,16 @@ impl AgentIndex {
         let gate = slot.gate.lock().await;
         let created = creation.await;
         match &created {
-            Ok(_) => self.insert_version(id, agent_id, version),
+            Ok(session) => {
+                self.insert_version(id, agent_id, version);
+                if let Some(ownership) = ownership {
+                    tokio::spawn(ownership.when_closed(session.closed()));
+                }
+            }
             Err(_) => {
                 drop(gate);
                 drop(slot);
+                drop(ownership);
                 self.directory.inner.lock().expect("agent index").sweep();
             }
         }
@@ -1798,6 +1979,7 @@ impl AgentIndex {
                 tracing::error!(%error, session_id = id, "Session cleanup failed before its delete");
             }
         }
+        self.directory.settle(id, None);
         let unloaded = loaded.is_none() && !slot.closed.load(Ordering::Acquire);
         // The delete notice names the Session's owner even when this process
         // never loaded it: `session_owners` still holds the row, and the
@@ -2103,12 +2285,13 @@ impl AgentIndex {
                 .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
         }
         let source = source.to_owned();
-        let (id, options) = self.prepared(config.cwd.clone(), move |fork| {
-            Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
-        });
+        let (id, options, ownership) =
+            self.prepared(config.cwd.clone(), &usage.host.agent_id, move |fork| {
+                Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
+            });
         let creation = usage.host.agent.create_session(config, options);
         let fork = self
-            .admit(&id, &usage.host.agent_id, version, creation)
+            .admit(&id, &usage.host.agent_id, version, creation, ownership)
             .await?;
         self.ctx
             .get()
@@ -2183,6 +2366,7 @@ impl AgentIndex {
             .expect("agent index")
             .closing
             .remove(agent_id);
+        self.directory.settle_agent(agent_id);
         unloaded.map_err(AgentOpError::Unload)?;
         closed.map_err(AgentOpError::Settle)
     }
@@ -2434,6 +2618,7 @@ impl DynPlugin for AgentsPlugin {
             };
             let loader = ctx.require_at(&self.loader)?;
             let directory = ctx.require_at(&self.directory)?;
+            directory.set_settings(settings.as_ref());
             let parts = ctx.require_at(&self.parts)?;
             parts.register(
                 ctx,
@@ -2454,6 +2639,19 @@ impl DynPlugin for AgentsPlugin {
                 move |mount| {
                     Ok(Some(
                         Box::new(crate::session_language::SessionLanguagePlugin::new(
+                            mount.names,
+                            with_store,
+                        )?) as Box<dyn DynPlugin>,
+                    ))
+                },
+            )?;
+            parts.register(
+                ctx,
+                dim_agent_runtime::PartScope::Session,
+                "SessionToolMode",
+                move |mount| {
+                    Ok(Some(
+                        Box::new(crate::session_tool_mode::SessionToolModePlugin::new(
                             mount.names,
                             with_store,
                         )?) as Box<dyn DynPlugin>,
@@ -2618,7 +2816,9 @@ impl Plugin for AgentScopePlugin {
         let agent_id = spec.agent_id.clone();
         ctx.effect(move || async move {
             unloading.forget(&agent_id);
-            owner.agent.close().await.map_err(Into::into)
+            let closed = owner.agent.close().await;
+            unloading.settle_agent(&agent_id);
+            closed.map_err(Into::into)
         })?;
         directory.register(host);
         Ok(())

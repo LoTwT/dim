@@ -523,11 +523,6 @@
     {
       "kind": "session-forwarding",
       "file": "crates/dim-agent-runtime/src/agent.rs",
-      "item": "Session::service_opt"
-    },
-    {
-      "kind": "session-forwarding",
-      "file": "crates/dim-agent-runtime/src/agent.rs",
       "item": "Session::set_default_branch"
     },
     {

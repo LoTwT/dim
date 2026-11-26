@@ -16,6 +16,7 @@ mod prompt;
 mod question;
 pub mod skill_token;
 mod tool;
+mod tool_mode;
 pub mod v1;
 
 pub use activity::*;
@@ -31,6 +32,7 @@ pub use profile::*;
 pub use prompt::*;
 pub use question::*;
 pub use tool::*;
+pub use tool_mode::*;
 
 /// Open JSON object fields at external extension boundaries.
 pub type JsonObject = serde_json::Map<String, serde_json::Value>;
