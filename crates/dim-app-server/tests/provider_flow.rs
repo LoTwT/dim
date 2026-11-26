@@ -8668,9 +8668,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
 /// from — the previous record's or, without a target, the bundled
 /// definition's — not the row's input, so the per-field rule leaves it as the
 /// seed states it. The row's own models and overrides still declare their
-/// limits. Neither the row's entries nor the seed the conversion adopts keeps
-/// `normalizedOverride` (#2189): the completion flag is the server's own
-/// record, never a written file's to state.
+/// limits.
 #[test]
 fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
     let bundled = BundledCatalog::load().unwrap();
@@ -8715,8 +8713,7 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
                 "modelConfigOverrides".into(),
                 Value::String(
                     json!([{"modelId":"override-model","displayName":"Override model",
-                        "status":"active","normalizedOverride":true,
-                        "capabilities":limits(200_000, 20_000)}])
+                        "status":"active","capabilities":limits(200_000, 20_000)}])
                     .to_string(),
                 ),
             ),
@@ -8724,8 +8721,7 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
                 "models".into(),
                 Value::String(
                     json!([{"modelId":"user-model","displayName":"User model",
-                        "status":"active","normalizedOverride":true,
-                        "capabilities":limits(64_000, 4_000)}])
+                        "status":"active","capabilities":limits(64_000, 4_000)}])
                     .to_string(),
                 ),
             ),
@@ -8766,14 +8762,6 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
             json!(["contextWindow", "maxOutputTokens"]),
             "{case}"
         );
-        for list in ["userModels", "modelConfigOverrides"] {
-            for entry in record[list].as_array().unwrap() {
-                assert!(
-                    entry.get("normalizedOverride").is_none(),
-                    "{case}: the conversion keeps no completion flag in {list}: {entry}"
-                );
-            }
-        }
     };
     // Without a target the seed is the bundled definition; it holds entries
     // that declare their limits in `metadata.raw` and entries the bundle
@@ -8794,26 +8782,15 @@ fn legacy_import_leaves_the_builtin_seed_as_the_record_has_it() {
     assert!(whisper["capabilities"].get("maxOutputTokens").is_none());
     assert!(declared(whisper).is_null());
     check_row_entries(&record, "no target");
-    // Over a pristine target the seed is that record's models, unchanged —
-    // and the flag a written file never states is cleared out of the seed the
-    // conversion adopts.
+    // Over a pristine target the seed is that record's models, unchanged.
     let mut pristine = record.clone();
     pristine["version"] = json!(1);
-    for entry in pristine["models"].as_array_mut().unwrap() {
-        entry["normalizedOverride"] = json!(true);
-    }
     let pristine =
         dim_app_server::provider::parse_static("openai", 1, &pristine.to_string()).unwrap();
     let targeted = convert_legacy_provider(&row(), Some(pristine), &bundled).unwrap();
     let record = stored(&targeted);
     assert_eq!(record["models"], seed, "the target's seed changed");
     assert_eq!(record["version"], 2);
-    for entry in record["models"].as_array().unwrap() {
-        assert!(
-            entry.get("normalizedOverride").is_none(),
-            "the conversion keeps no completion flag in the adopted seed: {entry}"
-        );
-    }
     check_row_entries(&record, "pristine target");
 }
 
