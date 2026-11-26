@@ -9828,6 +9828,156 @@ async fn a_v25_seed_upgrades_to_the_fresh_bundle_record() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The premise the upgrade inference relies on (#2189): an override's
+/// difference from the row it cloned reads as the user's edit only because
+/// every write that replaces the rows rebases the clone first. A reseed is
+/// such a write, so it must compare the clone against the rows the record
+/// served, not against the bundle it admits: a record whose rows predate the
+/// vision declaration keeps its pinned limits while the capability the user
+/// never edited follows the reseeding bundle, instead of the bundle's own
+/// change freezing as the user's edit.
+#[tokio::test]
+async fn a_reseed_does_not_pin_the_bundles_own_capability_changes() {
+    let home = std::env::temp_dir().join(format!("provider-reseed-pin-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let cancel = CancellationToken::new();
+    let start = |home: PathBuf| {
+        let root = Ctx::root().unwrap();
+        root.plugin(
+            dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+                .unwrap(),
+        );
+        let plugins = [
+            root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+            root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+            root.plugin(ManagedProvidersPlugin::new(None)),
+            root.plugin(
+                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap(),
+            ),
+            root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+            root.plugin(provider_part(ProviderPlugin::new)),
+            root.plugin(dim_agent_aimux::AimuxPlugin::default()),
+        ];
+        (root, plugins)
+    };
+    let (root, plugins) = start(home.clone());
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let catalog = provider
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let version = catalog.version;
+    // Rewrite the rows to the shape a bundle before the vision declaration
+    // wrote them: the capabilities the current bundle declares for `gpt-5.5`
+    // are exactly what a reseed must not mistake for the user's edits.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        let mut record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+        let row = record["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|model| model["modelId"] == "gpt-5.5")
+            .expect("the bundle lists gpt-5.5");
+        row["capabilities"]["vision"] = json!(false);
+        row["capabilities"]["modalities"] = json!(["text"]);
+        dim_app_server::provider::testing::replace_provider(
+            &db,
+            "openai",
+            version,
+            &record.to_string(),
+        )
+        .unwrap();
+    }
+    // The user edits only the limits, through the same path a client edit
+    // takes, against the rows the record serves now.
+    let edited = provider
+        .update_model_config(
+            "openai".into(),
+            version,
+            "gpt-5.5".into(),
+            serde_json::from_value(json!({"contextWindow":100000,"maxOutputTokens":8192})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let at = edited
+        .models
+        .iter()
+        .position(|model| model.id == "gpt-5.5")
+        .unwrap();
+    assert_eq!(edited.models[at].capabilities.context_window, Some(100000));
+    root.shutdown().await.unwrap();
+    // The upgrade arrives with a bundle whose declaration of the same model
+    // has moved on, so the next start reseeds the record's rows.
+    {
+        let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+        db.execute_batch("DELETE FROM provider_catalog_revision; DELETE FROM provider_bundle")
+            .unwrap();
+        db.execute("UPDATE providers SET record=json_set(record,'$.definitionFingerprint','pre-upgrade-bundle') WHERE provider_id='openai'", []).unwrap();
+    }
+    let (root, plugins) = start(home.clone());
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let reopened = root.get::<ProviderService>().unwrap();
+    let upgraded = reopened
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let at = upgraded
+        .models
+        .iter()
+        .position(|model| model.id == "gpt-5.5")
+        .unwrap();
+    let model = &upgraded.models[at];
+    assert_eq!(
+        model.capabilities.context_window,
+        Some(100000),
+        "the edited limits stay pinned across the reseed"
+    );
+    assert_eq!(model.capabilities.max_output_tokens, Some(8192));
+    assert!(
+        model.capabilities.vision,
+        "the bundle's own vision declaration follows the reseed instead of pinning as the user's edit"
+    );
+    assert_eq!(model.capabilities.modalities, ["text", "image"]);
+    let record: Value = serde_json::from_str(&stored_record_json(&home, "openai")).unwrap();
+    let clone = record["modelConfigOverrides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["modelId"] == "gpt-5.5")
+        .expect("the override survives the reseed");
+    let marks = clone["metadata"]["capabilityOverrideFields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        marks.iter().any(|field| field == "contextWindow"),
+        "the edit's own marks survive: {marks:?}"
+    );
+    for field in ["vision", "toolCalling", "reasoning", "modalityCapabilities"] {
+        assert!(
+            !marks.iter().any(|mark| mark == field),
+            "a capability the user never edited must not pin: {marks:?}"
+        );
+    }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// A recorded protocol that is present but does not parse still rejects a
 /// preference update: the route guard compares the recorded value itself, not
 /// the readable readback. An absent record passes as before.

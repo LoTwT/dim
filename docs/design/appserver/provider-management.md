@@ -582,8 +582,15 @@ declaration follows the refreshed row, so an account that starts declaring
 vision or new reasoning levels serves them without losing the user's limits. A
 clone written before capability edits were marked carries the same edit
 without the mark: where its capability differs from the row it cloned, the
-difference can only be the user's edit, so the first read and the row-writing
-refresh pin it as marked (#2189).
+difference reads as the user's edit, so the first read and the row-writing
+refresh pin it as marked (#2189). That reading holds because every write the
+implementation makes that replaces the rows — a managed refresh, a static
+refresh or connection update, and the reseed an upgrade admits — normalizes
+the overrides against the rows both sides of the replacement before the rows
+move, so the clone never falls behind the row it compares against. A record
+whose rows were last replaced before this normalization existed may carry a
+clone the replaced rows left behind; its differences are pinned the same way,
+because the record cannot tell them from the user's edits.
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain
