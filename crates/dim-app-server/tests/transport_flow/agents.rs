@@ -654,6 +654,13 @@ async fn agent_profile_supplies_session_defaults() {
         )
         .await;
     assert_ok(&pending);
+    let bare = client
+        .rpc(
+            "agent.create",
+            json!({"profile":{"name":"bare","description":""}}),
+        )
+        .await;
+    assert_ok(&bare);
     let duplicated = client
         .rpc(
             "agent.create",
@@ -665,7 +672,7 @@ async fn agent_profile_supplies_session_defaults() {
         "agent_build_failed"
     );
     let listed = client.rpc("agent.list", json!({})).await;
-    assert_eq!(listed["result"].as_array().unwrap().len(), 4);
+    assert_eq!(listed["result"].as_array().unwrap().len(), 5);
 
     server.shutdown();
     server.join().await.unwrap();

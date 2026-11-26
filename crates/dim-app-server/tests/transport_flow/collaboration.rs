@@ -1994,6 +1994,10 @@ async fn leader_delegates_and_team_members_communicate() {
     );
     assert!(validator.is_valid(&json!({"action":"request","prompt":"work","title":"Review change","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
     assert!(
+        validator.is_valid(&json!({"action":"request","prompt":"work","title":"Review change","profile":{"name":"worker","description":""}})),
+        "a profile may omit systemPrompt and tools"
+    );
+    assert!(
         !validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent}))
     );
     for (title, schema_valid) in [

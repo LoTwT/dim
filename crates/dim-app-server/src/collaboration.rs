@@ -3351,9 +3351,9 @@ const LEADER_DESCRIPTION_HEAD: &str = "Work with other agents as a team you lead
 - request: give a task to a new member (agentId or profile) or to one of your members
   (agentId + sessionId). An agentId is copied exactly from list's agents[].agentId; an
   Agent's name, such as \"default\", is not an agentId. A profile creates a temporary
-  Agent. Returns immediately; the member's final result arrives later as an input. One
-  task per member at a time. The user's subagent model policy may override the model a
-  new member's profile requests.
+  Agent; usually omit its tools. Returns immediately; the member's final result arrives
+  later as an input. One task per member at a time. Members cannot delegate. The user's
+  subagent model policy may override the model a new member's profile requests.
 - cancel / close: require agentId + sessionId to stop a member's current task / remove the member from your team. Detached exec Task IDs belong to exec_stop, not agent.
 - message: send information to a team member. Default mode \"append\" adds context the
   receiver sees in its next step without interrupting it. Use mode \"steer\" only when the
@@ -3401,18 +3401,23 @@ fn agent_definition(
     let (actions, description) = match role {
         CollaborationRole::Leader => {
             properties["resultId"] = json!({"type": "string"});
-            properties["prompt"] = json!({"type": "string"});
+            properties["prompt"] = json!({"type": "string",
+                "description": "The task. The member sees this, not your conversation."});
             properties["title"] = json!({"type": "string", "minLength": 1,
                 "description": "Short, nonblank single-line title for this task in the background task list; separate from prompt and the Agent profile name."});
             properties["profile"] = json!({
                 "type": "object",
-                "required": ["name", "description", "systemPrompt", "tools"],
+                "required": ["name", "description"],
                 "additionalProperties": false,
                 "properties": {
-                    "name": {"type": "string"},
-                    "description": {"type": "string"},
-                    "systemPrompt": {"type": "string"},
-                    "tools": {"type": "array", "items": {"type": "string"}},
+                    "name": {"type": "string",
+                        "description": "The name the user knows this Agent by and refers to it with. A person's name that fits the user's language and region works well."},
+                    "description": {"type": "string",
+                        "description": "What this Agent is for, in one short line."},
+                    "systemPrompt": {"type": "string",
+                        "description": "Standing guidance and knowledge the role must keep following. It stays with the Agent for its whole life, so use it only when the role truly needs that; the task itself goes in prompt."},
+                    "tools": {"type": "array", "items": {"type": "string"},
+                        "description": "Optional. Omit to give the member the full tool set. To narrow it, use tool names exactly as they are declared to you."},
                     "model": {"type": "object", "required": ["providerId", "modelId"],
                         "additionalProperties": false,
                         "properties": {"providerId": {"type": "string"}, "modelId": {"type": "string"}}},
