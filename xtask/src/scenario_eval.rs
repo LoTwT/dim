@@ -20511,8 +20511,13 @@ mod tests {
             .await
             .unwrap();
         println!("native probe: {} ms", started.elapsed().as_millis());
+        let expected: Vec<&str> = RUN_TOOLS
+            .iter()
+            .copied()
+            .filter(|name| !NORMAL_HIDDEN.contains(name))
+            .collect();
         let names: Vec<&str> = native.iter().map(|(name, _)| name.as_str()).collect();
-        for tool in RUN_TOOLS {
+        for tool in &expected {
             assert!(
                 names.contains(tool),
                 "the native set declares {tool}: {names:?}"
@@ -20520,8 +20525,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            RUN_TOOLS.len(),
-            "the native set is the run list: {names:?}"
+            expected.len(),
+            "the native set is the run list's normal declarations: {names:?}"
         );
         assert!(
             !names.contains(&PLUGIN_TOOL),
