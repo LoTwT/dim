@@ -48,9 +48,8 @@ mounted. `session.tool_mode.update` replaces the live mode through
 nor the update re-adopts the callable set.
 
 The operator's update writes the record and replaces the live mode; a
-registration is an ordinary source refresh. A turn's pin is the mode recorded
-on the input it started from, and its request declares that mode's visible
-set.
+registration is an ordinary source refresh. A request declares the visible set
+of the live effective mode.
 
 ## Handler contract
 

@@ -13,8 +13,8 @@ pub enum ToolMode {
     /// One program per step: only `codemode` and `skill` are declared, and a
     /// program may call every mounted tool except `codemode`.
     Codemode,
-    /// One persistent shell: only `execute`, `ask_user` and `recall` are
-    /// declared.
+    /// One persistent shell: only `execute`, `ask_user`, `goal_update` and
+    /// `recall` are declared.
     Shell,
 }
 

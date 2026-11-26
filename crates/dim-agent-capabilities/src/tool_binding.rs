@@ -106,7 +106,11 @@ impl ToolBinding {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let (visible, delegated) = project(self.registry.effective_of_mode(mode), tools);
+        let mode = match mode.entry_tool() {
+            Some(entry) if tools.iter().any(|tool| tool.name == entry) => mode,
+            _ => ToolMode::Normal,
+        };
+        let (visible, delegated) = project(mode, tools);
         self.bind_snapshot(request_id, &visible, &delegated, sets)?;
         let mut state = self.state.lock().unwrap();
         if let Some(newest) = state

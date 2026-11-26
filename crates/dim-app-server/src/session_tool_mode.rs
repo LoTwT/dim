@@ -107,6 +107,7 @@ async fn change(
         mode: ToolMode,
     }
     let Params { session_id, mode } = params(input)?;
+    let _gate = tools.lock_mode().await;
     if let Some(store) = store {
         store
             .set_session_tool_mode(&session_id, mode)

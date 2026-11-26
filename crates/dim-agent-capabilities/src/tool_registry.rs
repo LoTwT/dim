@@ -268,6 +268,8 @@ pub struct ToolRegistry {
     /// The operator's chosen mode; the effective one may fall back to
     /// `normal` when its entry tool is not mounted.
     mode: Mutex<ToolMode>,
+    /// Serializes the record write and the live replacement of an update.
+    mode_update: tokio::sync::Mutex<()>,
     session_id: String,
     config: Arc<SessionConfig>,
     /// Serializes refreshes from read to commit, so an earlier read never
@@ -437,6 +439,10 @@ impl ToolRegistry {
             Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
             _ => ToolMode::Normal,
         }
+    }
+    /// Holds the update gate across the record write and the live change.
+    pub async fn lock_mode(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mode_update.lock().await
     }
     /// Replaces the live mode. It does not re-adopt a tool set: the next
     /// request projects the same callable set under the new mode.
@@ -904,7 +910,7 @@ impl HostDispatch for ForeignRegistry {
 
 /// Whether `name` is declared under `mode` (§2): `normal` hides both entry
 /// tools, `codemode` declares only its entry and `skill`, and `shell`
-/// declares only its entry and the two conversation tools.
+/// declares only its entry and the dialogue tools.
 fn visible_under(mode: ToolMode, name: &str) -> bool {
     match mode {
         ToolMode::Normal => !matches!(name, "codemode" | "execute"),
@@ -1022,6 +1028,7 @@ impl DynPlugin for ToolRegistryPlugin {
                 offered: Mutex::default(),
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
+                mode_update: tokio::sync::Mutex::new(()),
                 session_id: identity.session_id.clone(),
                 config: config.clone(),
                 refreshing: Mutex::default(),
@@ -1121,6 +1128,7 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(ToolMode::Normal),
+            mode_update: tokio::sync::Mutex::new(()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),
@@ -1151,6 +1159,7 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(mode),
+            mode_update: tokio::sync::Mutex::new(()),
             session_id: "session".into(),
             config,
             refreshing: Mutex::default(),
@@ -1171,11 +1180,19 @@ mod tests {
 
     #[test]
     fn the_mode_projects_the_callable_set() {
-        let names = ["read", "skill", "ask_user", "recall", "codemode", "execute"];
+        let names = [
+            "read",
+            "skill",
+            "ask_user",
+            "goal_update",
+            "recall",
+            "codemode",
+            "execute",
+        ];
         assert_eq!(
             projected(ToolMode::Normal, &names),
             (
-                vec!["read", "skill", "ask_user", "recall"]
+                vec!["read", "skill", "ask_user", "goal_update", "recall"]
                     .into_iter()
                     .map(String::from)
                     .collect(),
@@ -1189,15 +1206,22 @@ mod tests {
                     .into_iter()
                     .map(String::from)
                     .collect(),
-                vec!["read", "skill", "ask_user", "recall", "execute"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
+                vec![
+                    "read",
+                    "skill",
+                    "ask_user",
+                    "goal_update",
+                    "recall",
+                    "execute"
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
             )
         );
         assert_eq!(
             projected(ToolMode::Shell, &names).0,
-            vec!["ask_user", "recall", "execute"]
+            vec!["ask_user", "goal_update", "recall", "execute"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()

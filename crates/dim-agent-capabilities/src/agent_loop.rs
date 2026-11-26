@@ -74,9 +74,6 @@ struct Turn {
     /// the step deferred still spends one retry budget with the request that
     /// failed.
     deferred: Option<FailureChain>,
-    /// The tool mode recorded when the turn's driving input was applied; every
-    /// request of the turn projects its declarations under it.
-    tool_mode: ToolMode,
 }
 /// An applied input waiting for this Loop to consume it.
 struct Applied {
@@ -84,15 +81,13 @@ struct Applied {
     /// Sequence of its `input/applied`.
     sequence: u64,
     mode: InputMode,
-    tool_mode: ToolMode,
 }
 impl Applied {
-    fn new(event: &AgentEvent, data: &InputAppliedData, tool_mode: ToolMode) -> Self {
+    fn new(event: &AgentEvent, data: &InputAppliedData) -> Self {
         Self {
             id: data.input_id.clone(),
             sequence: event.sequence,
             mode: data.mode.unwrap_or_default(),
-            tool_mode,
         }
     }
 }
@@ -237,14 +232,6 @@ impl AgentLoop {
             return Ok(());
         }
         let id = uuid::Uuid::new_v4().to_string();
-        let tool_mode = self
-            .pending
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|input| input.mode != InputMode::Append)
-            .map(|input| input.tool_mode)
-            .unwrap_or_default();
         *slot = Some(Turn {
             id: id.clone(),
             open: false,
@@ -254,7 +241,6 @@ impl AgentLoop {
             failed: None,
             continued: false,
             deferred: None,
-            tool_mode,
         });
         self.timeline
             .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
@@ -436,13 +422,7 @@ impl AgentLoop {
             .history
             .rendered_context(&self.timeline, through)
             .await?;
-        let tool_mode = self
-            .turn
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|turn| turn.tool_mode)
-            .unwrap_or_else(|| self.binding.effective_mode());
+        let tool_mode = self.binding.effective_mode();
         let Some(request) = configured_request(
             &crate::context_policy::PolicyContext::from_context(context.clone()),
             &history,
@@ -715,11 +695,9 @@ impl AgentLoop {
                         .map_err(|error| AgentError::fault("Loop", error.to_string()))?,
                     QueryValue::Elements { .. } => unreachable!("an applied input mode is scalar"),
                 };
-                let tool_mode = self.binding.effective_mode();
                 pending.push(Applied {
                     id,
                     mode,
-                    tool_mode,
                     sequence: sequence
                         .as_u64()
                         .expect("applied sequences are unsigned integers"),
@@ -966,7 +944,6 @@ impl AgentLoop {
                     failed: Some(CAPABILITY_RELOADING.into()),
                     continued: false,
                     deferred: None,
-                    tool_mode: self.binding.effective_mode(),
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -1226,7 +1203,6 @@ impl AgentLoop {
         request_id: String,
         recovery: Option<ContextPrepareData>,
         chain: Option<FailureChain>,
-        tool_mode: ToolMode,
     ) -> CancellationToken {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
@@ -1234,6 +1210,7 @@ impl AgentLoop {
         let mut through = through;
         self.tasks.spawn(async move {
             let work = AssertUnwindSafe(async {
+                let tool_mode = owner.binding.effective_mode();
                 through = through.max(owner.timeline.sequence());
                 if let Some(mut source) = recovery {
                     owner
@@ -1402,7 +1379,7 @@ impl AgentLoop {
         let mut slot = self.turn.lock().unwrap();
         match &event.kind {
             EventKind::InputApplied(data) => {
-                let input = Applied::new(&event, data, self.binding.effective_mode());
+                let input = Applied::new(&event, data);
                 let drives = input.mode != InputMode::Append;
                 self.pending.lock().unwrap().push(input);
                 match slot.as_mut() {
@@ -1639,7 +1616,6 @@ impl AgentLoop {
                     request.id.clone(),
                     request.source.clone(),
                     request.chain.clone(),
-                    turn.tool_mode,
                 ));
             }
             EventKind::ToolUseStart(data) if request.stage == Stage::Model => {

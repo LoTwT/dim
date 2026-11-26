@@ -1,7 +1,7 @@
 # Agent tool modes: normal, codemode and shell
 
 Status: Draft. Scope: process (mode availability), Session (the mode and the tool surface),
-branch (the mode a turn pins).
+branch (the mode its requests read).
 Issue: [#2135](https://github.com/arcships/dim/issues/2135). Delivery status belongs in the issue.
 
 Today the model has one way to act: one tool call per decision, with every tool declared before the
@@ -121,7 +121,7 @@ may change it behind the operator's back.
 | Situation | Rule | Why |
 | --- | --- | --- |
 | A new Session from a client | starts in the mode the request names, or `normal` when it names none; the client sends the mode it last used | the operator should not re-choose for every Session |
-| A running Session | the operator can switch it at any time; an input applied after the switch uses the new mode, a turn already started or already applied keeps its pin (an in-process budget recovery reuses it; a process restart settles the in-flight request), and a call already admitted finishes | otherwise a change of style means abandoning the conversation |
+| A running Session | the operator can switch it at any time; the next request prepared after the switch uses the new mode, a request already being prepared keeps the mode it read (an in-process budget recovery reuses it; a process restart settles the in-flight request), and a call already admitted finishes | otherwise a change of style means abandoning the conversation |
 | A branch (line) | has no mode of its own; every line of a Session runs the Session's mode | a line is the same agent; a line in another mode would hand the agent tools the operator excluded |
 | A member Session | starts in its creator Session's current mode, and the operator can switch it like any Session | the member is the same agent doing delegated work; the model must not decide how the agent acts |
 | The model | never chooses or changes a mode | it is the operator's choice of capability |
@@ -159,17 +159,13 @@ owns this projection. Three terms:
 - A Code Mode program discovers and calls exactly the `delegated` set: `tools.list` and
   `tools.describe` project it, and `tools.call` admits inside it. `codemode` itself is never
   delegated, so a program cannot nest one.
-- The Loop holds the turn's mode: the live effective mode when the Dispatcher applies the input,
-  at its serial position. The turn — even one deferred for compaction — uses it for every request;
-  a rebuild starts its pending inputs under the effective mode then.
-  ToolBinding pins today. A switch
-  takes effect with the next applied input, not with the next request, and needs no re-adoption:
-  the branch's configuration, the version pins and the source sets stay as they are. A request
-  retried through its own source (an in-process budget recovery) keeps the pin; a process restart
-  settles the in-flight request as the loop already does and does not reissue it; the request that
-  follows a tool result keeps the turn's pin. An applied input keeps its mode: a continuation
-  applied under `normal` finishes under `normal`. A turn that pins `shell` is one whose input was
-  applied after the live value.
+- The Loop reads the live effective mode when it prepares a request. The mode is Session
+  configuration, not a Timeline fact: a switch applies to the next request prepared after it, a
+  request already being prepared keeps the mode it read, and a request after a tool result reads
+  again. No re-adoption is needed: the branch's configuration, the version pins and the source sets
+  stay as they are. A request retried through its own source (an in-process budget recovery) keeps
+  the mode it read; a process restart settles the in-flight request as the loop already does and
+  does not reissue it.
 - A tool that is only delegated never appears in a prompt, a declaration or the usage counter;
   `skill` is in both sets.
 - The mount list and an Agent profile's tool list narrow the surface and never widen it. `normal`
@@ -210,7 +206,7 @@ The mode is live for the Session's lifetime:
 
 ```text
 session.create.toolMode ──▶ SessionConfig.toolMode ──▶ ToolRegistry (live mode)
-                                                          ├─ a turn pins the mode ──▶ visible ──▶ model request, usage
+                                                          ├─ a request reads the live mode ──▶ visible ──▶ model request, usage
                                                           ├─ a top-level call checks `visible` ──▶ admit or refuse
                                                           └─ a child call checks `delegated` ──▶ admit or refuse
                      session.tool_mode.update ──▶ live mode + stored record
@@ -221,9 +217,6 @@ creator later does not change it: the member is its own Session with its own ope
 
 
 ## 6. Shell mode's tool
-
-The product's local-execution profile does not mount the persistent shell today; `execute` exists
-only in the minimal-execution profile, where `ShellTools` takes the Session's single `ToolHost`.
 
 - The product profile mounts `ShellSession` (branch) and the shell tool in every Session, so a
   `shell` or `codemode` Session can use it. `ShellSession` starts no OS process until its first
@@ -261,7 +254,7 @@ are its requirements; the ones marked missing are follow-up work, not part of th
 
 `codemode`:
 
-- Discovery and call (`tools.list`, `tools.describe`, `tools.call`) over the turn's pinned set,
+- Discovery and call (`tools.list`, `tools.describe`, `tools.call`) over the request's set,
   everything except `codemode`. Exists.
 - **Content blocks on return.** A child result can carry image blocks (`read` of an image, an MCP
   result), and they reach the model only if the return path rebuilds them. When the returned value
@@ -354,7 +347,7 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
 - The remaining contracts gain the mode with the implementation, each by its owner:
   `SessionConfig.toolMode` in [session access](contracts/session-access.md), the live mode plus
   projection in [ToolRegistry](../architecture/rust-agent/plugins/ToolRegistry.md), and the turn's
-  mode pin in [Loop](../architecture/rust-agent/plugins/Loop.md).
+  mode read in [Loop](../architecture/rust-agent/plugins/Loop.md).
 - A Session restored from a record that predates this field becomes `normal`, except in the
   minimal-execution profile, whose host sets `shell` on create and restore (§6). A Session that used
   the `codemode` tool therefore loses it on upgrade until the operator selects `codemode`. That is
@@ -377,8 +370,8 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
   `session.question.respond`; its result drives the program and is not duplicated into the model
   context unless the program returns it.
 - Flow: switch a running Session in each direction; an input applied after the switch declares the
-  new visible set, a request after a tool result in the same turn keeps the turn's pin, an
-  in-process budget recovery keeps its pin, a process restart settles the in-flight request without
+  new visible set, a request after a tool result reads the live mode again, an in-process budget
+  recovery keeps the mode it read, a process restart settles the in-flight request without
   reissuing it, and a call already admitted finishes.
 - Flow: a turn whose input is applied but which is deferred for compaction, or recovered after a
   restart, uses the mode recorded at application; a switch after the application does not change
@@ -412,8 +405,8 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
   registry that applies them, not to core infrastructure.
 - §4 rule 5: no batches.
 - §4 rule 6: the visible set is exactly what the request declares; no new context path.
-- §4 rule 7: parts coordinate through the Session configuration, the registry's read and the
-  Session's mode gate (a synchronization primitive, not business state).
+- §4 rule 7: parts coordinate through the Session configuration and the registry's read; the
+  update gate serializes the record write and the live value.
 - §4 rule 8: no infrastructure change; the product profile's tool wiring changes (§6), while
   Timeline, Dispatcher, the event envelope, rutis assembly and the Session facades are untouched.
 - §4 rule 9: the mode is Session configuration, not a Timeline fact, and follows
@@ -425,7 +418,8 @@ reported as in force. `goal_update` is a dialogue tool, so a goal can be complet
   than refusing one.
 - §7.2: no object or resource handle crosses an owner; no new public service, and the mode methods
   join the existing Session method face; the parameters are data. The mode gate is a
-  synchronization primitive, not a service or a value; no new service crosses an owner.
+  update gate is a synchronization primitive, not a service or a value; no new service crosses an
+  owner.
 - [ADR 002](../adr/002-plugin-scope.md) D1: the mode is Session configuration and the pinned mode is
   branch state. D2: no wiring module. D3: ToolRegistry keeps no hard dependency on Code Mode; an
   absent or excluded `codemode` falls back to `normal`. D4: business configuration, read at creation
