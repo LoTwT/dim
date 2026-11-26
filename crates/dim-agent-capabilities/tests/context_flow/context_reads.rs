@@ -5706,3 +5706,243 @@ async fn model_only_reload_hands_off_a_running_preparation_at_its_recovery_cut()
         .unwrap_or_else(|_| panic!("ModelProvider-only {window} handoff timed out"));
     }
 }
+
+struct SchemaSource {
+    sets: std::sync::Mutex<Vec<Arc<dim_agent_capabilities::tool_registry::ToolSourceSet>>>,
+    emitter: Option<(Ctx, rutis::host::InstanceId)>,
+}
+impl PublicService for SchemaSource {}
+impl SchemaSource {
+    fn shared() -> Arc<Self> {
+        Arc::new(Self {
+            sets: std::sync::Mutex::default(),
+            emitter: None,
+        })
+    }
+    fn offered(&self, sets: Vec<Arc<dim_agent_capabilities::tool_registry::ToolSourceSet>>) {
+        let (ctx, session) = self
+            .emitter
+            .as_ref()
+            .expect("offered after the source started");
+        *self.sets.lock().unwrap() = sets;
+        ctx.emit(dim_agent_capabilities::tool_registry::ToolProviderChanged {
+            name: dim_agent_capabilities::tool_registry::tool_provider_changes(*session),
+        })
+        .unwrap();
+    }
+}
+impl dim_agent_capabilities::tool_registry::ToolProvider for SchemaSource {
+    fn sets(&self) -> Vec<Arc<dim_agent_capabilities::tool_registry::ToolSourceSet>> {
+        self.sets.lock().unwrap().clone()
+    }
+}
+
+struct SchemaHandler;
+impl dim_agent_capabilities::tool_registry::ToolHandler for SchemaHandler {
+    fn execute(
+        &self,
+        _: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async { Ok(ToolResult::text("ok")) })
+    }
+}
+
+fn schema_set(
+    version: &str,
+    schema: serde_json::Value,
+) -> Arc<dim_agent_capabilities::tool_registry::ToolSourceSet> {
+    Arc::new(dim_agent_capabilities::tool_registry::ToolSourceSet {
+        key: "schema".into(),
+        version: version.into(),
+        tools: vec![Arc::new(
+            dim_agent_capabilities::tool_registry::ToolContribution {
+                definition: dim_agent_capabilities::tool_registry::definition(
+                    "report",
+                    "Report a result.",
+                    schema,
+                ),
+                handler: Arc::new(SchemaHandler),
+            },
+        )],
+    })
+}
+
+struct SchemaPlugin {
+    session: rutis::host::InstanceId,
+    key: Key<SchemaSource>,
+    tools: Key<dim_agent_capabilities::tool_registry::ToolRegistry>,
+    source: Arc<SchemaSource>,
+}
+impl DynPlugin for SchemaPlugin {
+    fn name(&self) -> &str {
+        "SchemaSource"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.tools.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let tools = ctx.require_at(&self.tools)?;
+            let source = Arc::new(SchemaSource {
+                sets: std::sync::Mutex::new(std::mem::take(&mut *self.source.sets.lock().unwrap())),
+                emitter: Some((ctx.clone(), self.session)),
+            });
+            ctx.provide_at(self.key.clone(), source.clone())?;
+            tools.register_source(ctx, "schema", source)?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+fn add_schema_source(builder: &mut AgentBuilder, source: Arc<SchemaSource>) {
+    names::register::<SchemaSource>(builder.catalog_mut(), Some(SESSION_GROUP));
+    builder.require_feature(
+        Feature::new("SchemaSource").session("SchemaSource", move |names| {
+            Ok(Box::new(SchemaPlugin {
+                session: names.instance(SESSION_GROUP)?,
+                key: names.key()?,
+                tools: names.key()?,
+                source: source.clone(),
+            }))
+        }),
+    );
+}
+
+#[tokio::test]
+async fn usage_reuses_a_warm_request_and_prices_a_changed_tool_schema() {
+    use dim_agent_capabilities::context_preparation::ContextPreparation;
+    use dim_agent_capabilities::tool_registry::ToolSourcesView;
+    let counter = Arc::new(ObservedCounter::default());
+    let source = SchemaSource::shared();
+    source
+        .sets
+        .lock()
+        .unwrap()
+        .push(schema_set("1", serde_json::json!({"type": "object"})));
+    let mut profile = builder_with_usage_resolver(counter.clone());
+    add_schema_source(&mut profile, source.clone());
+    let cell = Arc::new(std::sync::OnceLock::new());
+    let capture = cell.clone();
+    profile.require_feature(Feature::new("test.raw-timeline").branch(
+        "test.raw-timeline",
+        move |names| {
+            Ok(Box::new(super::manual_compaction::RawTimeline::new(
+                names,
+                capture.clone(),
+            )?))
+        },
+    ));
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default(), Default::default())
+        .await
+        .unwrap();
+    let timeline = cell.get().unwrap();
+    timeline
+        .append(
+            EventKind::ContextConfigured(ContextConfiguredData {
+                timeline: "main".into(),
+                revision: "fixture".into(),
+                previous: None,
+                prompt: None,
+                settings: Box::new(ModelConfiguration {
+                    provider_id: "fixture".into(),
+                    model_id: "counter".into(),
+                    capability_snapshot: None,
+                    tools: None,
+                    tool_sources: vec![],
+                    config: None,
+                    metadata: None,
+                }),
+                system: None,
+                system_source: None,
+            })
+            .into(),
+        )
+        .unwrap();
+    let preparation = session.service::<ContextPreparation>("main").unwrap();
+    session
+        .submit("bootstrap request".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let first = preparation.usage(CancellationToken::new()).await.unwrap();
+    let counted = counter.fixed.load(Ordering::SeqCst);
+    let bytes = counter.fixed_value.lock().unwrap().0;
+    assert!(
+        counter
+            .fixed_value
+            .lock()
+            .unwrap()
+            .1
+            .iter()
+            .any(|name| name == "report"),
+        "the request declares the source tool"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            preparation
+                .usage(CancellationToken::new())
+                .await
+                .unwrap()
+                .estimated_input_tokens,
+            first.estimated_input_tokens
+        );
+    }
+    assert_eq!(counter.fixed.load(Ordering::SeqCst), counted);
+    assert_eq!(counter.fixed_value.lock().unwrap().0, bytes);
+    session
+        .session_service::<SchemaSource>()
+        .unwrap()
+        .offered(vec![schema_set(
+            "2",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "flags": {"type": "array", "items": {"type": "string"}},
+                }
+            }),
+        )]);
+    let view = session.session_service::<ToolSourcesView>().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if view
+                .get()
+                .0
+                .get("schema")
+                .and_then(|status| status.adopted.as_deref())
+                == Some("2")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("source v2 visible");
+    session
+        .submit("second".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let after = preparation.usage(CancellationToken::new()).await.unwrap();
+    assert!(
+        after.estimated_input_tokens > first.estimated_input_tokens,
+        "the schema change is priced by the next request"
+    );
+    let changed = counter.fixed_value.lock().unwrap().0;
+    assert!(
+        changed > bytes,
+        "the fixed contribution counts the new schema"
+    );
+    let priced = counter.fixed.load(Ordering::SeqCst);
+    assert!(priced > counted, "the changed schema is counted again");
+    let settled = preparation.usage(CancellationToken::new()).await.unwrap();
+    assert_eq!(settled.estimated_input_tokens, after.estimated_input_tokens);
+    assert_eq!(counter.fixed.load(Ordering::SeqCst), priced);
+    agent.close().await.unwrap();
+}

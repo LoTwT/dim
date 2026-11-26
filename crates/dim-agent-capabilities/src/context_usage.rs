@@ -1044,8 +1044,10 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
-    /// The tools the last model request at or before `through` declared.
-    async fn request_tools(&self, through: u64) -> Result<Option<Vec<ToolDefinition>>> {
+    /// The tools the last model request at or before `through` declared,
+    /// with that request's position: the same request always declares the
+    /// same tools, so the position is their cache identity.
+    async fn request_tools(&self, through: u64) -> Result<Option<(Vec<ToolDefinition>, u64)>> {
         let reply = self
             .timeline
             .query(TimelineQuery {
@@ -1061,7 +1063,7 @@ impl ContextUsage {
                         values: vec![serde_json::json!("model/call")],
                     }),
                     select: QuerySelect::Fields {
-                        fields: vec!["data.request.tools".into()],
+                        fields: vec!["data.request.tools".into(), "position.sequence".into()],
                     },
                     group_by: vec![],
                     pick: None,
@@ -1076,10 +1078,13 @@ impl ContextUsage {
                 }),
             })
             .await?;
-        let Some(value) = (match &reply.result {
+        let Some((value, sequence)) = (match &reply.result {
             QueryOutput::Rows { rows } => {
                 rows.first().and_then(|row| match row.values.as_slice() {
-                    [QueryValue::Value { value }] => Some(value.clone()),
+                    [
+                        QueryValue::Value { value },
+                        QueryValue::Value { value: sequence },
+                    ] => Some((value.clone(), sequence.as_u64()?)),
                     _ => None,
                 })
             }
@@ -1089,7 +1094,8 @@ impl ContextUsage {
         };
         Ok(serde_json::from_value::<Option<Vec<ToolDefinition>>>(value)
             .ok()
-            .flatten())
+            .flatten()
+            .map(|tools| (tools, sequence)))
     }
 
     async fn current_tools(
@@ -1105,12 +1111,15 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let tools = self
-            .request_tools(through)
-            .await?
-            .unwrap_or_else(|| self.registry.visible_definitions());
-        let tools_fingerprint = fingerprint(&tools)?;
-        let versions = format!("{versions}:{tools_fingerprint}");
+        let (tools, identity) = match self.request_tools(through).await? {
+            Some((tools, sequence)) => (tools, format!("request:{sequence}")),
+            None => {
+                let tools = self.registry.visible_definitions();
+                let identity = format!("live:{}", fingerprint(&tools)?);
+                (tools, identity)
+            }
+        };
+        let versions = format!("{versions}:{identity}");
         if let Some(cached) = self
             .dynamic_fixed
             .lock()
@@ -1447,28 +1456,5 @@ impl DynPlugin for ContextUsagePlugin {
             ctx.provide_at(self.usage.clone(), owner)?;
             Ok(Effect::Done)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_tool_fingerprint_covers_the_input_schema() {
-        let plain = crate::tool_registry::definition(
-            "execute",
-            "Run a command.",
-            serde_json::json!({"type": "object"}),
-        );
-        let mut typed = plain.clone();
-        typed.input_schema = serde_json::from_value(serde_json::json!({
-            "type": "object",
-            "properties": {"command": {"type": "string"}},
-        }))
-        .unwrap();
-        let before = fingerprint(&vec![plain]).unwrap();
-        let after = fingerprint(&vec![typed]).unwrap();
-        assert_ne!(before, after, "a schema-only change changes the cache key");
     }
 }
