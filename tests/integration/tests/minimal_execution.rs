@@ -655,7 +655,12 @@ async fn new_persistent_shells_and_environment_refresh_use_current_preferences()
         .await;
     session.idle("main").await.unwrap();
     let events = local_events(&session).await;
-    assert!(text(results(&events).last().unwrap()).contains(&format!("selected={alternate}")));
+    let call_results = results(&events);
+    let selected = text(call_results.last().unwrap());
+    assert!(
+        selected.contains(&format!("selected={alternate}")),
+        "expected selected={alternate}: {selected}"
+    );
     let environment = events
         .iter()
         .rev()
