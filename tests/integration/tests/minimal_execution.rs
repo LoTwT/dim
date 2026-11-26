@@ -956,8 +956,8 @@ async fn stop_background_task() {
 /// Stopping a command that converted to the background returns a terminal and
 /// leaves the shell usable. A shell may abort the wrapper line on the interrupt,
 /// in which case the owner terminates the shell and the command ends as a reset;
-/// a shell that prints the end marker ends it with the interrupted status. Both
-/// are a failed terminal.
+/// a shell that prints the end marker ends it with the interrupted status. For
+/// this command both are a failed terminal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
     let harness = Harness::new(platform(&[]).await).await;

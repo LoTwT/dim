@@ -678,8 +678,9 @@ its record and wake. The terminal decides the wake: `cancelled` stays silent and
 every other status posts the completion notice. A command that started as a
 native process and a persistent shell's background job both end `cancelled`, so
 neither wakes. A shell command is interrupted in its persistent shell; its
-terminal is `failed` (the interrupted command's exit status, or a shell reset
-when the shell had to be terminated), so stopping a shell command does wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+terminal is the interrupted wrapper line's own status, so an interrupted command
+followed by `|| true` ends `completed`, and a line the shell aborts ends with the
+owner's shell reset. A stopped shell command does wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live
 process, so it is the caller's own operation — the `exec` tool and `ShellSession` —
 and is not on the face.
