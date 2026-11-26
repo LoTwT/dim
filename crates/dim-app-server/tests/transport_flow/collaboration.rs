@@ -1889,6 +1889,30 @@ async fn leader_delegates_and_team_members_communicate() {
         EventKind::InputMessage(data) if agent_message(data) == Some("change course")
             && data.mode == Some(dim_agent_types::InputMode::Steer)))
     );
+    let member_inputs: Vec<String> = events(&member_session)
+        .await
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => match data.blocks.as_slice() {
+                [InputBlock::Raw { text, .. }] => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    for framed in [
+        format!(
+            "session=\"{lead}\">\nAgent default, your team leader, assigned you this work:\nhello\n"
+        ),
+        format!(
+            "session=\"{lead}\">\nAgent default, your team leader, sent you this message:\nchange course\n"
+        ),
+    ] {
+        assert!(
+            member_inputs.iter().any(|text| text.contains(&framed)),
+            "{framed:?} in {member_inputs:?}"
+        );
+    }
 
     assert_pairing(&events(&lead_session).await);
     assert_pairing(&events(&member_session).await);

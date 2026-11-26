@@ -3381,7 +3381,9 @@ const LEADER_DESCRIPTION_HEAD: &str = "Work with other agents as a team you lead
   give a task to one of your members (agentId + sessionId).
   An agentId is copied exactly from list's agents[].agentId; an Agent's name, such as
   \"default\", is not an agentId.
-  A profile creates a temporary Agent; usually omit its tools. Returns immediately; the
+  A profile creates a temporary Agent; usually omit its tools. A person's name that fits
+  the user's language and region works well as its name. Give it a systemPrompt only
+  when the role truly needs standing guidance. Returns immediately; the
   member's final result arrives later as an input. One task per member at a time; to
   replace a running task, cancel it and request again. Members cannot delegate. The
   user's subagent model policy may override the model a new member's profile requests.
@@ -3408,8 +3410,8 @@ const MEMBER_DESCRIPTION: &str = "You are a member of a team. You cannot delegat
   receiver sees in its next step without interrupting it, and waits while it is idle.
 - read: view a team member's recent activity, more pages by passing nextCursor as after
   together with the branchId the page reported. list: show your team.
-When you stop, your last reply is the result the leader receives; do not send it as a
-message.";
+When you finish a task, your last reply is the result the leader receives; do not send it
+as a message.";
 
 fn agent_definition(
     role: CollaborationRole,
@@ -3442,11 +3444,11 @@ fn agent_definition(
                 "additionalProperties": false,
                 "properties": {
                     "name": {"type": "string",
-                        "description": "The name the user knows this Agent by and refers to it with. A person's name that fits the user's language and region works well."},
+                        "description": "The name the user knows this Agent by and refers to it with."},
                     "description": {"type": "string",
                         "description": "What this Agent is for, in one short line."},
                     "systemPrompt": {"type": "string",
-                        "description": "Standing guidance and knowledge the role must keep following. It stays with the Agent for its whole life, so use it only when the role truly needs that; the task itself goes in prompt."},
+                        "description": "Standing guidance and knowledge the role must keep following. It stays with the Agent for its whole life; the task itself goes in prompt."},
                     "tools": {"type": "array", "items": {"type": "string"},
                         "description": "Optional. Omit to give the member the full tool set. To narrow it, use tool names exactly as they are declared to you."},
                     "model": {"type": "object", "required": ["providerId", "modelId"],

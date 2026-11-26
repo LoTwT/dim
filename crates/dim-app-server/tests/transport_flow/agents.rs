@@ -661,6 +661,21 @@ async fn agent_profile_supplies_session_defaults() {
         )
         .await;
     assert_ok(&bare);
+    turn(
+        &mut client,
+        json!({"cwd":cwd,"agentId":bare["result"]["agentId"]}),
+    )
+    .await;
+    let (system, declared, _) = model.last();
+    assert!(
+        declared.len() > tools.len() && tools.iter().all(|tool| declared.contains(tool)),
+        "a profile without tools declares the full set, not the default mount list: {declared:?}"
+    );
+    let system = system.as_str().expect("the request's system text");
+    assert!(
+        system.starts_with("# How to read your input"),
+        "a profile without systemPrompt adds no role prompt: {system:?}"
+    );
     let duplicated = client
         .rpc(
             "agent.create",
