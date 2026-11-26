@@ -203,10 +203,9 @@ async fn run_child(
     Ok(result)
 }
 impl ToolExecutor {
-    /// The declarations the request pinned, for a program that may only see
-    /// the tools its own request declared.
+    /// The declarations the request delegated to a Code Mode program.
     pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
-        self.binding.definitions(request_id)
+        self.binding.delegated_definitions(request_id)
     }
     /// Opens the child-call gate for the current top-level batch. A gate
     /// exists only while its context matches the current batch; a closed or
@@ -691,6 +690,10 @@ async fn admit(
     context: &ToolExecutionContext,
     cancel: CancellationToken,
 ) -> Result<Admitted, HostError> {
+    let child = dim_agent_runtime::core::current_parent_call_id().is_some();
+    binding
+        .admit(&context.request_id, &call.name, child)
+        .map_err(HostError::failed)?;
     let tool = match binding.handler(&context.request_id, &call.name) {
         Ok(tool) => tool,
         // An unknown tool is denied here, without an approval question.

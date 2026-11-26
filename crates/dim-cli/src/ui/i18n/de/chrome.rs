@@ -911,6 +911,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "{field}: {error}" => "{field}: {error}",
         "Prompts: {error}" => "Prompts: {error}",
+        "Tools" => "Werkzeuge",
+        "Tool mode" => "Werkzeugmodus",
+        "Normal" => "Normal",
+        "Code Mode" => "Code-Modus",
+        "Shell" => "Shell",
         _ => return None,
     })
 }

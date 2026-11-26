@@ -8,9 +8,9 @@ import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
 import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
 import { readUploadedImage } from "../rpc/read"
-import { ROOT_BRANCH_ID, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type PermissionState, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { ROOT_BRANCH_ID, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type PermissionState, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type ToolMode, type ToolModeState, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
-import { ProtocolError, readAdoptedConfiguration, type AdoptedConfiguration, readAttached, readBranches, readBranchDetail, readDefaultBranch, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readSessionSkills, readWithdrawResult } from "../rpc/read"
+import { ProtocolError, readAdoptedConfiguration, type AdoptedConfiguration, readAttached, readBranches, readBranchDetail, readDefaultBranch, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readToolModeState, readSessionSkills, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
 import { useSessionsStore } from "./sessions"
 import { useUiStore } from "./ui"
@@ -60,6 +60,8 @@ export type SessionView = {
   permission: PermissionPolicy | undefined
   /** The version `permission` was published at: the line's last `permission/changed`, so a read that left earlier is stale. */
   permissionVersion: number | undefined
+  /** This Session's tool mode: the chosen one and the one in force. */
+  toolMode: ToolModeState | undefined
   /** The default branch's current goal from its owner. */
   goal: Goal | undefined
   /** Messages queued on the default branch while it runs, oldest first. */
@@ -183,6 +185,7 @@ export const useChatStore = defineStore("chat", () => {
       methods: [],
       permission: undefined,
       permissionVersion: undefined,
+      toolMode: undefined,
       goal: undefined,
       queued: [],
       model: stored?.model,
@@ -1269,6 +1272,22 @@ export const useChatStore = defineStore("chat", () => {
     return client().call("session.input.withdraw", { sessionId, branchId, inputId, ...(steer === undefined ? {} : { steer }) }, readWithdrawResult)
   }
 
+  /** Reads the Session's tool mode, or leaves it unset when the daemon serves no mode methods. */
+  async function loadToolMode(sessionId: string): Promise<void> {
+    if (!useConnectionStore().supports("session.tool_mode")) return
+    const state = await client().call("session.tool_mode.get", { sessionId }, readToolModeState).catch(() => undefined)
+    const view = views[sessionId]
+    if (state !== undefined && view !== undefined) view.toolMode = state
+  }
+
+  /** Changes the Session's tool mode and shows the mode that comes into force. */
+  async function setToolMode(sessionId: string, mode: ToolMode): Promise<ToolModeState | undefined> {
+    const state = await client().call("session.tool_mode.update", { sessionId, mode }, readToolModeState)
+    const view = views[sessionId]
+    if (view !== undefined) view.toolMode = state
+    return state
+  }
+
   /** The named line's policy and version, or undefined when the Session serves no permission method or the read fails. */
   async function sessionPermission(sessionId: string, branchId = defaultBranch(sessionId)): Promise<PermissionState | undefined> {
     if (!useConnectionStore().supports("session.permission.get")) return undefined
@@ -1347,5 +1366,5 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, retryCentre, submit, stop, createLine, endLine, setDefaultBranch, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, withdrawInput, searchFiles, sessionSkills, memberApproval, setModel }
+  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, retryCentre, submit, stop, createLine, endLine, setDefaultBranch, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, loadToolMode, setToolMode, withdrawInput, searchFiles, sessionSkills, memberApproval, setModel }
 })

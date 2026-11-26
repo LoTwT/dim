@@ -26,9 +26,30 @@ with the flow test that asserts it.
 | Service | Purpose |
 | --- | --- |
 | `S:ToolHost` | Host definitions and execution handlers. |
-| `S:SessionConfig` | The mount list (`tools`): which host and registered tools are declared, and in which order. |
+| `S:SessionConfig` | The mount list (`tools`): which host and registered tools are declared, and in which order; the Session's `tool_mode`, the chosen working style. |
 | `S:SessionIdentity` | Supply the owning Session id in a foreign tool's neutral call and the `tool.attach` span. |
 | `S:SessionLifecycle` | `activated()` starts the background refresh task once the Session is published; `closing()` ends it. |
+
+## Tool modes
+
+The registry holds the Session's chosen `ToolMode` (initialised from
+`SessionConfig.tool_mode`) and projects its callable set under the mode in
+force ([agent tool modes](../../../design/agent-tool-modes.md)):
+
+| Mode | Visible (a request's declarations) | Delegated (a Code Mode child) |
+| --- | --- | --- |
+| `normal` | every mounted tool except `codemode` and `execute` | none |
+| `codemode` | `codemode` and `skill` | every mounted tool except `codemode` |
+| `shell` | `execute`, `ask_user`, `goal_update` and `recall` | none |
+
+`effective_tool_mode` falls back to `normal` when the mode's entry tool is not
+mounted. `session.tool_mode.update` replaces the live mode through
+`set_tool_mode`; the next input application pins it, and neither the projection
+nor the update re-adopts the callable set.
+
+The operator's update writes the record and replaces the live mode; a
+registration is an ordinary source refresh. A request declares the visible set
+of the live effective mode.
 
 ## Handler contract
 

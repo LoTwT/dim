@@ -1271,6 +1271,9 @@ struct App {
     /// it back into the draft.
     unsent: Option<Initial>,
     permission_policy: Option<dim_agent_types::PermissionPolicy>,
+    tool_mode: String,
+    tool_mode_effective: String,
+    tool_mode_available: Vec<String>,
     /// The main branch's context use.
     context: Option<ContextReading>,
     /// The first attempt tag of the next `/login` panel, so a closed panel's
@@ -1722,6 +1725,9 @@ impl App {
             initial: None,
             unsent: None,
             send_now: None,
+            tool_mode: "normal".into(),
+            tool_mode_effective: "normal".into(),
+            tool_mode_available: vec!["normal".into()],
             permission_policy: Some(dim_agent_types::PermissionPolicy {
                 preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
                 ..Default::default()
@@ -2187,6 +2193,9 @@ impl App {
             panel.set_policy(None);
         }
         self.permission_policy = None;
+        self.tool_mode = "normal".into();
+        self.tool_mode_effective = "normal".into();
+        self.tool_mode_available = vec!["normal".into()];
         if let Some(Prompt::Settings(panel)) = &self.prompt {
             self.open_settings(panel.selected());
         }
@@ -2806,6 +2815,29 @@ impl App {
                 }
             },
             Update::PermissionsUnknown => self.show_permission_unknown(),
+            Update::ToolMode {
+                mode,
+                effective,
+                available,
+                saved,
+            } => {
+                self.tool_mode = mode.clone();
+                self.tool_mode_effective = effective.clone();
+                self.tool_mode_available = available;
+                if saved
+                    && let Some(error) =
+                        crate::ui::config::write(&self.home, "tool_mode", mode.clone().into())
+                {
+                    self.notices.push(error);
+                }
+                if let Some(Prompt::Settings(panel)) = &mut self.prompt {
+                    panel.set_tool_mode(&tool_mode_row(
+                        &mode,
+                        &effective,
+                        &self.tool_mode_available,
+                    ));
+                }
+            }
             Update::PermissionSelected(preset) => {
                 let label = format!("Permission: {}", crate::permission::name(preset));
                 let message = crate::ui::config::write(
@@ -5146,6 +5178,7 @@ impl App {
                     self.host.send(Command::ReadSuggestionSetting);
                 }
                 self.host.send(Command::ReadPromptSettings);
+                self.host.send(Command::ReadToolMode);
                 self.open_settings(Setting::Theme);
             }
             (Some("recording"), None, None) => {
@@ -5188,6 +5221,11 @@ impl App {
                 .as_ref()
                 .map(|setting| setting.document.enabled),
             prompts: self.prompt_origins(),
+            tool_mode: tool_mode_row(
+                &self.tool_mode,
+                &self.tool_mode_effective,
+                &self.tool_mode_available,
+            ),
             permission: self.permission_policy.as_ref().map_or_else(
                 || "Unavailable".to_owned(),
                 |policy| crate::permission::name(policy.preset).to_owned(),
@@ -5225,6 +5263,17 @@ impl App {
             Setting::Permission => {
                 let panel = ApprovalsPanel::new(self.permission_policy.as_ref());
                 self.open_prompt(Prompt::Approvals(panel));
+            }
+            Setting::ToolMode => {
+                if !self.session_id.is_empty() {
+                    let next = next_tool_mode(&self.tool_mode);
+                    self.tool_mode = next.to_owned();
+                    self.host.send(Command::SetToolMode {
+                        mode: next.to_owned(),
+                    });
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
             }
             Setting::Isolation => {
                 let panel = crate::ui::isolation_panel::IsolationPanel::new();
@@ -9814,6 +9863,34 @@ fn saved_tool_detail(home: &std::path::Path) -> Detail {
 /// keyboard; it uses the ordinary frame path instead of rewriting scrollback.
 fn termux_height_only(previous_columns: u16, size: (u16, u16), termux: bool) -> bool {
     termux && size.0 == previous_columns
+}
+
+fn next_tool_mode(mode: &str) -> &'static str {
+    match mode {
+        "normal" => "codemode",
+        "codemode" => "shell",
+        _ => "normal",
+    }
+}
+
+fn tool_mode_row(chosen: &str, effective: &str, available: &[String]) -> String {
+    let unavailable = effective != chosen && !available.iter().any(|mode| mode.as_str() == chosen);
+    let chosen = tool_mode_label(chosen);
+    let effective = tool_mode_label(effective);
+    match (unavailable, chosen == effective) {
+        (true, _) => format!("{chosen} (unavailable) → {effective}"),
+        (false, true) => chosen,
+        (false, false) => format!("{chosen} → {effective}"),
+    }
+}
+
+fn tool_mode_label(mode: &str) -> String {
+    t(match mode {
+        "codemode" => "Code Mode",
+        "shell" => "Shell",
+        _ => "Normal",
+    })
+    .to_owned()
 }
 
 #[cfg(test)]
@@ -14602,6 +14679,7 @@ mod tests {
             app.run_command(command, "");
             if command == "settings" {
                 app.handle_input(key(KeyCode::End));
+                app.handle_input(key(KeyCode::Up));
                 if via_permissions {
                     app.handle_input(key(KeyCode::Up));
                 }

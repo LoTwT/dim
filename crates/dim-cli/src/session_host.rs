@@ -168,6 +168,12 @@ impl SessionPort for SessionHost {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ToolModeState {
+    mode: String,
+    effective: String,
+}
+
 impl SessionHost {
     /// Runs the session on `client`, the connection the composition root
     /// took from the client tree, composing management text in `language`,
@@ -728,6 +734,39 @@ struct CancelNotice {
 }
 
 impl Worker {
+    fn tool_modes(&self) -> Vec<String> {
+        let mut modes = vec!["normal".to_owned()];
+        if self.client.supports(&["session.tool_mode.codemode"]) {
+            modes.push("codemode".to_owned());
+        }
+        if self.client.supports(&["session.tool_mode.shell"]) {
+            modes.push("shell".to_owned());
+        }
+        modes
+    }
+
+    async fn read_tool_mode(&mut self) {
+        if self.session_id.is_empty() || !self.client.supports(&["session.tool_mode"]) {
+            return;
+        }
+        let params = json!({"sessionId": self.session_id});
+        match self
+            .client
+            .typed::<ToolModeState>("session.tool_mode.get", params)
+            .await
+        {
+            Ok(state) => self.send(Update::ToolMode {
+                mode: state.mode,
+                effective: state.effective,
+                available: self.tool_modes(),
+                saved: false,
+            }),
+            Err(error) => self.send(Update::Notice(format!("tool mode: {error}"))),
+        }
+    }
+}
+
+impl Worker {
     fn new(
         options: Options,
         client: Client,
@@ -876,6 +915,8 @@ impl Worker {
             object.remove("permissionPolicy");
             // Creation-only member: `session.model.preview` denies it.
             object.remove("worktree");
+            // Creation-only member: `session.model.preview` denies it.
+            object.remove("toolMode");
             self.client.typed("session.model.preview", params).await
         })
         .await??;
@@ -900,6 +941,7 @@ impl Worker {
             session_create_from_options(&mut self.client, &self.options).await?
         } else {
             let mut params = session_create_params(&self.options);
+            crate::add_creation_tool_mode(&self.client, &self.options, &mut params);
             // `session_create_params` contacts no daemon, so the member
             // `--worktree` asks for is added here; the initial path adds it
             // in `session_create_from_options`.
@@ -2008,6 +2050,28 @@ impl Worker {
             }
             Command::QueryModels { query, after } => {
                 self.send_models(query, after, 1).await;
+            }
+            Command::ReadToolMode => self.read_tool_mode().await,
+            Command::SetToolMode { mode } => {
+                if !self.session_id.is_empty() && self.client.supports(&["session.tool_mode"]) {
+                    let params = json!({"sessionId": self.session_id, "mode": mode});
+                    match self
+                        .client
+                        .typed::<ToolModeState>("session.tool_mode.update", params)
+                        .await
+                    {
+                        Ok(state) => self.send(Update::ToolMode {
+                            mode: state.mode,
+                            effective: state.effective,
+                            available: self.tool_modes(),
+                            saved: true,
+                        }),
+                        Err(error) => {
+                            self.send(Update::Notice(format!("tool mode: {error}")));
+                            self.read_tool_mode().await;
+                        }
+                    }
+                }
             }
             Command::ReadIsolation => {
                 if !self.client.supports(&["settings.read", "settings.update"]) {

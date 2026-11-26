@@ -167,7 +167,7 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
     let created = client
         .rpc(
             "session.create",
-            json!({"cwd":std::env::temp_dir(),"tools":["codemode","echo"]}),
+            json!({"cwd":std::env::temp_dir(),"tools":["codemode","echo"],"toolMode":"codemode"}),
         )
         .await;
     assert_ok(&created);
@@ -263,6 +263,65 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
         usage["result"]["estimatedInputTokens"].as_f64().unwrap(),
         expected,
         "numeric usage matches the actual model request, excluding child execution facts"
+    );
+
+    let updated = client
+        .rpc(
+            "session.tool_mode.update",
+            json!({"sessionId":session,"mode":"normal"}),
+        )
+        .await;
+    assert_ok(&updated);
+    assert_eq!(updated["result"]["effective"], "normal", "{updated}");
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":session,"branchId":"main","text":"plain"}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "session.idle",
+                json!({"sessionId":session,"branchId":"main"}),
+            )
+            .await,
+    );
+    let mut request = model.0.lock().unwrap().as_ref().unwrap().as_ref().clone();
+    let names: Vec<_> = request
+        .tools
+        .as_ref()
+        .expect("the normal request declares tools")
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    assert_eq!(names, ["echo"], "the switch declares only normal's tools");
+    let usage = client
+        .rpc(
+            "session.context.usage",
+            json!({"sessionId":session,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&usage);
+    let context = dim_agent_capabilities::history::HistoryRenderer::default()
+        .context_in(
+            &loaded,
+            "main",
+            usage["result"]["through"].as_u64().unwrap(),
+        )
+        .await
+        .unwrap();
+    request.messages = dim_agent_capabilities::history::context_messages(
+        &context,
+        &dim_agent_capabilities::history::project_context_history(&context).unwrap(),
+    );
+    let expected = window_facts(1_000_000, 64., &request).count_tokens(&request);
+    assert_eq!(
+        usage["result"]["estimatedInputTokens"].as_f64().unwrap(),
+        expected,
+        "a mode-only change reprices the visible declarations"
     );
     server.shutdown();
     server.join().await.unwrap();

@@ -10,7 +10,7 @@ use crate::{
     context_preparation::ToolSetAdoption,
     host::{ModelSettings, ToolExecutionContext},
     prompt::{Prompt, ToolAdoptOutcome},
-    tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet},
+    tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet, project},
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput,
@@ -22,7 +22,7 @@ use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -30,6 +30,10 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 struct Snapshot {
     tools: HashMap<String, Arc<ToolContribution>>,
+    /// The request's declarations: top-level calls may name only these.
+    visible: HashSet<String>,
+    /// The names a Code Mode child may call; empty outside `codemode`.
+    delegated: HashSet<String>,
     /// Keeps the versions this request declared alive until it is released.
     _sets: Vec<Arc<ToolSourceSet>>,
     /// What the request's handlers claimed before their batch was published,
@@ -74,6 +78,11 @@ fn current(registry: &ToolRegistry) -> (ToolSetAdoption, Vec<Arc<ToolSourceSet>>
 }
 
 impl ToolBinding {
+    /// The mode in force for a step with no open turn.
+    pub fn effective_mode(&self) -> ToolMode {
+        self.registry.effective_tool_mode_now()
+    }
+
     /// Fixes the handlers of `request_id` to the tools its prefix (through
     /// `through`) adopted, then releases the pins no later prefix declares.
     pub fn bind(
@@ -82,7 +91,8 @@ impl ToolBinding {
         through: u64,
         tools: &[ToolDefinition],
         tool_sources: &[ToolSourceVersion],
-    ) -> Result<(), String> {
+        mode: ToolMode,
+    ) -> Result<Vec<ToolDefinition>, String> {
         let sets = tool_sources
             .iter()
             .map(|source| {
@@ -96,19 +106,13 @@ impl ToolBinding {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut bound = HashMap::new();
-        for tool in tools {
-            let handler = sets
-                .iter()
-                .flat_map(|set| set.tools.iter())
-                .find(|candidate| candidate.definition.name == tool.name)
-                .cloned()
-                .or_else(|| self.registry.fixed(&tool.name))
-                .ok_or_else(|| format!("tool {} has no handler", tool.name))?;
-            bound.insert(tool.name.clone(), handler);
-        }
+        let mode = match mode.entry_tool() {
+            Some(entry) if tools.iter().any(|tool| tool.name == entry) => mode,
+            _ => ToolMode::Normal,
+        };
+        let (visible, delegated) = project(mode, tools);
+        self.bind_snapshot(request_id, &visible, &delegated, sets)?;
         let mut state = self.state.lock().unwrap();
-        register(&mut state, request_id, bound, sets)?;
         if let Some(newest) = state
             .pins
             .iter()
@@ -118,7 +122,7 @@ impl ToolBinding {
         {
             state.pins.retain(|(sequence, _)| *sequence >= newest);
         }
-        Ok(())
+        Ok(visible)
     }
 
     /// Binds a request whose configuration declares no tool part: declares
@@ -127,38 +131,40 @@ impl ToolBinding {
     pub fn bind_current(
         &self,
         request_id: &str,
+        mode: ToolMode,
         declared: Option<&[ToolDefinition]>,
     ) -> Result<Vec<ToolDefinition>, String> {
         let (definitions, sets) = self.registry.snapshot();
         let tools = declared.unwrap_or(&definitions);
-        self.bind_snapshot(request_id, tools, sets)?;
-        Ok(tools.to_vec())
+        let (visible, delegated) = project(self.registry.effective_of_mode(mode), tools);
+        self.bind_snapshot(request_id, &visible, &delegated, sets)?;
+        Ok(visible)
     }
 
     pub(crate) fn prepare(
         &self,
         request_id: &str,
+        mode: ToolMode,
         prepare: impl FnOnce(&[ToolDefinition]) -> dim_agent_runtime::Result<ModelSettings>,
     ) -> dim_agent_runtime::Result<ModelSettings> {
         let (definitions, sets) = self.registry.snapshot();
-        let settings = prepare(&definitions)?;
-        self.bind_snapshot(
-            request_id,
-            settings.tools.as_deref().unwrap_or_default(),
-            sets,
-        )
-        .map_err(AgentError::InvalidInput)?;
+        let (available, delegated) = project(mode, &definitions);
+        let settings = prepare(&available)?;
+        let visible = settings.tools.as_deref().unwrap_or_default();
+        self.bind_snapshot(request_id, visible, &delegated, sets)
+            .map_err(AgentError::InvalidInput)?;
         Ok(settings)
     }
 
     fn bind_snapshot(
         &self,
         request_id: &str,
-        tools: &[ToolDefinition],
+        visible: &[ToolDefinition],
+        delegated: &[ToolDefinition],
         sets: Vec<Arc<ToolSourceSet>>,
     ) -> Result<(), String> {
         let mut bound = HashMap::new();
-        for tool in tools {
+        for tool in visible.iter().chain(delegated.iter()) {
             let handler = self
                 .registry
                 .fixed(&tool.name)
@@ -172,7 +178,8 @@ impl ToolBinding {
                 .ok_or_else(|| format!("tool {} has no handler", tool.name))?;
             bound.insert(tool.name.clone(), handler);
         }
-        register(&mut self.state.lock().unwrap(), request_id, bound, sets)
+        let mut state = self.state.lock().unwrap();
+        register(&mut state, request_id, bound, sets, visible, delegated)
     }
 
     /// The tool a call of `request_id` runs: its definition (for admission)
@@ -190,9 +197,24 @@ impl ToolBinding {
             .ok_or_else(|| format!("Unknown tool: {name}"))
     }
 
-    /// Every declaration the request pinned, sorted by name, from the
+    /// Every visible declaration the request pinned, sorted by name, from the
     /// request's snapshot only.
     pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
+        self.definitions_where(request_id, |snapshot, name| snapshot.visible.contains(name))
+    }
+
+    /// Every delegated declaration the request pinned, sorted by name.
+    pub fn delegated_definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
+        self.definitions_where(request_id, |snapshot, name| {
+            snapshot.delegated.contains(name)
+        })
+    }
+
+    fn definitions_where(
+        &self,
+        request_id: &str,
+        include: impl Fn(&Snapshot, &str) -> bool,
+    ) -> Result<Vec<ToolDefinition>, String> {
         let state = self.state.lock().unwrap();
         let snapshot = state
             .snapshots
@@ -201,10 +223,31 @@ impl ToolBinding {
         let mut definitions = snapshot
             .tools
             .values()
+            .filter(|tool| include(snapshot, &tool.definition.name))
             .map(|tool| tool.definition.clone())
             .collect::<Vec<_>>();
         definitions.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(definitions)
+    }
+
+    /// Whether a call may name `name`: a top-level call only inside the
+    /// request's visible set, a Code Mode child only inside its delegated set.
+    pub fn admit(&self, request_id: &str, name: &str, child: bool) -> Result<(), String> {
+        let state = self.state.lock().unwrap();
+        let snapshot = state
+            .snapshots
+            .get(request_id)
+            .ok_or_else(|| format!("request {request_id} has no active tool binding"))?;
+        let allowed = if child {
+            &snapshot.delegated
+        } else {
+            &snapshot.visible
+        };
+        if allowed.contains(name) {
+            Ok(())
+        } else {
+            Err(format!("Unknown tool: {name}"))
+        }
     }
 
     /// Moves a request's snapshot to its budget recovery request.
@@ -246,6 +289,9 @@ impl ToolBinding {
         let claims: Vec<_> = calls
             .iter()
             .filter_map(|call| {
+                if !snapshot.visible.contains(&call.name) {
+                    return None;
+                }
                 let tool = snapshot.tools.get(&call.name)?;
                 Some((call.id.clone(), tool.handler.claim(call, context)?))
             })
@@ -383,6 +429,8 @@ fn register(
     request_id: &str,
     tools: HashMap<String, Arc<ToolContribution>>,
     sets: Vec<Arc<ToolSourceSet>>,
+    visible: &[ToolDefinition],
+    delegated: &[ToolDefinition],
 ) -> Result<(), String> {
     if state.snapshots.contains_key(request_id) {
         return Err(format!("request {request_id} is already bound"));
@@ -391,6 +439,8 @@ fn register(
         request_id.to_owned(),
         Snapshot {
             tools,
+            visible: visible.iter().map(|tool| tool.name.clone()).collect(),
+            delegated: delegated.iter().map(|tool| tool.name.clone()).collect(),
             _sets: sets,
             claims: HashMap::new(),
         },

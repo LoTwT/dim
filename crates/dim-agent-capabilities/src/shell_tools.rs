@@ -4,10 +4,11 @@
 //! dispatches execution.
 
 use crate::{
-    host::{ToolDriver, ToolExecutionContext, ToolHost},
+    host::{HostError, HostFuture, ToolExecutionContext},
     host_platform::{HostPlatform, ISOLATION_SUMMARY},
     shell_session::{CallContext, ShellSession},
     timeline_tree::TreeCommands,
+    tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
 use dim_agent_types::{ToolCall, ToolResult};
@@ -43,33 +44,26 @@ fn execute_definition(platform: &HostPlatform) -> dim_agent_types::ToolDefinitio
     )
 }
 
-/// The tool driver.
-struct ShellToolsDriver {
-    platform: Arc<HostPlatform>,
+/// The `execute` handler.
+struct ShellTool {
     tree: Arc<TreeCommands>,
 }
 
-impl ToolDriver for ShellToolsDriver {
-    fn definitions(&self) -> Vec<dim_agent_types::ToolDefinition> {
-        let mut definition = execute_definition(&self.platform);
-        definition.risk = Some("execute_process".into());
-        vec![definition]
-    }
-
+impl ToolHandler for ShellTool {
     fn execute(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: tokio_util::sync::CancellationToken,
-    ) -> crate::host::HostFuture<'_, ToolResult> {
+    ) -> HostFuture<'_, ToolResult> {
         let tree = self.tree.clone();
         Box::pin(async move {
             let branch = tree
                 .get(&context.branch_id)
-                .map_err(|e| crate::host::HostError::failed(e.to_string()))?;
+                .map_err(|e| HostError::failed(e.to_string()))?;
             let session = branch
                 .service::<ShellSession>()
-                .map_err(|e| crate::host::HostError::failed(e.to_string()))?;
+                .map_err(|e| HostError::failed(e.to_string()))?;
             let input = call.input;
             let command = input
                 .get("command")
@@ -92,7 +86,7 @@ impl ToolDriver for ShellToolsDriver {
             session
                 .run(command, call_context, timeout_ms, run_in_background, cancel)
                 .await
-                .map_err(|e| crate::host::HostError::failed(e.to_string()))
+                .map_err(|e| HostError::failed(e.to_string()))
         })
     }
 }
@@ -108,7 +102,7 @@ pub fn install(builder: &mut AgentBuilder) {
 
 /// The plugin.
 pub struct ShellToolsPlugin {
-    host: Key<ToolHost>,
+    tools: Key<ToolRegistry>,
     platform: Key<HostPlatform>,
     tree: Key<TreeCommands>,
 }
@@ -116,7 +110,7 @@ pub struct ShellToolsPlugin {
 impl ShellToolsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            host: names.key()?,
+            tools: names.key()?,
             platform: names.key()?,
             tree: names.key()?,
         })
@@ -128,14 +122,22 @@ impl DynPlugin for ShellToolsPlugin {
         "ShellTools"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.platform.erase(), self.tree.erase()]
+        vec![self.tools.erase(), self.platform.erase(), self.tree.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let tools = ctx.require_at(&self.tools)?;
             let platform = ctx.require_at(&self.platform)?;
             let tree = ctx.require_at(&self.tree)?;
-            let driver = Arc::new(ShellToolsDriver { platform, tree });
-            ctx.provide_at(self.host.clone(), Arc::new(ToolHost(driver)))?;
+            let mut definition = execute_definition(&platform);
+            definition.risk = Some("execute_process".into());
+            tools.register(
+                ctx,
+                ToolContribution {
+                    definition,
+                    handler: Arc::new(ShellTool { tree }),
+                },
+            )?;
             Ok(Effect::Done)
         })
     }

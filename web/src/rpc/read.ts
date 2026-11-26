@@ -34,6 +34,8 @@ import type {
   SessionEvent,
   SessionSummary,
   SessionTitle,
+  ToolMode,
+  ToolModeState,
   ToolResult,
   UserInput,
   WithdrawResult,
@@ -347,6 +349,19 @@ export function readPermissionState(value: unknown): PermissionState {
   const at = "session.permission.get"
   const source = obj(value, at)
   return { version: num(source, "version", at), policy: readPermissionPolicy(source.policy, `${at}.policy`) }
+}
+
+/** A tool mode as the server names it; anything else is a protocol error. */
+function readMode(value: unknown, at: string): ToolMode {
+  if (value === "normal" || value === "codemode" || value === "shell") return value
+  return fail(at, "a tool mode")
+}
+
+/** `session.tool_mode.get` and `.update`: the chosen mode and the mode in force. */
+export function readToolModeState(value: unknown): ToolModeState {
+  const at = "session.tool_mode"
+  const source = obj(value, at)
+  return { mode: readMode(source.mode, `${at}.mode`), effective: readMode(source.effective, `${at}.effective`) }
 }
 
 /** `session.permission.update`: the version the new policy is stored under. */

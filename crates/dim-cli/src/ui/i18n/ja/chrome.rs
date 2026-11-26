@@ -867,6 +867,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "{field}: {error}" => "{field}：{error}",
         "Prompts: {error}" => "プロンプト：{error}",
+        "Tools" => "ツール",
+        "Tool mode" => "ツールモード",
+        "Normal" => "通常",
+        "Code Mode" => "コードモード",
+        "Shell" => "シェル",
         _ => return None,
     })
 }

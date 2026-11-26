@@ -2460,6 +2460,19 @@ impl DynPlugin for AgentsPlugin {
                     ))
                 },
             )?;
+            parts.register(
+                ctx,
+                dim_agent_runtime::PartScope::Session,
+                "SessionToolMode",
+                move |mount| {
+                    Ok(Some(
+                        Box::new(crate::session_tool_mode::SessionToolModePlugin::new(
+                            mount.names,
+                            with_store,
+                        )?) as Box<dyn DynPlugin>,
+                    ))
+                },
+            )?;
             let mut builder = self.builder.clone();
             let (records, session_store, session_metadata) = match stored {
                 Some((store, native, storage, metadata)) => {

@@ -49,6 +49,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   async function create(cwd: string, model: ModelId | undefined): Promise<string> {
     const params: Record<string, unknown> = { cwd }
     if (model !== undefined) params.model = { provider: model.providerId, modelId: model.modelId }
+    const mode = localStorage.getItem("dim.toolMode")
+    if ((mode === "normal" || mode === "codemode" || mode === "shell") && useConnectionStore().supports("session.create.toolMode")) params.toolMode = mode
     const created = await useConnectionStore().client.call("session.create", params, readCreate)
     void refresh()
     return created.sessionId

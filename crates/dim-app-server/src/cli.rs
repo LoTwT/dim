@@ -348,6 +348,10 @@ pub fn run_with(
         .init();
     let mut config = ServerConfig {
         websocket_address: Some(([127, 0, 0, 1], 8787).into()),
+        tool_modes: vec![
+            dim_agent_types::ToolMode::Codemode,
+            dim_agent_types::ToolMode::Shell,
+        ],
         ..Default::default()
     };
     #[cfg(debug_assertions)]

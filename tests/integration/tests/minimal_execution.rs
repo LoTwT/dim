@@ -268,6 +268,7 @@ impl Harness {
         let mut config = SessionConfig {
             cwd: self.cwd.to_string_lossy().into_owned(),
             tools: Some(vec!["execute".into()]),
+            tool_mode: dim_agent_runtime::ToolMode::Shell,
             permission_policy: PermissionPolicy {
                 preset: PermissionPreset::FullAccess,
                 ..Default::default()

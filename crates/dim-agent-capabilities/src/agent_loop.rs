@@ -422,9 +422,11 @@ impl AgentLoop {
             .history
             .rendered_context(&self.timeline, through)
             .await?;
+        let tool_mode = self.binding.effective_mode();
         let Some(request) = configured_request(
             &crate::context_policy::PolicyContext::from_context(context.clone()),
             &history,
+            tool_mode,
         ) else {
             return failed("Context is not configured; adopt a model first".into());
         };
@@ -1205,8 +1207,11 @@ impl AgentLoop {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
         let owner = self.clone();
+        let mut through = through;
         self.tasks.spawn(async move {
             let work = AssertUnwindSafe(async {
+                let tool_mode = owner.binding.effective_mode();
+                through = through.max(owner.timeline.sequence());
                 if let Some(mut source) = recovery {
                     owner
                         .binding
@@ -1236,13 +1241,18 @@ impl AgentLoop {
                             Some(tools) => {
                                 owner
                                     .binding
-                                    .bind(&request_id, through, tools, &data.settings.tool_sources)
-                                    .map_err(AgentError::InvalidInput)?;
-                                tools.clone()
+                                    .bind(
+                                        &request_id,
+                                        through,
+                                        tools,
+                                        &data.settings.tool_sources,
+                                        tool_mode,
+                                    )
+                                    .map_err(AgentError::InvalidInput)?
                             }
                             None => owner
                                 .binding
-                                .bind_current(&request_id, None)
+                                .bind_current(&request_id, tool_mode, None)
                                 .map_err(AgentError::InvalidInput)?,
                         }),
                         system: data.system.clone(),
@@ -1255,7 +1265,7 @@ impl AgentLoop {
                     None => {
                         let mut settings = owner
                             .binding
-                            .prepare(&request_id, |tools| {
+                            .prepare(&request_id, tool_mode, |tools| {
                                 owner
                                     .prepare
                                     .0

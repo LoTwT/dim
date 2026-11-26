@@ -486,3 +486,11 @@ parts required for a Session that must publish only after the tool is registered
 profile may install the plugin by default once the v4 protocol, TUI/web grouping and the
 `AgentLoop` rebuild filter in [child tool batches](../appserver/child-tool-batches.md) land. The
 Session gate keeps `codemode` out of v3 connections even when the plugin is installed.
+
+## Admission by origin
+
+A request declares only the mode's visible set. The outer `codemode` call is a
+top-level call and must be visible; its program's calls are child calls and may
+use only the delegated set. The request's `tools` and the gate's
+`tools.list` are the two allowlists; a name outside its own list is refused
+before it creates call state.

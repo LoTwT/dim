@@ -12,6 +12,7 @@ use crate::{
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
     prompt_state::PromptSnapshot,
+    tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
     AgentBuilder, BranchLifecycle, BranchPhase, ConfigureUpdate, Names, PromptSourceTarget,
@@ -254,6 +255,7 @@ fn environment(
     shell: &ShellStatus,
     cwd: &str,
     policy: &PromptSourcesConfig,
+    shell_mode: bool,
 ) -> String {
     let os = match platform.os {
         Os::Macos => "darwin",
@@ -287,7 +289,7 @@ fn environment(
                     OutputEncoding::Unknown => "unknown",
                 },
             ));
-            if platform.os == Os::Windows {
+            if platform.os == Os::Windows && !shell_mode {
                 let guidance = policy
                     .file_encoding_guidance
                     .as_deref()
@@ -478,6 +480,7 @@ impl PromptSourcesBranch {
 struct Sources {
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
+    tools: Arc<ToolRegistry>,
     today: Today,
     stopped: CancellationToken,
     policy: PromptSourcesConfig,
@@ -526,6 +529,7 @@ impl LoadPrompt for Sources {
                         &self.platform.exec_shell().await,
                         &self.config.cwd,
                         &self.policy,
+                        self.tools.effective_tool_mode_now() == dim_agent_types::ToolMode::Shell,
                     )),
                     PromptDelivery::State,
                     200,
@@ -566,6 +570,7 @@ impl LoadPrompt for Sources {
 pub struct PromptSourcesPlugin {
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
+    tools: Key<ToolRegistry>,
     registry: Key<PromptRegistry>,
     language: Key<SessionLanguage>,
     settings: Option<Key<BasePromptSettingsHost>>,
@@ -586,6 +591,7 @@ impl PromptSourcesPlugin {
         Ok(Self {
             platform: names.key()?,
             config: names.key()?,
+            tools: names.key()?,
             registry: names.key()?,
             language: names.key()?,
             settings: names
@@ -605,6 +611,7 @@ impl DynPlugin for PromptSourcesPlugin {
         vec![
             self.platform.erase(),
             self.config.erase(),
+            self.tools.erase(),
             self.registry.erase(),
         ]
     }
@@ -612,6 +619,7 @@ impl DynPlugin for PromptSourcesPlugin {
         Box::pin(async move {
             let platform = ctx.require_at(&self.platform)?;
             let config = ctx.require_at(&self.config)?;
+            let tools = ctx.require_at(&self.tools)?;
             let registry = ctx.require_at(&self.registry)?;
             // Apply runs once per Session instance: builder rows cannot
             // reload, and every rebuilt daemon or fork creates a new
@@ -640,6 +648,7 @@ impl DynPlugin for PromptSourcesPlugin {
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
                 platform,
                 config,
+                tools,
                 today: self.today.clone(),
                 stopped: ctx.cancellation_token(),
                 policy,

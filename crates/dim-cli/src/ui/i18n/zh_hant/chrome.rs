@@ -807,6 +807,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "{field}: {error}" => "{field}：{error}",
         "Prompts: {error}" => "提示詞：{error}",
+        "Tools" => "工具",
+        "Tool mode" => "工具模式",
+        "Normal" => "一般",
+        "Code Mode" => "程式碼模式",
+        "Shell" => "Shell",
         _ => return None,
     })
 }

@@ -31,6 +31,7 @@ pub mod provider_settings;
 pub mod runtime_manager;
 pub mod session_grants;
 pub mod session_language;
+mod session_tool_mode;
 pub mod session_typescript;
 pub mod settings;
 pub mod settings_methods;
@@ -93,6 +94,9 @@ pub struct ServerConfig {
     pub daemon_profile: protocol::DaemonProfile,
     /// Admission is disabled until the product execution profile is installed.
     pub session_execution: bool,
+    /// The tool modes the assembly can serve: `hello.features` advertises each
+    /// as `session.tool_mode.<mode>`.
+    pub tool_modes: Vec<dim_agent_types::ToolMode>,
     pub model_catalog: Option<Arc<dim_agent_aimux::AimuxModels>>,
     /// The override `DIM_USER_AGENT` names, read and validated once by the
     /// process that hosts models and passed to this Server's Aimux part.
@@ -150,6 +154,7 @@ impl Default for ServerConfig {
             session_typescript: None,
             daemon_profile: protocol::DaemonProfile::Mock,
             session_execution: true,
+            tool_modes: vec![],
             model_catalog: None,
             user_agent: None,
             file_roots: vec![],
@@ -1684,6 +1689,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
         ("fileReads", "hot-path"),
+        ("execStop", "control"),
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
@@ -1702,6 +1708,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("serverControl", "control"),
         ("sessionStore", "owner-api"),
         ("settingsService", "owner-api"),
+        ("shellSession", "control"),
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),
         ("timelineTreeControl", "owner-api"),

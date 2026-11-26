@@ -1,5 +1,5 @@
-pub use dim_agent_types::ModelId;
 use dim_agent_types::ModelSelection;
+pub use dim_agent_types::{ModelId, ToolMode};
 use rutis::service;
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -75,6 +75,14 @@ pub struct SessionConfig {
     /// member in place while the Session runs; a fork copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<ReplyLanguage>,
+    /// The tool surface the Session runs ([agent tool modes] §2). `normal` is
+    /// omitted, so a record written before this field reads as `normal`; the
+    /// native store updates it in place while the Session runs, and a fork
+    /// copies it.
+    ///
+    /// [agent tool modes]: ../../../docs/design/agent-tool-modes.md
+    #[serde(default, skip_serializing_if = "ToolMode::is_normal")]
+    pub tool_mode: ToolMode,
     /// The title the creating caller already knew for the Session, fixed at
     /// creation. Only `sessions.launch` sets it (#1421); SessionTitle applies
     /// its text rules and writes it as the first manual title. It stays in the
@@ -197,6 +205,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         let model = AgentConfig::default().model;
         Self {
+            tool_mode: ToolMode::Normal,
             permission_policy: crate::PermissionPolicy::default(),
             cwd: ".".into(),
             model: ModelSelection {

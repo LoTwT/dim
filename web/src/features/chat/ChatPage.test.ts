@@ -78,6 +78,7 @@ async function mountPage(defaultBranchId: string, status: "ready" | "failed" = "
     rows: [],
     running: false,
     stopping: false,
+    toolMode: undefined,
     retry: undefined,
     sessionRunning: false,
     approvals: [],

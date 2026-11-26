@@ -10,6 +10,14 @@ use dim_agent_types::ModelPreferences;
 use serde::Deserialize;
 use serde_json::json;
 
+/// The tool mode the interface last saved for new Sessions, read from the
+/// interface's `config.json` (the Session host carries no UI dependency).
+pub(crate) fn saved_tool_mode(home: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(home.join("config.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("tool_mode")?.as_str().map(str::to_owned)
+}
+
 #[derive(Deserialize)]
 struct Configured {
     outcome: String,
