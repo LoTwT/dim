@@ -2967,7 +2967,7 @@ struct DowngradedMetadata {
 /// record being rejected outright — which is what the flag inside the
 /// metadata would cause, since the metadata validates unknown keys.
 #[test]
-fn a_record_with_the_completion_record_reads_in_the_downgraded_shape() {
+fn a_record_with_the_completion_flag_reads_in_the_downgraded_shape() {
     let entry: ModelEntry = serde_json::from_value(json!({
         "modelId": "zz-downgrade",
         "displayName": "Downgrade fixture",
