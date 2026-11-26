@@ -27,6 +27,14 @@ leader 的 `agent` request schema 要求新生成的调用带有字符串 `title
 
 `collaboration/request` 将 `title` 持久化为可选字符串，`session.collaboration.pending` 在每项的 `request` 中原样携带它。每次 request 都拥有自己的标题，包括向现有成员发起的 request。缺失标题保持缺失：没有此字段的旧调用和事实仍可读取，序列化时省略缺失值。持久化采用[原生格式 v48](../../../design/appserver/native-storage-format.md#v48-task-titles)，只升级格式标记、单向准入，使旧的严格读取器在启动时拒绝新库。schema 对标题的描述是此显示字段的 protocol；协调 policy、成员执行、取消与结算不变。任务标题字段不改变既有 Collaboration 服务数据面。
 
+### request 与 message 的默认值
+
+**临时成员的工具。** `profile.tools` 可选。省略时成员没有挂载列表，按[挂载契约](../contracts/session-access.md)声明其 Session 的全部工具：每个宿主工具和每个已注册工具。这个集合可以比 leader 自己收窄过的列表更宽，这是有意的：leader 很少知道一项任务需要哪些工具，猜出来的列表会丢掉写错的名字。Permission 与 Approval 照旧继承（[子代理工具审批 §2](../../../design/subagent-tool-approval.md#2-permission-inheritance)），所以默认值放宽的是声明，不是权限。显式给出的列表（包括 `[]`）仍然收窄集合。
+
+**message 的模式。** 不带 `mode` 的 `agent` message 是 `steer`：它在接收方的下一个边界被消费，接收方空闲时会启动一轮（[输入模式](../contracts/session-access.md)）。此前默认是 `append`，要等接收方的下一轮。message 承载的是接收方应立即处理的信息，所以默认唤醒接收方；可以等的上下文仍可用 `append`。message 不发起任务：它启动的一轮不写 `collaboration/result`，新的工作走 `request`。已存储的 `collaboration/message` 事件总是带着自己的模式，所以这项变更只影响省略模式的新调用。
+
+**leader 关于起名与 systemPrompt 的提示。** Policy 句「A person's name that fits the user's language and region works well as its name.」与「Give it a systemPrompt only when the role truly needs standing guidance.」沿用上一代 TypeScript 产品的做法：在那里，用人名给成员起名受到用户欢迎；不要求角色提示，是因为模型写出的角色提示常常没有帮助。它们位于可替换的 leader 描述中，对其中任一句的候选改动按 [model-prompts §8](../model-prompts.md#8-judging-a-change) 评判。
+
 ## 2. guide 条目
 
 Session 部件在自己的 `apply` 中为每个标记各注册一个条目，按 session 范围生效，因为一条消息或一次结果可以写入接收方 Session 的任一分支（[Prompt §4](Prompt.md#4-内建条目及其写入者)）：
