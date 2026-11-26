@@ -4,9 +4,9 @@ use crate::{
     tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
-    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput,
-    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result, Timeline, TimelineQuery,
-    TimelineQueryScope,
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOrder,
+    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Result,
+    Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -1044,6 +1044,57 @@ impl ContextUsage {
         reading(through, &summary, None)
     }
 
+    /// The mode the turn at `through` ran under: the latest applied input's
+    /// recorded mode, or the live effective mode when none precedes it.
+    async fn mode_at(&self, through: u64) -> ToolMode {
+        let query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: false,
+            query: QuerySpec {
+                filter: Some(QueryFilter::And {
+                    conditions: vec![
+                        QueryFilter::In {
+                            value: QueryOperand::Field {
+                                path: "kind".into(),
+                            },
+                            values: vec![serde_json::json!("input/applied")],
+                        },
+                        QueryFilter::Present {
+                            value: QueryOperand::Field {
+                                path: "data.tool_mode".into(),
+                            },
+                        },
+                    ],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data.tool_mode".into()],
+                },
+                group_by: vec![],
+                pick: None,
+                order_by: vec![QueryOrder {
+                    key: QueryOrderKey::Position,
+                    direction: TimelineQueryDirection::Descending,
+                }],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let reply = self.timeline.query(query).await;
+        if let Ok(reply) = reply
+            && let QueryOutput::Rows { rows } = reply.result
+            && let Some(row) = rows.first()
+            && let [QueryValue::Value { value }] = row.values.as_slice()
+            && let Ok(mode) = serde_json::from_value::<ToolMode>(value.clone())
+        {
+            return mode;
+        }
+        self.registry.effective_tool_mode_now()
+    }
+
     async fn current_tools(
         &self,
         configuration: &CounterConfiguration,
@@ -1057,7 +1108,7 @@ impl ContextUsage {
                 .map(|source| (&source.key, &source.version))
                 .collect::<Vec<_>>(),
         )?;
-        let tools = self.registry.visible_definitions();
+        let tools = self.registry.visible_for(self.mode_at(through).await);
         let tools_fingerprint = fingerprint(
             &tools
                 .iter()

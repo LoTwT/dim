@@ -560,11 +560,15 @@ impl ToolRegistry {
     pub fn set_tool_mode(&self, mode: ToolMode) {
         *self.mode.lock().unwrap() = mode;
     }
+    /// The declarations of `mode`'s visible tools in their mounted order.
+    pub fn visible_for(&self, mode: ToolMode) -> Vec<ToolDefinition> {
+        project(mode, &self.snapshot().0).0
+    }
     /// The declarations the model request carries: the callable set projected
     /// by the effective mode.
     pub fn visible_definitions(&self) -> Vec<ToolDefinition> {
         let declared = self.snapshot().0;
-        project(self.tool_mode(), &declared).0
+        project(self.effective_of(&declared), &declared).0
     }
     /// The tool names a Code Mode program may call; empty in the other modes.
     pub fn delegated_definitions(&self) -> Vec<ToolDefinition> {
