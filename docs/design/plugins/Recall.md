@@ -40,8 +40,8 @@ three levels:
 3. **One thing.** Its full text, by id.
 
 A search (`about`, `tool`) returns the matching lines of level 2 from every turn, with the same
-ids. `about` matches each thing's full text (a call's whole input and result `content`, a reply's
-whole text), not the shortened line, so a word deep inside a fetched page or a sub-agent's report
+ids. `about` matches each thing's full text (a call's whole input, result `content` and declared
+effects, a reply's whole text), not the shortened line, so a word deep inside a fetched page or a sub-agent's report
 is found. Every result ends with the arguments of the next step, so the first call needs no prior
 knowledge.
 
@@ -525,7 +525,7 @@ End of turn. Open one: open=<id>.
 ```
 
 **One thing (`open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36`):** a heading line `14:04 3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 you called web_fetch`, the full
-input, then the full result; then `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` or `End.`
+input, then the full result and the effects it declared (§3.4); then `Continue: open=3f9a2c1b-6e4d-4f80-b2a9-0c7e5d1f8b36 offset=<next>.` or `End.`
 
 | Result | Last line |
 | --- | --- |
@@ -677,7 +677,8 @@ in `crates/dim-app-server/tests` that finds `recall` in the tool table of both t
    text, tools with counts and outcome; `before=` pages back to `Nothing earlier.`
 2. **A turn.** Opening a turn tells its user text verbatim, its replies, each call with its result
    on one line, and an interrupt, in order, each with time and id.
-3. **One thing.** Opening a call's id shows its full input and result, 8,000 characters a page,
+3. **One thing.** Opening a call's id shows its full input and result and the effects it declared,
+   8,000 characters a page,
    paged with `offset` to
    `End.`; CJK text is never split. Opening one input that carries user content and three blocks
    shows the user content and then the three blocks in order, paged by characters across them.

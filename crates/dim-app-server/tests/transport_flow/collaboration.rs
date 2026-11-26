@@ -6100,7 +6100,8 @@ async fn undispatched_results_name_calls_from_their_starts() {
 /// Opening a member's call shows the effects its result declared beside its
 /// text: the path verbatim, a command cut at 200 characters with the cut
 /// marked, and nothing for a result that declared none; the call's line in a
-/// page leaves them out (Recall §3.4, session boundary §5).
+/// page leaves them out, and `about` finds the phrase opening shows (Recall
+/// §3.4, session boundary §5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn opening_a_member_call_shows_the_effects_it_declared() {
     let (server, agent) = launch_with_agent(Arc::new(EffectTools), ServerConfig::default()).await;
@@ -6165,7 +6166,13 @@ async fn opening_a_member_call_shows_the_effects_it_declared() {
         "a call's line leaves its effects out: {calls}"
     );
 
-    let wrote = read(&mut client, json!({"open": id_of("path=")})).await;
+    let written = id_of("path=");
+    let found = read(&mut client, json!({"about": format!("wrote {path}")})).await;
+    assert!(
+        found.contains(&format!("{written} called touch")),
+        "the phrase opening shows is found: {found}"
+    );
+    let wrote = read(&mut client, json!({"open": written})).await;
     assert!(
         wrote.contains(&format!("ok: touched\nwrote {path}\n")),
         "{wrote}"

@@ -607,7 +607,7 @@ impl Search<'_> {
 }
 
 fn text_candidates(words: &[String]) -> Option<QueryFilter> {
-    const LABELS: &str = "current version in your context ended image file with messages denied by the user approval cancelled not run sub agent answered failed ran background task finished at running error result yet ok";
+    const LABELS: &str = "current version in your context ended image file with messages denied by the user approval cancelled not run sub agent answered failed ran wrote exit signal background task finished at running error result yet ok";
     let word = words
         .iter()
         .filter(|word| {
