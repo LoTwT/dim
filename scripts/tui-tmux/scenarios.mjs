@@ -504,6 +504,107 @@ const scenarios = [
     },
   },
   {
+    name: 'fullscreen_composer_click_places_the_cursor',
+    area: 'composer',
+    title: 'Clicking an editable cell inserts there in single-line and scrolled, wrapped drafts',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--fullscreen'], {cols: 28, rows: 18, waitForComposer: true});
+      const cellOf = async (text, cellOffset) => {
+        await terminal.waitFor(text);
+        const lines = terminal.capture({join: false}).split('\n');
+        const row = lines.findIndex((line) => line.includes(text));
+        assert(row >= 0, lines.join('\n'));
+        return {column: lines[row].indexOf(text) + cellOffset + 1, row: row + 1};
+      };
+      const mouse = (button, {column, row}, release = false) =>
+        terminal.bytes(Buffer.from(`\x1b[<${button};${column};${row}${release ? 'm' : 'M'}`));
+      const click = (cell) => {
+        mouse(0, cell);
+        mouse(0, cell, true);
+      };
+
+      terminal.send('abcdef');
+      click(await cellOf('abcdef', 2));
+      terminal.send('X');
+      const first = await cellOf('abXcdef', 0);
+      const second = {...first, column: first.column + 1};
+
+      mouse(0, first);
+      mouse(0, second, true);
+      terminal.send('1');
+      await terminal.waitFor('abX1cdef');
+
+      mouse(0, first);
+      mouse(32, second);
+      mouse(0, first, true);
+      terminal.send('2');
+      await terminal.waitFor('abX12cdef');
+
+      mouse(0, first);
+      terminal.send('3');
+      mouse(0, first, true);
+      terminal.send('4');
+      await terminal.waitFor('abX1234cdef');
+
+      terminal.key('End', 'C-j');
+      terminal.paste('pad '.repeat(45) + '中界tail');
+      click(await cellOf('中界tail', 2));
+      assert(!terminal.capture().includes('abX1234cdef'), 'the first draft line has scrolled out of view');
+      terminal.send('Y');
+      await terminal.waitFor('中Y界tail');
+    },
+  },
+  {
+    name: 'fullscreen_composer_click_with_a_clipped_task_strip',
+    area: 'composer',
+    title: 'Clicking a wrapped draft uses the visible textarea when task rows squeeze the composer',
+    async run(tui) {
+      const tasks = ['A', 'B', 'C'];
+      await tui.setup({
+        respond: (request) => {
+          if ((request.tools ?? []).length === 0) return {text: ANSWER};
+          if (lastMessage(request).role === 'tool') return {text: 'Started the composer tasks.'};
+          return {
+            toolCalls: tasks.map((name) => ({
+              name: 'exec',
+              arguments: {
+                command: `sleep 60; echo composer-task-${name}`,
+                runInBackground: true,
+                title: `Composer task ${name}`,
+              },
+            })),
+          };
+        },
+      });
+      const terminal = await tui.launch(['--fullscreen'], {cols: 80, rows: 24, waitForComposer: true});
+      terminal.send('start three composer tasks');
+      terminal.key('Enter');
+      const pending = new Set(tasks);
+      while (pending.size > 0) {
+        const command = new RegExp(`composer-task-([${[...pending].join('')}])`);
+        const screen = await terminal.waitFor(new RegExp(`Permission required[\\s\\S]*${command.source}`));
+        pending.delete(screen.slice(screen.lastIndexOf('Permission required')).match(command)[1]);
+        terminal.key('y');
+      }
+      await terminal.waitFor('3 in background');
+      terminal.resize(80, 12);
+
+      const wrappedRowWidth = 72;
+      terminal.paste('first'.padEnd(wrappedRowWidth, '1') + 'target'.padEnd(wrappedRowWidth, '2') + 'tail');
+      await terminal.waitFor('target222');
+      const lines = terminal.capture({join: false}).split('\n');
+      const row = lines.findIndex((line) => line.includes('target222'));
+      assert(row >= 0 && lines[row + 1]?.includes('tail'), lines.join('\n'));
+      assert(!lines.some((line) => line.includes('first111')), lines.join('\n'));
+      const column = lines[row].indexOf('target') + 3;
+      const report = `\x1b[<0;${column};${row + 1}`;
+      terminal.bytes(Buffer.from(`${report}M${report}m`));
+      terminal.send('X');
+      await terminal.waitFor('taXrget');
+    },
+  },
+  {
     name: 'composer_edits_multiline_and_stores_a_large_paste',
     area: 'composer',
     title: 'The composer edits a newline draft and stores a multi-line paste as an attachment',

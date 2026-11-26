@@ -4,6 +4,7 @@
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
 use dim_agent_types::ROOT_BRANCH_ID;
+use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -602,6 +603,13 @@ fn run_terminal(
                     MouseOutcome::Models => {
                         app.run_command("models", "");
                         dirty = true;
+                    }
+                    MouseOutcome::Composer { cell, area } => {
+                        if mouse && app.prompt.is_none() && !app.composer.palette_open() {
+                            full.clear_focus();
+                            app.composer.click(cell, area);
+                            dirty = true;
+                        }
                     }
                     MouseOutcome::Thought { key, body } => {
                         dirty |= app.click_panel_thought(&key, body);
@@ -6577,13 +6585,21 @@ impl App {
             }
             (cursor.1 as usize, prompt_width + cursor.0 as usize)
         };
+        let box_top = live.len();
+        if self.fullscreen && self.prompt.is_none() && !palette_overlay {
+            frame.composer = Some(Rect::new(
+                (MARGIN + 2 + prompt_width) as u16,
+                (box_top + 1 - frame.dock) as u16,
+                text_width as u16,
+                rows.len() as u16,
+            ));
+        }
         if self.fullscreen {
             let minimum = FULLSCREEN_COMPOSER_ROWS.min((size.1 as usize).saturating_sub(7).max(1));
             if rows.len() < minimum {
                 rows.resize(minimum, String::new());
             }
         }
-        let box_top = live.len();
         let shell_title = shell.map(|shell| match shell {
             Shell::Recorded => t("! shell mode"),
             Shell::Private => t("!! shell mode · not sent to the model"),
