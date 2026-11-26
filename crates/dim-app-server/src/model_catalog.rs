@@ -1297,12 +1297,16 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
 /// marked, so a capability the user chose reads exactly like one the clone
 /// captured. Where the override differs from the row it was taken from, the
 /// difference can only be the user's edit, and pinning it keeps an upgrade
-/// from silently discarding it: the row itself only moves when a refresh or
-/// listing write replaces it, and those writes rebase the stored override
-/// onto the row they write, so the clone never falls behind the row. `base`
-/// is the entry the comparison is against — the row the record serves on a
-/// read, or the row being replaced on a write — and callers run this once
-/// per read or write, before `rebase_override`.
+/// from silently discarding it: the row itself only moves when a refresh, a
+/// listing write or the reseed an upgrade admits replaces it, and each of
+/// those writes normalizes the stored overrides against the rows both sides
+/// of the replacement before the rows move, so the clone never falls behind
+/// the row. A record whose rows were last replaced before this normalization
+/// existed may carry a clone the replaced rows left behind; its differences
+/// are pinned the same way, because the record cannot tell them from the
+/// user's edits. `base` is the entry the comparison is against — the row
+/// the record serves on a read, or the row being replaced on a write — and
+/// callers run this once per read or write, before `rebase_override`.
 pub fn infer_capability_edits(base: &ModelEntry, pinned: &mut ModelEntry) {
     let marks: Vec<String> = pinned
         .metadata
