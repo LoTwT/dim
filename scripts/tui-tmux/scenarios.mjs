@@ -510,25 +510,47 @@ const scenarios = [
     async run(tui) {
       await tui.setup({respond: () => ({text: ANSWER})});
       const terminal = await tui.launch(['--fullscreen'], {cols: 28, rows: 18, waitForComposer: true});
-      const click = async (text, cellOffset) => {
+      const cellOf = async (text, cellOffset) => {
         await terminal.waitFor(text);
         const lines = terminal.capture({join: false}).split('\n');
         const row = lines.findIndex((line) => line.includes(text));
         assert(row >= 0, lines.join('\n'));
-        const column = lines[row].indexOf(text) + cellOffset + 1;
-        const report = `\x1b[<0;${column};${row + 1}`;
-        terminal.bytes(Buffer.from(`${report}M${report}m`));
+        return {column: lines[row].indexOf(text) + cellOffset + 1, row: row + 1};
+      };
+      const mouse = (button, {column, row}, release = false) =>
+        terminal.bytes(Buffer.from(`\x1b[<${button};${column};${row}${release ? 'm' : 'M'}`));
+      const click = (cell) => {
+        mouse(0, cell);
+        mouse(0, cell, true);
       };
 
       terminal.send('abcdef');
-      await click('abcdef', 2);
+      click(await cellOf('abcdef', 2));
       terminal.send('X');
-      await terminal.waitFor('abXcdef');
+      const first = await cellOf('abXcdef', 0);
+      const second = {...first, column: first.column + 1};
+
+      mouse(0, first);
+      mouse(0, second, true);
+      terminal.send('1');
+      await terminal.waitFor('abX1cdef');
+
+      mouse(0, first);
+      mouse(32, second);
+      mouse(0, first, true);
+      terminal.send('2');
+      await terminal.waitFor('abX12cdef');
+
+      mouse(0, first);
+      terminal.send('3');
+      mouse(0, first, true);
+      terminal.send('4');
+      await terminal.waitFor('abX1234cdef');
 
       terminal.key('End', 'C-j');
       terminal.paste('pad '.repeat(45) + '中界tail');
-      await click('中界tail', 2);
-      assert(!terminal.capture().includes('abXcdef'), 'the first draft line has scrolled out of view');
+      click(await cellOf('中界tail', 2));
+      assert(!terminal.capture().includes('abX1234cdef'), 'the first draft line has scrolled out of view');
       terminal.send('Y');
       await terminal.waitFor('中Y界tail');
     },
