@@ -877,12 +877,24 @@ impl HostDispatch for SessionsService {
         let args = args.json();
         let operation = async move {
             match (index, args) {
+                // A routed call to a Session whose index is being replaced is
+                // transient: the caller retries the Session it knows (#2127).
+                (None, _) if method == "call" => Err(index_reloading()),
                 (None, _) => Err(SessionsError::reloading("the Agents index")),
                 (_, Err(error)) => Err(SessionsError::rejected(error.to_string())),
                 (Some(index), Ok(args)) => call(&index, &method, args, row.as_ref()).await,
             }
         };
         Ok(Value::future(async move { Ok(envelope(operation.await)) }))
+    }
+}
+
+/// What a routed call answers while the Agents index is being replaced: the
+/// one transient answer, so a caller retries instead of treating the Session as
+/// gone.
+fn index_reloading() -> SessionsError {
+    SessionsError::SessionReloading {
+        message: "the Agents index is reloading".into(),
     }
 }
 
