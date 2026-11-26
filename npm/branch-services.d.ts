@@ -1414,7 +1414,7 @@ export type RouteError =
   | /** The name is not a data face a route resolves there: the assembly marks it internal, it is a mechanism registration point, or it is a scope lifecycle service. A permanent answer: the request is wrong. */ { notDataFace: { service: string } }
   | /** The service is a data face a route resolves, but this operation of it is not: its call needs a cancellation or a cleanup the routed call cannot carry, so only a direct call keeps its lifetime behaviour. */ { methodNotRoutable: { service: string; method: string } }
   | /** The name is a data face, but not of the scope the route reaches. */ { wrongScope: { service: string; group: string } }
-  | /** The owner's own failure, with the name and message it wrote; routing does not read or restate it. `reloading` is the owner's own code for "try again later", so a caller retries exactly what the owner says it may retry. */ { owner: { name: string; message: string; data?: import('./plugin.js').BridgeJsonValue | null; reloading: boolean } }
+  | /** The owner's own failure, with the name, the code it reported and the message it wrote; routing does not restate them. `reloading` is that code's "try again later", so a caller retries exactly what the owner says it may retry. */ { owner: { name: string; code?: string | null; message: string; data?: import('./plugin.js').BridgeJsonValue | null; reloading: boolean } }
 
 
 /**
@@ -1481,7 +1481,7 @@ export type SessionsError =
   | { code: "not_data_face"; message: string; service: string }
   | { code: "method_not_routable"; message: string; service: string; method: string }
   | { code: "wrong_scope"; message: string; service: string; group: string }
-  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; message: string; data?: import('./plugin.js').BridgeJsonValue | null; retryable: boolean }
+  | /** The target owner's own failure, with the name and message it wrote and whether the owner says it may be retried. */ { code: "routed"; name: string; owner_code?: string | null; message: string; data?: import('./plugin.js').BridgeJsonValue | null; retryable: boolean }
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }

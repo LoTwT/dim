@@ -78,9 +78,10 @@ impl Rig {
     }
 
     fn scope(&self, session: &Session) -> Arc<SessionScope> {
+        // The facade offers no read for the router; its owner exposes it.
         session
-            .session_service::<SessionScope>()
-            .expect("the Session serves its scope")
+            .routed_scope()
+            .expect("the owning instance serves its scope")
     }
 }
 

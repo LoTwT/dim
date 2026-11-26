@@ -178,5 +178,4 @@ impl BranchScope {
     }
 }
 impl PublicService for SessionConfig {}
-impl PublicService for crate::SessionScope {}
 impl PublicService for dyn LoopState {}

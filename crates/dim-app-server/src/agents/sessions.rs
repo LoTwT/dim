@@ -331,6 +331,8 @@ pub enum SessionsError {
     #[error("{message}")]
     Routed {
         name: String,
+        /// The code the owner reported, when its error carries one.
+        owner_code: Option<String>,
         message: String,
         /// The owner's failure as data, when its error type carries a serde
         /// value.
@@ -930,11 +932,13 @@ fn routed(error: dim_agent_runtime::RouteError) -> SessionsError {
         RouteError::NoLine { line, .. } => SessionsError::NoLine { message, line },
         RouteError::Owner {
             name,
+            code,
             data,
             reloading,
             ..
         } => SessionsError::Routed {
             name,
+            owner_code: code,
             message,
             data,
             retryable: reloading,

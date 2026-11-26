@@ -750,6 +750,16 @@ impl Session {
     /// loader rows this Session runs. Keys under it stay readable only from
     /// inside the Session, so it opens no service beyond the
     /// [`PublicService`] reads above.
+    /// The routed-call entry an owner's caller uses for this Session: the
+    /// owning instance's own router, not a [`PublicService`] read. Agents is
+    /// the only caller; a part of another language reaches it as the
+    /// `sessionScope` data face.
+    pub fn routed_scope(&self) -> Option<Arc<crate::route::SessionScope>> {
+        let loaded = self.0.owner.loaded().ok()?;
+        loaded
+            .ctx
+            .get_at::<crate::route::SessionScope>(&loaded.scope.key::<crate::route::SessionScope>())
+    }
     pub fn instance(&self) -> Result<rutis::host::InstanceId> {
         Ok(self.0.owner.loaded()?.scope.instance)
     }

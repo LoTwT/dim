@@ -1671,21 +1671,16 @@ impl AgentIndex {
         if session.is_closing() {
             return Err(RouteError::SessionClosing(id));
         }
-        let scope = session
-            .session_service::<dim_agent_runtime::SessionScope>()
-            .map_err(|error| match error {
-                _ if session.is_closing() => RouteError::SessionClosing(id.clone()),
-                AgentError::Reloading(_) => RouteError::Owner {
-                    name: "AgentError".into(),
-                    message: error.to_string(),
-                    data: None,
-                    reloading: true,
-                },
-                error => RouteError::SessionUnavailable {
-                    session: id.clone(),
-                    reason: error.to_string(),
-                },
-            })?;
+        let Some(scope) = session.routed_scope() else {
+            return Err(if session.is_closing() {
+                RouteError::SessionClosing(id)
+            } else {
+                RouteError::SessionUnavailable {
+                    session: id,
+                    reason: "the Session's scope is not provided".into(),
+                }
+            });
+        };
         match request.line_id {
             Some(line_id) => {
                 scope

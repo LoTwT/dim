@@ -94,13 +94,14 @@ pub enum RouteError {
     /// The name is a data face, but not of the scope the route reaches.
     #[error("{service} is not a {group} service")]
     WrongScope { service: String, group: String },
-    /// The owner's own failure, with the name and message it wrote; routing
-    /// does not read or restate it. `reloading` is the owner's own code for
-    /// "try again later", so a caller retries exactly what the owner says it
-    /// may retry.
+    /// The owner's own failure, with the name, the code it reported and the
+    /// message it wrote; routing does not restate them. `reloading` is that
+    /// code's "try again later", so a caller retries exactly what the owner
+    /// says it may retry.
     #[error("{message}")]
     Owner {
         name: String,
+        code: Option<String>,
         message: String,
         /// The owner's failure as data, when its error type carries a serde
         /// value: a caller can act on the same structure a direct call would
@@ -385,6 +386,7 @@ pub(crate) async fn call_face(
         .get_at::<dyn HostDispatch>(&host_key_in(service, instance))
         .ok_or_else(|| RouteError::Owner {
             name: service.into(),
+            code: None,
             message: format!("{service} is not provided now"),
             data: None,
             reloading: false,
@@ -404,6 +406,7 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
     let failure = error.into();
     RouteError::Owner {
         name: failure.name,
+        code: failure.code,
         message: failure.message,
         data: failure.data,
         reloading: failure.reloading,
@@ -414,6 +417,7 @@ pub(crate) fn owner(error: impl Into<Failure>) -> RouteError {
 /// with.
 pub(crate) struct Failure {
     name: String,
+    code: Option<String>,
     message: String,
     data: Option<Box<serde_json::Value>>,
     reloading: bool,
@@ -423,10 +427,33 @@ impl From<AgentError> for Failure {
     fn from(error: AgentError) -> Self {
         Self {
             name: "AgentError".into(),
+            code: Some(agent_code(&error).to_owned()),
             reloading: matches!(error, AgentError::Reloading(_)),
             message: error.to_string(),
             data: None,
         }
+    }
+}
+
+/// The code a marked Rust service reports for an `AgentError`: its variant name,
+/// spelled the way the generated declarations spell it.
+fn agent_code(error: &AgentError) -> &'static str {
+    match error {
+        AgentError::InvalidInput(_) => "InvalidInput",
+        AgentError::Closed(_) => "Closed",
+        AgentError::UnknownBranch(_) => "UnknownBranch",
+        AgentError::BranchEnded(_) => "BranchEnded",
+        AgentError::BranchRefused { .. } => "BranchRefused",
+        AgentError::Storage(_) => "Storage",
+        AgentError::PublicationUnknown(_) => "PublicationUnknown",
+        AgentError::Build(_) => "Build",
+        AgentError::Cancelled(_) => "Cancelled",
+        AgentError::Reloading(_) => "Reloading",
+        AgentError::AmbiguousSubmission(_) => "AmbiguousSubmission",
+        AgentError::PartialSubmission(_) => "PartialSubmission",
+        AgentError::Fault { .. } => "Fault",
+        AgentError::Framework { .. } => "Framework",
+        AgentError::Multiple(_) => "Multiple",
     }
 }
 
@@ -438,6 +465,7 @@ impl From<BridgeError> for Failure {
                 // service reports a reload as `Reloading` (`AgentError`'s variant
                 // code), and the wire keeps it in the error graph.
                 let reloading = error.code() == Some(RELOADING);
+                let code = error.code().map(str::to_owned);
                 let data = error.data().map(Box::new);
                 let name = match &error {
                     BridgeError::Remote { name, .. } => name.clone(),
@@ -447,6 +475,7 @@ impl From<BridgeError> for Failure {
                 match error {
                     BridgeError::Remote { message, .. } | BridgeError::Binding { message, .. } => {
                         Self {
+                            code,
                             reloading,
                             data,
                             name,
@@ -454,6 +483,7 @@ impl From<BridgeError> for Failure {
                         }
                     }
                     other => Self {
+                        code,
                         reloading,
                         data,
                         name,
@@ -463,6 +493,7 @@ impl From<BridgeError> for Failure {
             }
             other => Self {
                 name: "BridgeError".into(),
+                code: None,
                 message: other.to_string(),
                 data: None,
                 reloading: false,
