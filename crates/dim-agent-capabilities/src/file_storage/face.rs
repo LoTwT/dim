@@ -111,7 +111,7 @@ impl FsHost {
         let path = self.0.resolve(path)?;
         let relative = path.relative.clone();
         self.0
-            .run(&path, cancel, move |root, _, _| {
+            .run(&path, cancel, move |root, _, _, _| {
                 let (parent, name) = match super::native::parent(root, &relative) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         return Ok(super::FileStat::Missing);

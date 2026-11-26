@@ -17,7 +17,10 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{net::TcpStream, sync::Notify};
@@ -484,12 +487,14 @@ async fn poll_member(agent: &dim_agent_runtime::Agent, lead: &str) -> String {
 }
 
 /// Holds the next restore of one Session in its Session part's apply,
-/// while `acquire` holds the Session's gate and slot.
+/// while `acquire` holds the Session's gate and slot. A refused hold fails
+/// the part once released, so the restore loads no Session.
 #[derive(Clone, Default)]
 struct HeldRestore(Arc<HeldState>);
 #[derive(Default)]
 struct HeldState {
     held: Mutex<Option<String>>,
+    refused: AtomicBool,
     entered: Notify,
     release: Notify,
 }
@@ -504,6 +509,9 @@ impl HeldRestore {
     }
     fn hold(&self, id: &str) {
         *self.0.held.lock().unwrap() = Some(id.to_owned());
+    }
+    fn refuse(&self) {
+        self.0.refused.store(true, Ordering::Release);
     }
     async fn entered(&self) {
         tokio::time::timeout(DEADLINE, self.0.entered.notified())
@@ -547,8 +555,171 @@ impl DynPlugin for HeldRestorePart {
             if held {
                 state.entered.notify_one();
                 state.release.notified().await;
+                if state.refused.load(Ordering::Acquire) {
+                    return Err(rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                        "the stored Session is refused".into(),
+                    )));
+                }
             }
             Ok(Effect::Done)
         })
     }
+}
+
+/// A Session that is being restored owns its project's root from the load that
+/// authorizes that project, so a close of another Session on the same cwd does
+/// not release the root before the restore finishes: the release follows the
+/// last owner's settlement, not a snapshot of the loaded Sessions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closing_session_does_not_release_the_root_a_restore_owns() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let store = Store::new();
+    let held = HeldRestore::default();
+    let mut builder = builder();
+    held.install(&mut builder);
+    let models = Arc::new(
+        dim_agent_aimux::AimuxModels::from_config(
+            serde_json::from_value::<dim_agent_aimux::config::ModelConfigFile>(json!({
+                "defaultModel":{"providerId":"local","modelId":"alpha"},
+                "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                    "models":[{"id":"alpha","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":64}}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let server = crate::serve(
+        builder,
+        ServerConfig {
+            target_home: Some(store.0.clone()),
+            model_catalog: Some(models),
+            idle_unload_after: Duration::from_secs(3600),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = store.0.canonicalize().unwrap();
+    let first = super::launch(&index, None, &project).await;
+    let second = super::launch(&index, None, &project).await;
+    let root = settings
+        .project_root(&project)
+        .expect("the launches authorized the project");
+    assert!(testing::root_held(&files, root));
+
+    // The first Session stays in use, so the idle pass unloads only the second.
+    let using = index.acquire(&first).await.unwrap();
+    let mut marks = Marks::new();
+    settle(&index, &mut marks, 1).await;
+    assert!(server.agent().unwrap().get_session(&second).is_none());
+    assert!(testing::root_held(&files, root));
+
+    // The second Session restores while the first closes: the restore owns the
+    // cwd before it loads, so the root stays.
+    held.hold(&second);
+    let restoring = tokio::spawn({
+        let index = index.clone();
+        let second = second.clone();
+        async move { index.acquire(&second).await }
+    });
+    held.entered().await;
+    drop(using);
+    index.close_session(&first).await.unwrap();
+    assert!(
+        testing::root_held(&files, root),
+        "the Session the restore owns keeps the project's root"
+    );
+    held.release();
+    let restored = restoring.await.unwrap().unwrap();
+    assert!(testing::root_held(&files, root));
+    drop(restored);
+    let released = testing::root_releases(&files, root);
+    index.close_session(&second).await.unwrap();
+    assert!(
+        testing::root_releases(&files, root) == released + 1,
+        "the last Session's close released the project's descriptor"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A restore whose caller stops waiting still ends the ownership its load
+/// registered once the restore itself is refused: the rollback belongs to the
+/// restore task, before it gives up the Session's gate, not to the caller that
+/// dropped the handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_restore_settles_the_ownership_of_its_cancelled_caller() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = super::stored().await;
+    let held = HeldRestore::default();
+    let mut builder = builder();
+    held.install(&mut builder);
+    let server = crate::serve(builder, super::product_config(&stored.directory))
+        .await
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = stored.directory.canonicalize().unwrap();
+
+    held.hold(&stored.session);
+    held.refuse();
+    let waiting = tokio::spawn({
+        let index = index.clone();
+        let session = stored.session.clone();
+        async move { index.acquire(&session).await }
+    });
+    held.entered().await;
+    let root = settings
+        .project_root(&project)
+        .expect("the restore authorized the project");
+    assert!(testing::root_held(&files, root));
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the restore registers its ownership before it loads"
+    );
+
+    waiting.abort();
+    match waiting.await {
+        Err(error) => assert!(error.is_cancelled(), "the caller stopped waiting"),
+        Ok(_) => panic!("the cancelled caller returned a Session use"),
+    }
+    let released = testing::root_releases(&files, root);
+    held.release();
+    let gate = index.slot(&stored.session).gate.clone().lock_owned().await;
+    drop(gate);
+    assert!(
+        !index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "a refused restore ends the ownership it registered, whether or not a caller awaits it"
+    );
+    assert!(
+        testing::root_releases(&files, root) == released + 1,
+        "the last owner's refusal released the project's root"
+    );
+    assert!(
+        index.session(&stored.session).is_none(),
+        "the refused restore loaded no Session"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
 }

@@ -5,7 +5,7 @@
 //! Agent would. The hold exists only in this crate's unit tests, like the
 //! title-write hold of the storage flow tests.
 use super::{
-    AgentIndex,
+    AgentDirectory, AgentIndex, Inner, SessionRestored,
     sessions::{InputWrite, LaunchRequest, RawBlock},
 };
 use crate::ServerConfig;
@@ -16,6 +16,7 @@ use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, host_key};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -82,6 +83,23 @@ fn config(directory: &Path) -> ServerConfig {
     ServerConfig {
         database_path: Some(directory.join("dimcode.sqlite")),
         ..Default::default()
+    }
+}
+/// A configuration whose process carries the Settings service, so loading a
+/// Session authorizes and owns the project of its cwd as the product does.
+fn product_config(directory: &Path) -> ServerConfig {
+    let models = dim_agent_aimux::AimuxModels::from_config(
+        serde_json::from_value::<dim_agent_aimux::config::ModelConfigFile>(json!({
+            "defaultModel":{"providerId":"local","modelId":"alpha"},
+            "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                "models":[{"id":"alpha","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":64}}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    ServerConfig {
+        model_catalog: Some(Arc::new(models)),
+        ..config(directory)
     }
 }
 
@@ -461,4 +479,318 @@ async fn a_dependency_reload_records_a_creation_timeout_and_continues() {
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A settlement ends only its own Session's ownership, and an Agent's close
+/// ends every ownership it registered: another Session of the same cwd keeps
+/// the project in use, and only the last settlement frees its root.
+#[test]
+fn settlements_end_only_the_ownership_they_name() {
+    let directory = Arc::new(AgentDirectory {
+        inner: Mutex::new(Inner::default()),
+        settings: Mutex::new(std::sync::Weak::new()),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        default_agent_id: std::sync::OnceLock::new(),
+        server_instance_id: "test".to_owned(),
+    });
+    let first = directory.own("first", "agent-a", "/project");
+    let _second = directory.own("second", "agent-a", "/project");
+    let _member = directory.own("member", "agent-b", "/project");
+    drop(first);
+    assert!(
+        directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key("second"),
+        "another Session of the same cwd still owns the project"
+    );
+    directory.settle_agent("agent-a");
+    assert!(
+        !directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key("second"),
+        "the Agent's close ends every ownership it registered"
+    );
+    assert!(
+        directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key("member"),
+        "another Agent's Session keeps its ownership"
+    );
+}
+
+/// A guard settles only the ownership of the load that registered it. The
+/// runtime's fault supervisor closes a Session without the slot's close flag,
+/// so the same ID can load again before the guard the first load handed to its
+/// close is dropped; that guard must leave the later load's ownership.
+#[test]
+fn a_guard_dropped_after_a_later_load_keeps_that_loads_ownership() {
+    let directory = Arc::new(AgentDirectory {
+        inner: Mutex::new(Inner::default()),
+        settings: Mutex::new(std::sync::Weak::new()),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        default_agent_id: std::sync::OnceLock::new(),
+        server_instance_id: "test".to_owned(),
+    });
+    let first = directory.own("session", "agent-a", "/project");
+    let _second = directory.own("session", "agent-a", "/project");
+    drop(first);
+    let (owned, in_use) = {
+        let inner = directory.inner.lock().unwrap();
+        (inner.owners.contains_key("session"), inner.owns("/project"))
+    };
+    assert!(
+        owned,
+        "the later load's ownership outlives the guard of the load before it"
+    );
+    assert!(
+        in_use,
+        "the later load's ownership keeps the project's root held"
+    );
+}
+
+/// Refuses the announcement of every restored Session, as a listener that
+/// cannot accept the load would.
+struct RefusesSessionRestored;
+impl rutis::host::DynPlugin for RefusesSessionRestored {
+    fn name(&self) -> &str {
+        "test.refused-announcement"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            ctx.on::<SessionRestored>(|_, _| async {
+                Err::<Option<()>, _>(rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    "the stored announcement is refused".into(),
+                )))
+            })?;
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+/// A restore that loaded the Session keeps the project ownership it registered
+/// when announcing that load fails: the Session is live and still uses the
+/// project, so its ownership ends with its close, not with the failed
+/// announcement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_loaded_session_keeps_its_project_when_its_announcement_fails() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = stored().await;
+    let mut refusing = builder();
+    refusing.plugin(|_| Ok(Box::new(RefusesSessionRestored)));
+    let server = crate::serve(refusing, product_config(&stored.directory))
+        .await
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+
+    let refused = index
+        .acquire(&stored.session)
+        .await
+        .err()
+        .expect("the announcement refuses the acquisition");
+    assert!(
+        refused.to_string().contains("session-restored"),
+        "the announcement failed: {refused}"
+    );
+    assert!(
+        index.session(&stored.session).is_some(),
+        "the runtime loaded the Session before the announcement"
+    );
+    let root = settings
+        .project_root(&stored.directory.canonicalize().unwrap())
+        .expect("the restore authorized the project");
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the Session that loaded owns its project"
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the project's root stays held for the Session that loaded"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
+}
+
+/// A Session the runtime closes on its own, as the fault supervisor does, ends
+/// its project ownership and releases the project's root, without the App
+/// Server closing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runtime_close_ends_the_project_ownership_it_did_not_start() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = stored().await;
+    let server = crate::serve(builder(), product_config(&stored.directory))
+        .await
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = stored.directory.canonicalize().unwrap();
+    let usage = index.acquire(&stored.session).await.unwrap();
+    let root = settings
+        .project_root(&project)
+        .expect("the restore authorized the project");
+    assert!(
+        testing::root_held(&files, root),
+        "the loaded Session holds the project's directory"
+    );
+    let released = testing::root_releases(&files, root);
+    drop(usage);
+    let (_, session) = index
+        .session(&stored.session)
+        .expect("the Session is loaded");
+    // The guard the load registered is watched by its close, which this test
+    // cannot await directly. Registering the same Session again under the same
+    // agent and cwd gives this test the same guard, and joining its close with
+    // the Session's close settles the ownership before the assertions run.
+    let ownership = index.directory.own(
+        &stored.session,
+        index.default_agent_id(),
+        &session.config().cwd,
+    );
+    let watcher = ownership.when_closed(session.closed());
+    let (closed, ()) = tokio::join!(session.close(), watcher);
+    closed.unwrap();
+    assert!(
+        !index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the Session the runtime closed ends its ownership"
+    );
+    assert_eq!(
+        testing::root_releases(&files, root),
+        released + 1,
+        "the last owner's close released the project's directory"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
+}
+
+/// A load's ownership ends only with the load that registered it. One close has
+/// two settlements: the idle pass settles the Session it unloaded under its
+/// admission gate, and the guard the load registered waits in a detached task
+/// for the same close. Here that watcher reaches its awaited close only after
+/// the pass unloaded the Session and a second load of the same ID registered a
+/// new ownership, so a settlement that names only the Session would end the
+/// load that replaced it and release the root it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delayed_close_watcher_keeps_the_ownership_of_the_load_after_it() {
+    use crate::settings::SettingsService;
+    use dim_agent_capabilities::file_storage::{FileStorage, testing};
+
+    let stored = stored().await;
+    let server = crate::serve(
+        builder(),
+        ServerConfig {
+            idle_unload_after: Duration::from_secs(3600),
+            ..product_config(&stored.directory)
+        },
+    )
+    .await
+    .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let files = server.service::<FileStorage>().unwrap();
+    let settings = server.service::<SettingsService>().unwrap();
+    let project = stored.directory.canonicalize().unwrap();
+
+    let first = index.acquire(&stored.session).await.unwrap();
+    let root = settings
+        .project_root(&project)
+        .expect("the restore authorized the project");
+    assert!(
+        testing::root_held(&files, root),
+        "the first load holds the project's directory"
+    );
+    let (_, session) = index
+        .session(&stored.session)
+        .expect("the Session is loaded");
+    // The guard the first load registered is watched by its close, which this
+    // test cannot await directly. Registering the same Session again under the
+    // same agent and cwd gives this test the same guard, and the test keeps its
+    // watcher unawaited across the unload and the next load.
+    let watcher = index
+        .directory
+        .own(
+            &stored.session,
+            index.default_agent_id(),
+            &session.config().cwd,
+        )
+        .when_closed(session.closed());
+    drop(first);
+    let mut marks = HashMap::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            index.unload_idle(&mut marks).await;
+            if index.session(&stored.session).is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the idle pass unloads the Session");
+
+    let second = index.acquire(&stored.session).await.unwrap();
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the second load registers its own ownership"
+    );
+    assert!(
+        testing::root_held(&files, root),
+        "the second load holds the project's directory"
+    );
+
+    watcher.await;
+    assert!(
+        testing::root_held(&files, root),
+        "the first load's delayed close does not release the root the restored Session holds"
+    );
+    assert!(
+        index
+            .directory
+            .inner
+            .lock()
+            .unwrap()
+            .owners
+            .contains_key(&stored.session),
+        "the first load's delayed close leaves the ownership of the load that replaced it"
+    );
+    drop(second);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
 }

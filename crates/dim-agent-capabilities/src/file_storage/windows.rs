@@ -418,6 +418,12 @@ pub(super) fn create_key(locks: &File, name: &OsStr) -> io::Result<File> {
 }
 /// The 128-bit file id within the listed directory's volume.
 pub(super) type Identity = [u8; 16];
+/// What identifies the directory an authorized root serves.
+pub(super) type RootIdentity = (u64, [u8; 16]);
+pub(super) fn root_identity(file: &File) -> io::Result<RootIdentity> {
+    let identity = identity(file)?;
+    Ok((identity.VolumeSerialNumber, identity.FileId.Identifier))
+}
 fn kind(attributes: u32) -> EntryKind {
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         EntryKind::Other
