@@ -18,7 +18,7 @@ use crate::{
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dim_agent_runtime::{Dispatcher, Names};
+use dim_agent_runtime::Names;
 use dim_agent_types::{ExecEndedData, JsonObject, ToolContent, ToolEffect, ToolResult};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -102,11 +102,6 @@ pub struct ShellSession {
     config: ShellSessionConfig,
     lifecycle: CancellationToken,
     host: Arc<HostPlatform>,
-    #[expect(
-        dead_code,
-        reason = "stored at composition; no shell path dispatches through it"
-    )]
-    dispatcher: Arc<Dispatcher>,
     /// SessionStore's output ownership (ADR 013); absent in hosts without
     /// native storage, where shell output has no owner.
     owner: Option<Arc<SessionFiles>>,
@@ -122,7 +117,6 @@ impl ShellSession {
     pub fn new(
         config: ShellSessionConfig,
         host: Arc<HostPlatform>,
-        dispatcher: Arc<Dispatcher>,
         owner: Option<Arc<SessionFiles>>,
         session_id: String,
         background: Arc<BackgroundExec>,
@@ -143,7 +137,6 @@ impl ShellSession {
             config,
             lifecycle: CancellationToken::new(),
             host,
-            dispatcher,
             owner,
             session_id,
             background,
@@ -388,7 +381,12 @@ impl ShellSession {
             if self.lifecycle.is_cancelled() {
                 return Err(HostError::Cancelled("shell session closed".into()));
             }
-            if inner.shell.is_some() {
+            let alive = inner.shell.as_ref().is_some_and(|id| {
+                self.host
+                    .task(id)
+                    .is_some_and(|record| !record.is_terminal())
+            });
+            if alive {
                 return Ok(None);
             }
             inner.generation
@@ -652,15 +650,10 @@ impl ShellSession {
             }
             let task_id = inner.shell.take();
             if task_id.is_some() {
-                let note = match end {
-                    Some(reply) => match (reply.signal.as_deref(), reply.exit_code) {
-                        (Some(signal), _) => format!("[shell killed by signal: {signal}]"),
-                        (_, Some(code)) => format!("[shell exited: code {code}]"),
-                        _ => "[shell exited]".to_owned(),
-                    },
-                    None => "[shell exited]".to_owned(),
-                };
-                inner.shell_exit = Some(note);
+                inner.shell_exit = Some(end.as_ref().map_or_else(
+                    || "[shell exited]".to_owned(),
+                    |reply| shell_exit_note(reply.signal.as_deref(), reply.exit_code),
+                ));
             }
             inner.had_reset = true;
             inner.occupying = None;
@@ -724,19 +717,19 @@ impl ShellSession {
                     let note = match reply.failure_note.clone() {
                         Some(note) => Some(note),
                         None => {
-                            let shell_id = self.inner.lock().await.shell.clone();
+                            let (shell_id, shell_exit) = {
+                                let inner = self.inner.lock().await;
+                                (inner.shell.clone(), inner.shell_exit.clone())
+                            };
                             let terminal = shell_id
                                 .as_ref()
                                 .and_then(|id| self.host.task(id))
                                 .and_then(|record| record.terminal());
                             terminal
-                                .map(|terminal| shell_exit_note(&terminal))
-                                .or_else(|| {
-                                    self.inner
-                                        .try_lock()
-                                        .ok()
-                                        .and_then(|inner| inner.shell_exit.clone())
+                                .map(|terminal| {
+                                    shell_exit_note(terminal.signal.as_deref(), terminal.exit_code)
                                 })
+                                .or(shell_exit)
                         }
                     };
                     if let Some(note) = note {
@@ -1124,7 +1117,6 @@ pub struct ShellSessionPlugin {
     background: Key<BackgroundExec>,
     facts: Key<crate::file_access::FileAccessFacts>,
     session: Key<ShellSession>,
-    dispatcher: Key<Dispatcher>,
     host: Key<HostPlatform>,
     lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
@@ -1146,7 +1138,6 @@ impl ShellSessionPlugin {
             background: names.key()?,
             facts: names.key()?,
             session: names.key()?,
-            dispatcher: names.key()?,
             host: names.key()?,
             lifecycle: names.key()?,
             session_config: names.key()?,
@@ -1163,7 +1154,6 @@ impl DynPlugin for ShellSessionPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.background.erase(),
-            self.dispatcher.erase(),
             self.host.erase(),
             self.lifecycle.erase(),
             self.session_config.erase(),
@@ -1172,7 +1162,6 @@ impl DynPlugin for ShellSessionPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let dispatcher = ctx.require_at(&self.dispatcher)?;
             let host = ctx.require_at(&self.host)?;
             let background = ctx.require_at(&self.background)?;
             let config = ctx.require_at(&self.session_config)?;
@@ -1190,7 +1179,6 @@ impl DynPlugin for ShellSessionPlugin {
                         .join(&identity.branch_id),
                 }),
                 host,
-                dispatcher,
                 owner,
                 identity.session_id.clone(),
                 background,
@@ -1319,8 +1307,8 @@ fn occupancy_error(task_id: &str, error: WaitError) -> String {
     }
 }
 
-fn shell_exit_note(terminal: &crate::host_platform::Terminal) -> String {
-    match (terminal.signal.as_deref(), terminal.exit_code) {
+fn shell_exit_note(signal: Option<&str>, exit_code: Option<i32>) -> String {
+    match (signal, exit_code) {
         (Some(signal), _) => format!("[shell killed by signal: {signal}]"),
         (_, Some(code)) => format!("[shell exited: code {code}]"),
         _ => "[shell exited]".to_owned(),

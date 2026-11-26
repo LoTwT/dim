@@ -26,7 +26,7 @@ A task id is reserved by the owner before a command or background job starts. `s
 part of `shell.write` answer `task_exists` for an id already in the table or an existing output
 log, and `invalid` for a missing output parent or an output path outside the shell directory. `wait` reports the terminal record and never removes it; a
 timeout stops the wait and answers `running`. `settle` releases only an ended task or an exited
-shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a stop is pending answers `task_running`. Command and job logs stay under the output directory the caller gives the owner; the
+shell and answers `task_running` otherwise; `kill` is the explicit stop, and a second kill while a job's stop is pending answers `task_running`. For a shell command, `kill` writes Ctrl+C and waits for the command's terminal; because the interrupt aborts the wrapper line before its end marker, a command that does not end within two seconds leaves the owner no way to end it inside the live shell, so `kill` terminates the shell and its terminal sweeps the command as a reset. Command and job logs stay under the output directory the caller gives the owner; the
 persistent shell defaults to `execRoot`. Logs are registered by the branch when the model is
 given their path.
 `removeOutputDirectory` accepts only a persistent-shell output directory below the canonical
@@ -157,7 +157,7 @@ switches: declarations are read once, while each process start reads them.
 For a persistent shell, background PIDs enter through the
 existing PTY marker. `PtyProcessTree::job_pid` uses portable-pty's foreground-group handle and
 Linux's namespace/session metadata to resolve the native host identity once. `ShellJob.pid`
-stores the typed PID in the owner record; `ShellSession` keeps only the task id and calls
+stores the typed PID in the owner record; the calling task owner keeps only the task id and calls
 `host.kill` by id. A bounded native stop waits for release before the cancelled terminal fact;
 the public signal helper is unchanged.
 A running shell keeps the boundary it started with; changing the switches applies to the next

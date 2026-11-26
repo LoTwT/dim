@@ -672,10 +672,13 @@ the typed `BackgroundExec` serves it and stays the Rust binding.
 clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
 `cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
 ended task at once and otherwise waits for its dispatch until `timeoutMs` elapses.
-For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it cancels
-a running task so it ends `cancelled`
-and does not wake, and answers an already ended task's record without changing
-its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it stops
+a running task and answers the owner's terminal, and an already ended task keeps
+its record and wake. The terminal decides the wake: `cancelled` stays silent and
+every other status posts the completion notice. A shell task is interrupted in
+its persistent shell; its terminal is `failed` (the interrupted command's exit
+status, or a shell reset when the shell had to be terminated), so stopping a
+shell task does wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live
 process, so it is the caller's own operation — the `exec` tool and `ShellSession` —
 and is not on the face.

@@ -47,6 +47,11 @@ pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellCh
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
 pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
 
+/// How long a shell command's interrupt may take to produce its end marker
+/// before the shell is terminated. An interrupt aborts the whole wrapper line,
+/// so a command that did not end in this window never prints one.
+const SHELL_COMMAND_STOP_WAIT_MS: u64 = 2_000;
+
 #[cfg(windows)]
 const WINDOWS_SANDBOX_UNAVAILABLE: &str =
     "The sandbox has no backend on Windows; select Off in /settings > Process isolation";
@@ -1236,7 +1241,20 @@ impl HostPlatform {
                     .shell
                     .write(b"\x03")
                     .await
-                    .map_err(|error| HostPlatformError::Io(error.to_string()))
+                    .map_err(|error| HostPlatformError::Io(error.to_string()))?;
+                if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status != WaitStatus::Running {
+                    return Ok(());
+                }
+                // The interrupt aborted the wrapper line before its end marker
+                // printed, so the command cannot end inside the live shell.
+                // Terminating the shell sweeps the command to its terminal.
+                command.shell.terminate();
+                if task.wait(Some(SHELL_COMMAND_STOP_WAIT_MS)).await.status == WaitStatus::Running {
+                    return Err(HostPlatformError::Failed(
+                        "the shell did not confirm the command's end".into(),
+                    ));
+                }
+                Ok(())
             }
             TaskKind::Job(job) => {
                 if !self.stopping.lock().unwrap().insert(task.id.clone()) {

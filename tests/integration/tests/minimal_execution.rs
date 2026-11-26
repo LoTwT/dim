@@ -945,6 +945,54 @@ async fn stop_background_task() {
     harness.shutdown().await;
 }
 
+/// Stopping a command that converted to the background returns a terminal. The
+/// interrupt aborts its wrapper line, so the owner terminates the shell instead
+/// of waiting for an end marker that never prints; the next call runs in a new
+/// shell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_an_occupying_command_returns_and_the_shell_keeps_working() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "sleep 60", "timeoutMs": 100}))],
+        )
+        .await;
+    let events = until(&session, "occupying admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    let task_id = task_of(&results(&events)[0]);
+
+    let stop = session
+        .service::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>("main")
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(10), stop.stop(task_id.clone()))
+        .await
+        .expect("the stop returns once the owner confirms the terminal")
+        .unwrap();
+    assert_eq!(ended.task_id, task_id);
+    assert_eq!(ended.status, ExecStatus::Failed);
+    assert!(
+        text(&ended.result).contains("shell reset"),
+        "{}",
+        text(&ended.result)
+    );
+
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "echo after-stop"}))],
+        )
+        .await;
+    let events = until(&session, "next result", |events| tool_results(events) == 2).await;
+    let result = &results(&events)[1];
+    assert!(text(result).contains("after-stop"), "{}", text(result));
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shell_exit_settles_tasks() {
     let harness = Harness::new(platform(&[]).await).await;
