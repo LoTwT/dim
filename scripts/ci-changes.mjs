@@ -1,7 +1,7 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
+export const groups=['rust','windows','windows_native','static','xtask','node','eval','execution','debug','web','scripts','macos_scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
 const cargoManifest=/(?:^|\/)Cargo\.toml$/;
@@ -53,6 +53,12 @@ const rules=[
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
+  // Debug-build acceptances (#2218) leave ordinary workspace tests. Only the
+  // files that own them select the dedicated debug step.
+  [/^crates\/dimcode\/tests\/(?:cli_flow|cli_daemon_flow)\.rs$/,['rust','debug']],
+  [/^crates\/dimcode\/tests\/cli_flow\/(?:daemon_startup_progress|daemon_replace|staged_update)\.rs$/,['rust','debug']],
+  [/^crates\/dimcode\/tests\/support\/cli_harness\.rs$/,['rust','node','debug']],
+  [/^crates\/dimcode\/Cargo\.toml$/,['rust','debug']],
   [/^crates\/dimcode\//,['rust']],
   [/^crates\/dim-app-server\/src\/protocol\.rs$/,['rust','node','web','scripts']],
   [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts']],

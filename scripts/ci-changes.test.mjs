@@ -111,6 +111,19 @@ test('native macOS CI follows its runner, packaging and Mach-O layout sources',(
   }
 });
 
+test('debug-only CLI tests follow their owning modules',()=>{
+  for (const file of [
+    'crates/dimcode/tests/cli_flow/daemon_startup_progress.rs',
+    'crates/dimcode/tests/cli_flow/daemon_replace.rs',
+    'crates/dimcode/tests/cli_flow/staged_update.rs',
+  ]) assert.deepEqual(classify([file]),only('rust','debug'),file);
+  assert.deepEqual(classify(['crates/dimcode/tests/cli_daemon_flow.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/cli_flow.rs']),only('rust','debug'));
+  assert.deepEqual(classify(['crates/dimcode/tests/support/cli_harness.rs']),only('rust','node','debug'));
+  assert.deepEqual(classify(['crates/dimcode/Cargo.toml']),only('rust','debug','dependencies'));
+  assert.deepEqual(classify(['crates/dimcode/src/main.rs']),only('rust'));
+});
+
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
   assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));
