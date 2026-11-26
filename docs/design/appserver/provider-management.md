@@ -587,10 +587,25 @@ refresh pin it as marked (#2189). That reading holds because every write the
 implementation makes that replaces the rows — a managed refresh, a static
 refresh or connection update, and the reseed an upgrade admits — normalizes
 the overrides against the rows both sides of the replacement before the rows
-move, so the clone never falls behind the row it compares against. A record
-whose rows were last replaced before this normalization existed may carry a
-clone the replaced rows left behind; its differences are pinned the same way,
-because the record cannot tell them from the user's edits.
+move, so the clone never falls behind the row it compares against. The write
+whose replacement drops a row is part of that chain: it is the last chance to
+compare the clone against the row before the row is gone, so the inference
+runs there too and the pins are recorded before the row disappears. An
+override whose pins are complete carries `normalizedOverride` in its metadata
+— set by the edit that writes it and by each of these normalizing writes —
+and neither a read nor a later write infers further edits from it: when the
+model returns to the listing, exactly the recorded pins are applied and every
+other declaration follows the returning row, even across a gap in which the
+row was absent for one refresh or several (#2189). A clone written before
+this normalization existed, including one that marks only its limits, carries
+no such record and is treated as a legacy clone: the conservative inference
+above applies to it until one of these writes normalizes it. A legacy clone
+whose row neither side of a replacement lists cannot be compared yet and
+stays unflagged, so its inference remains open until a row returns to compare
+against. A record whose rows were last replaced before this normalization
+existed may carry a clone the replaced rows left behind; its differences are
+pinned the same way, because the record cannot tell them from the user's
+edits.
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain

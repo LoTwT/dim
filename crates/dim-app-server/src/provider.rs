@@ -1185,11 +1185,17 @@ fn static_entries_with_overrides(
 /// against, so the clone the record keeps is never older than the row itself.
 /// `before` is the effective base entries the replaced rows served and `after`
 /// the ones the replacement serves, in the same shape the read path rebases
-/// on. An override is compared against the entry it cloned before its marks
-/// are applied: a capability value that differs there can only be the user's
-/// edit, so it is pinned first, including one an override written before
-/// capability edits were marked carries without a mark. An override whose
-/// model the replacement does not list keeps what it had.
+/// on. A legacy clone is compared against the entry it was taken from before
+/// its pins are applied: a capability value that differs there can only be
+/// the user's edit, so it is pinned first. The comparison runs wherever a row
+/// remains to compare against — including when the replacement drops the
+/// row, which is the last chance to record the pins before the old row is
+/// gone — and the override then carries `normalizedOverride`: its pin set
+/// is complete, so a later write or read applies exactly those pins and no
+/// difference the row's own movement left in the clone. A legacy clone whose
+/// row neither side of the replacement lists keeps what it had unflagged:
+/// nothing can tell its captured values from the user's edits yet, so the
+/// conservative inference stays open until a row returns to compare against.
 fn normalize_overrides(
     before: &[ModelEntry],
     after: &[ModelEntry],
@@ -1202,13 +1208,22 @@ fn normalize_overrides(
             let old = before
                 .iter()
                 .find(|entry| entry.model_id == pinned.model_id);
-            match (base, old) {
-                (Some(base), Some(old)) => {
-                    infer_capability_edits(old, &mut pinned);
-                    rebase_override(base, &pinned)
-                }
-                _ => pinned,
+            let normalized = old.or(base).is_some();
+            if let Some(comparison) = old.or(base) {
+                infer_capability_edits(comparison, &mut pinned);
             }
+            let mut result = match base {
+                Some(base) => rebase_override(base, &pinned),
+                None => pinned,
+            };
+            // The record the write stores is what later reads and writes
+            // compare, so the completion mark belongs on the stored clone
+            // itself: the rebase output is built from the row, which never
+            // carries it.
+            if normalized {
+                result.metadata.get_or_insert_default().normalized_override = true;
+            }
+            result
         })
         .collect()
 }

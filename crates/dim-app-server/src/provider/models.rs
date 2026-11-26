@@ -464,13 +464,22 @@ impl ProviderService {
                                             .context_window;
                                     }
                                 }
-                                let next = bundled.merge_visible_edit(&current, edit);
+                                let mut next = bundled.merge_visible_edit(&current, edit);
                                 if let Some(user) = user {
                                     record.user_models[user] = next;
-                                } else if let Some(index) = index {
-                                    record.model_config_overrides[index] = next;
                                 } else {
-                                    record.model_config_overrides.push(next);
+                                    // The edit writes a clone of the row it
+                                    // applies to with every edit marked, so
+                                    // the override is normalized the moment it
+                                    // is stored (#2189); a user model is not
+                                    // an override and never carries the mark.
+                                    next.metadata.get_or_insert_default().normalized_override =
+                                        true;
+                                    if let Some(index) = index {
+                                        record.model_config_overrides[index] = next;
+                                    } else {
+                                        record.model_config_overrides.push(next);
+                                    }
                                 }
                             }
                             Some(_) => {}
@@ -543,12 +552,18 @@ impl ProviderService {
                             }
                             match edit {
                                 Some(edit) if descriptor => {
-                                    let next = bundled.merge_visible_edit(
+                                    let mut next = bundled.merge_visible_edit(
                                         index
                                             .map(|index| &record.model_config_overrides[index])
                                             .unwrap_or(&default.entry),
                                         edit,
                                     );
+                                    // As on the static record: the edit writes
+                                    // a clone whose every edit is marked, so
+                                    // the stored override is normalized at
+                                    // birth (#2189).
+                                    next.metadata.get_or_insert_default().normalized_override =
+                                        true;
                                     if let Some(index) = index {
                                         record.model_config_overrides[index] = next;
                                     } else {

@@ -160,8 +160,21 @@ pub struct ModelMetadata {
     pub identification: Option<ModelIdentification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_override_fields: Vec<String>,
+    /// Set on a stored descriptor override whose pin set is complete (#2189):
+    /// every capability the user edited is named in
+    /// `capability_override_fields`, so neither a read nor a row-replacing
+    /// write may infer further edits from it. Absent on a clone written
+    /// before this normalization existed, which the inference treats as a
+    /// legacy clone. Only overrides carry it; catalog rows and user models
+    /// never do.
+    #[serde(default, skip_serializing_if = "omitted_when_false")]
+    pub normalized_override: bool,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub raw: Map<String, Value>,
+}
+
+fn omitted_when_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The one model an id named, and the numbers something else supplied.
@@ -1291,23 +1304,39 @@ pub(crate) fn declared_limits(input: &Map<String, Value>) -> (Option<u64>, Optio
     )
 }
 
-/// Marks the capability edits a stored override cannot help but carry
-/// (#2189). An override written before capability edits were marked is a
-/// clone of the row it edited plus the user's values, with only its limits
+/// Marks the capability edits a legacy stored override cannot help but
+/// carry (#2189). An override written before capability edits were marked is
+/// a clone of the row it edited plus the user's values, with only its limits
 /// marked, so a capability the user chose reads exactly like one the clone
 /// captured. Where the override differs from the row it was taken from, the
 /// difference can only be the user's edit, and pinning it keeps an upgrade
 /// from silently discarding it: the row itself only moves when a refresh, a
 /// listing write or the reseed an upgrade admits replaces it, and each of
 /// those writes normalizes the stored overrides against the rows both sides
-/// of the replacement before the rows move, so the clone never falls behind
-/// the row. A record whose rows were last replaced before this normalization
-/// existed may carry a clone the replaced rows left behind; its differences
-/// are pinned the same way, because the record cannot tell them from the
-/// user's edits. `base` is the entry the comparison is against — the row
-/// the record serves on a read, or the row being replaced on a write — and
-/// callers run this once per read or write, before `rebase_override`.
+/// of the replacement before the rows move — including the write whose
+/// replacement drops the row, which is the last chance to record the pins
+/// against it. A record whose rows were last replaced before this
+/// normalization existed may carry a clone the replaced rows left behind;
+/// its differences are pinned the same way, because the record cannot tell
+/// them from the user's edits.
+///
+/// The inference is sound only for a clone it has never normalized: an
+/// override that carries `normalizedOverride` already pins every edit, its
+/// unedited values are the row's own, and any later difference is the row
+/// having moved — inferring there would pin the stale capture as the user's
+/// edit, which is the freeze a listing gap otherwise causes (#2189). Such an
+/// override is returned untouched, so `base` — the entry the comparison is
+/// against, the row the record serves on a read or the row being replaced
+/// on a write — must be the row the clone was taken from, and callers run
+/// this once per read or write, before `rebase_override`.
 pub fn infer_capability_edits(base: &ModelEntry, pinned: &mut ModelEntry) {
+    if pinned
+        .metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.normalized_override)
+    {
+        return;
+    }
     let marks: Vec<String> = pinned
         .metadata
         .as_ref()
