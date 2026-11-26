@@ -198,8 +198,7 @@ fn project_remote_model(model: &RemoteModel) -> (CatalogCapabilities, Option<Mod
     if let Some(accepted) = model
         .slug
         .as_deref()
-        .map(aimux_providers::openai::language_model_capabilities::get_model_capabilities)
-        .and_then(|capabilities| capabilities.supported_reasoning_efforts)
+        .and_then(dim_agent_aimux::accepted_reasoning_efforts)
     {
         efforts.retain(|effort| accepted.contains(&effort.as_str()));
     }
