@@ -14649,6 +14649,7 @@ mod tests {
             app.run_command(command, "");
             if command == "settings" {
                 app.handle_input(key(KeyCode::End));
+                app.handle_input(key(KeyCode::Up));
                 if via_permissions {
                     app.handle_input(key(KeyCode::Up));
                 }
