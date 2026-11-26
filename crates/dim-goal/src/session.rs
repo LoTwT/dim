@@ -126,7 +126,7 @@ impl DynPlugin for GoalSession {
                             if let Err(error) = changes.change(&key, Change::PauseMode).await {
                                 return Err(HostError::failed(error.to_string()));
                             }
-                            let queued = changes.queued(&key);
+                            let queued = changes.take_queued(&key);
                             for input_id in queued {
                                 let Some(provider) = methods.provider("session.input.withdraw")
                                 else {

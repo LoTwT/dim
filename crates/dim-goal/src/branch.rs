@@ -117,14 +117,15 @@ impl Changes {
             .ok_or_else(|| AgentError::Reloading("Goal".into()))?;
         owner.change(change).await
     }
-    /// The input ids this branch's Goal wrote that may still be queued.
-    pub(crate) fn queued(&self, key: &TimelineKey) -> Vec<String> {
+    /// Takes the input ids this branch's Goal wrote that may still be
+    /// queued; a settle owns them until it withdraws or skips them.
+    pub(crate) fn take_queued(&self, key: &TimelineKey) -> Vec<String> {
         self.owners
             .lock()
             .unwrap()
             .get(key)
             .and_then(Weak::upgrade)
-            .map(|owner| owner.queued.lock().unwrap().clone())
+            .map(|owner| std::mem::take(&mut *owner.queued.lock().unwrap()))
             .unwrap_or_default()
     }
     /// Registers `owner` for its branch; the returned handle withdraws it.
