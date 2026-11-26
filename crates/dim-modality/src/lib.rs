@@ -281,6 +281,15 @@ pub(crate) fn is_understand(category: &str, operation: &str) -> bool {
     category == "image" && operation == "understand"
 }
 
+/// Providers whose grants admit interactive client sessions only
+/// (docs/design/appserver/chatgpt-plan.md), never a Session-less auxiliary call.
+const SESSION_ONLY_UNDERSTAND_PROVIDERS: [&str; 1] = ["openai-chatgpt"];
+
+fn understand_candidate(model: &ModelCapabilitySnapshot) -> bool {
+    model.capabilities.vision
+        && !SESSION_ONLY_UNDERSTAND_PROVIDERS.contains(&model.target.provider_id.as_str())
+}
+
 /// Every `realtime.<operation>` is opened as a session, never submitted as a
 /// task (A.3, decision 6).
 pub(crate) fn is_realtime(category: &str) -> bool {
@@ -760,7 +769,7 @@ impl Evaluation {
         } else if is_understand(category, row.operation) {
             self.selectable
                 .iter()
-                .filter(|model| model.capabilities.vision)
+                .filter(|model| understand_candidate(model))
                 .map(|model| Self::option(&model.target))
                 .collect()
         } else {
@@ -1524,4 +1533,35 @@ pub fn install_with(builder: &mut AgentBuilder, options: InstallOptions) {
     builder.optional_plugin(move |names| {
         Ok(Box::new(ModalityPlugin::new(names, options.clone())?) as Box<dyn DynPlugin>)
     });
+}
+
+#[cfg(test)]
+mod understand_tests {
+    use super::*;
+    use dim_agent_types::{ModelCapabilities, ModelCapabilitySnapshot, ModelId};
+
+    fn vision_model(provider_id: &str, vision: bool) -> ModelCapabilitySnapshot {
+        ModelCapabilitySnapshot {
+            target: ModelId {
+                provider_id: provider_id.into(),
+                model_id: "fixture-model".into(),
+            },
+            capabilities: ModelCapabilities {
+                vision,
+                ..ModelCapabilities::with_limits(128000, 4096)
+            },
+            reasoning: None,
+            service_tier: None,
+        }
+    }
+
+    /// A vision model whose grant admits interactive client sessions only
+    /// (#2189) is never an `image.understand` option, while other vision
+    /// providers are.
+    #[test]
+    fn session_only_providers_are_not_understand_candidates() {
+        assert!(understand_candidate(&vision_model("openai", true)));
+        assert!(!understand_candidate(&vision_model("openai", false)));
+        assert!(!understand_candidate(&vision_model("openai-chatgpt", true)));
+    }
 }
