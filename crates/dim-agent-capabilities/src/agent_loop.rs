@@ -1237,6 +1237,7 @@ impl AgentLoop {
         let owner = self.clone();
         self.tasks.spawn(async move {
             let work = AssertUnwindSafe(async {
+                owner.binding.await_mode(tool_mode).await;
                 if let Some(mut source) = recovery {
                     owner
                         .binding

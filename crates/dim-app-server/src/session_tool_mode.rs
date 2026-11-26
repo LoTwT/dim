@@ -5,7 +5,7 @@
 use crate::storage::Store;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
-    tool_registry::{ModeChangeCause, ModeTransition, ToolRegistry},
+    tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{Names, ToolMode};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -20,7 +20,6 @@ const FAILED: &str = "tool_mode_failed";
 /// The Session's two tool-mode methods; one per Session instance.
 pub(crate) struct SessionToolModePlugin {
     tools: Key<ToolRegistry>,
-    transition: Key<ModeTransition>,
     methods: Key<SessionMethods>,
     /// Native storage, when the assembly has it: the record carries the value.
     store: Option<Key<Store>>,
@@ -29,7 +28,6 @@ impl SessionToolModePlugin {
     pub(crate) fn new(names: &Names<'_>, stored: bool) -> Result<Self, Error> {
         Ok(Self {
             tools: names.key()?,
-            transition: names.key()?,
             methods: names.key()?,
             store: stored.then(|| names.key()).transpose()?,
         })
@@ -40,11 +38,7 @@ impl DynPlugin for SessionToolModePlugin {
         "SessionToolMode"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        let mut injects = vec![
-            self.tools.erase(),
-            self.transition.erase(),
-            self.methods.erase(),
-        ];
+        let mut injects = vec![self.tools.erase(), self.methods.erase()];
         if let Some(store) = &self.store {
             injects.push(store.erase());
         }
@@ -53,7 +47,6 @@ impl DynPlugin for SessionToolModePlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let tools = ctx.require_at(&self.tools)?;
-            let transition = ctx.require_at(&self.transition)?;
             let methods = ctx.require_at(&self.methods)?;
             let store = match &self.store {
                 Some(key) => Some(ctx.require_at(key)?),
@@ -68,13 +61,12 @@ impl DynPlugin for SessionToolModePlugin {
                 ],
                 Arc::new(move |call, _cancel, _| {
                     let tools = tools.clone();
-                    let transition = transition.clone();
                     let store = store.clone();
                     let MethodCall { method, params, .. } = call;
                     Box::pin(async move {
                         match method.as_str() {
                             "session.tool_mode.get" => Ok(value(&tools)),
-                            _ => change(&tools, &transition, store.as_deref(), params).await,
+                            _ => change(&tools, store.as_deref(), params).await,
                         }
                     })
                 }),
@@ -105,7 +97,6 @@ fn value(tools: &ToolRegistry) -> Value {
 /// follows it.
 async fn change(
     tools: &ToolRegistry,
-    transition: &ModeTransition,
     store: Option<&Store>,
     input: Value,
 ) -> Result<Value, RpcError> {
@@ -117,8 +108,8 @@ async fn change(
     }
     let Params { session_id, mode } = params(input)?;
     if tools.effective_of_mode(mode) == ToolMode::Shell {
-        transition
-            .settle(ToolMode::Shell, ModeChangeCause::Update)
+        tools
+            .settle_update(ToolMode::Shell)
             .await
             .map_err(|error| RpcError::app(-32000, FAILED, error.to_string()))?;
     }

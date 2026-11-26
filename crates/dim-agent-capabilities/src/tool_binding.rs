@@ -80,6 +80,11 @@ fn current(registry: &ToolRegistry) -> (ToolSetAdoption, Vec<Arc<ToolSourceSet>>
 impl ToolBinding {
     /// Fixes the handlers of `request_id` to the tools its prefix (through
     /// `through`) adopted, then releases the pins no later prefix declares.
+    /// Waits for an entry registration that pinned `mode` to settle.
+    pub async fn await_mode(&self, mode: ToolMode) {
+        self.registry.await_entry(mode).await;
+    }
+
     pub fn bind(
         &self,
         request_id: &str,

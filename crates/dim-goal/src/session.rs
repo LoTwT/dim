@@ -234,8 +234,13 @@ impl Owner {
         let op = method
             .strip_prefix("session.goal.")
             .ok_or_else(|| RpcError::invalid(format!("unknown method {method}")))?;
+        let mode_gate = matches!(op, "set" | "resume").then(|| self.tools.lock_mode());
+        let _mode_gate = match mode_gate {
+            Some(gate) => Some(gate.await),
+            None => None,
+        };
         if matches!(op, "set" | "resume")
-            && self.tools.effective_tool_mode() == dim_agent_types::ToolMode::Shell
+            && self.tools.effective_tool_mode_now() == dim_agent_types::ToolMode::Shell
         {
             return Err(RpcError::app(
                 -32000,

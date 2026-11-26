@@ -5,7 +5,7 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{Names, SessionIdentity};
 use dim_agent_types::{ToolResult, ToolSource};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis::{Ctx, Error};
 use serde::Deserialize;
 use serde_json::json;
@@ -58,6 +58,7 @@ impl DynPlugin for CodeModeSessionPlugin {
             let runs = ctx.require_at(&self.runs)?;
             let tools = ctx.require_at(&self.tools)?;
             let identity = ctx.require_at(&self.identity)?;
+            tools.begin_entry(dim_agent_types::ToolMode::Codemode);
             tools.register(
                 ctx,
                 ToolContribution {
@@ -68,6 +69,12 @@ impl DynPlugin for CodeModeSessionPlugin {
                     }),
                 },
             )?;
+            tools
+                .settle_entry(dim_agent_types::ToolMode::Codemode)
+                .await
+                .map_err(|error| {
+                    rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
+                })?;
             Ok(Effect::Done)
         })
     }

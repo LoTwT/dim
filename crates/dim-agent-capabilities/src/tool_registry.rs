@@ -324,6 +324,11 @@ pub struct ToolRegistry {
     /// The operator's chosen mode; the effective one may fall back to
     /// `normal` when its entry tool is not mounted.
     mode: Mutex<ToolMode>,
+    /// The mode an entry registration is settling; turns pinned to it wait
+    /// before their first request.
+    settling: watch::Sender<Option<ToolMode>>,
+    /// Serializes mode updates and registration settlements.
+    mode_gate: tokio::sync::Mutex<()>,
     transition: Arc<ModeTransition>,
     session_id: String,
     config: Arc<SessionConfig>,
@@ -464,6 +469,9 @@ impl ToolRegistry {
     }
     /// The mode in force if `mode` were chosen now.
     pub fn effective_of_mode(&self, mode: ToolMode) -> ToolMode {
+        if *self.settling.borrow() == Some(mode) {
+            return mode;
+        }
         let declared = self.snapshot().0;
         match mode.entry_tool() {
             Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
@@ -473,6 +481,47 @@ impl ToolRegistry {
     /// The operator's chosen mode.
     pub fn tool_mode(&self) -> ToolMode {
         *self.mode.lock().unwrap()
+    }
+    /// Marks an entry tool as registering: a turn that pins `mode` now waits
+    /// for the registration's settle before its first request.
+    pub fn begin_entry(&self, mode: ToolMode) {
+        if self.tool_mode() == mode {
+            self.settling.send_replace(Some(mode));
+        }
+    }
+    /// Settles the registration `begin_entry` announced, then lets pinned
+    /// turns continue.
+    pub async fn settle_entry(&self, mode: ToolMode) -> Result<(), HostError> {
+        if *self.settling.borrow() != Some(mode) {
+            return Ok(());
+        }
+        let _gate = self.mode_gate.lock().await;
+        let result = self
+            .transition
+            .settle(mode, ModeChangeCause::Registration)
+            .await;
+        self.settling.send_replace(None);
+        result
+    }
+    /// Waits until `mode`'s registration settlement finishes.
+    pub async fn await_entry(&self, mode: ToolMode) {
+        let mut settling = self.settling.subscribe();
+        while *settling.borrow_and_update() == Some(mode) {
+            if settling.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+    /// Holds the mode gate: a Goal change that reads the mode waits for a
+    /// concurrent update settlement.
+    pub async fn lock_mode(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mode_gate.lock().await
+    }
+    /// Settles an operator update; the mode gate keeps it ordered with a
+    /// registration settlement.
+    pub async fn settle_update(&self, mode: ToolMode) -> Result<(), HostError> {
+        let _gate = self.mode_gate.lock().await;
+        self.transition.settle(mode, ModeChangeCause::Update).await
     }
     /// The mode in force: the chosen one, or `normal` when its entry tool is
     /// not mounted.
@@ -1081,6 +1130,8 @@ impl DynPlugin for ToolRegistryPlugin {
                 offered: Mutex::default(),
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
+                settling: watch::Sender::new(None),
+                mode_gate: tokio::sync::Mutex::new(()),
                 transition: Arc::new(ModeTransition::default()),
                 session_id: identity.session_id.clone(),
                 config: config.clone(),
@@ -1182,6 +1233,8 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(ToolMode::Normal),
+            settling: watch::Sender::new(None),
+            mode_gate: tokio::sync::Mutex::new(()),
             transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
@@ -1213,6 +1266,8 @@ mod tests {
             offered: Mutex::default(),
             missing: Mutex::default(),
             mode: Mutex::new(mode),
+            settling: watch::Sender::new(None),
+            mode_gate: tokio::sync::Mutex::new(()),
             transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
             config,
