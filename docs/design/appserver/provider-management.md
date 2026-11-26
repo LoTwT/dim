@@ -622,6 +622,7 @@ instead, so the flag cannot sit there without the older release refusing the
 whole record. The record format otherwise keeps its shape: no key is renamed
 or removed, no migration runs, and a record written before the flag existed
 reads exactly as a legacy clone.
+
 For a static Provider with a saved credential or anonymous authentication,
 explicit refresh is available whenever its driver and definition support remote
 listing. A disabled Provider stays disabled after refresh, and its models remain

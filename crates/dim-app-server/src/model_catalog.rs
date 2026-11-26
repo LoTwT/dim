@@ -76,11 +76,13 @@ pub struct ModelEntry {
     /// write may infer further edits from it. Absent on a clone written
     /// before this normalization existed, which the inference treats as a
     /// legacy clone. Only overrides carry it; catalog rows and user models
-    /// never do. The flag sits beside the descriptor rather than inside the
-    /// metadata, which the stored record validates field by field: a record
-    /// an older release reads back ignores the flag and the clone it marks
-    /// reads as a legacy one, so a downgrade degrades to the conservative
-    /// inference instead of refusing the record.
+    /// never do — it is the server's own normalization record, so the inputs
+    /// that adopt a client descriptor clear it at the boundary instead of
+    /// storing or echoing what the client wrote. The flag sits beside the
+    /// descriptor rather than inside the metadata, which the stored record
+    /// validates field by field: a record an older release reads back ignores
+    /// the flag and the clone it marks reads as a legacy one, so a downgrade
+    /// degrades to the conservative inference instead of refusing the record.
     #[serde(default, skip_serializing_if = "omitted_when_false")]
     pub normalized_override: bool,
 }

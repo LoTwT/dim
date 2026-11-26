@@ -389,8 +389,12 @@ impl ProviderService {
         }
         let mut models = input.models;
         // A created Provider's models are the user's own descriptors, so the
-        // limits they state are declarations, not inherited defaults.
+        // limits they state are declarations, not inherited defaults. The
+        // normalization mark belongs to the server's own override writes
+        // (#2189): no client descriptor is an override, so the input cannot
+        // carry it into the record.
         for model in &mut models {
+            model.normalized_override = false;
             if model.capabilities.context_window.is_some() {
                 declare(model, "contextWindow");
             }

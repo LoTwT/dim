@@ -11468,6 +11468,105 @@ async fn model_page_keeps_magpie_visible_without_the_dim_account_plugin() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The completion flag is the server's own normalization record: it is never
+/// the client's to set, so neither input that adopts client descriptors keeps
+/// it, and neither the stored user model nor the management echo carries it
+/// (#2189).
+#[tokio::test]
+async fn a_client_written_completion_flag_neither_stores_nor_echoes() {
+    const FLAGGED: &str = "00000000-0000-4000-8000-000000000099";
+    let home = temp_home("provider-completion-flag");
+    let (root, provider) = provider_root(&home).await;
+    let cancel = CancellationToken::new();
+    let mut config = input(
+        FLAGGED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("flag-key"),
+        "flagged",
+        4_096,
+    );
+    let with_flag = |entry: &str| {
+        serde_json::from_value::<ModelEntry>(serde_json::json!({
+            "modelId": entry, "displayName": entry, "status": "active",
+            "normalizedOverride": true,
+            "capabilities": {"modalities": ["text"], "toolCalling": true,
+                "streaming": true, "structuredOutput": true, "vision": false,
+                "audio": false, "reasoning": false,
+                "contextWindow": 32000, "maxOutputTokens": 4096},
+        }))
+        .unwrap()
+    };
+    assert!(with_flag("listed").normalized_override);
+    config.models = vec![with_flag("listed")];
+    let created = provider.create(config, &cancel).await.unwrap();
+
+    let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
+    assert!(
+        !serde_json::to_string(&record).unwrap().contains("normalizedOverride"),
+        "a provider create's client descriptors store nothing of the flag: {record}"
+    );
+    let catalog = provider
+        .create_model(
+            FLAGGED.into(),
+            created.info.version.unwrap(),
+            with_flag("added"),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(catalog.models.iter().any(|model| model.id == "added"));
+
+    let record: Value = serde_json::from_str(&stored_record_json(&home, FLAGGED)).unwrap();
+    assert!(
+        !serde_json::to_string(&record).unwrap().contains("normalizedOverride"),
+        "a models.create client descriptor stores nothing of the flag: {record}"
+    );
+    let view = serde_json::to_value(
+        provider
+            .management(FLAGGED.into(), None, &cancel)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !serde_json::to_string(&view).unwrap().contains("normalizedOverride"),
+        "the management read publishes no completion flag: {view}"
+    );
+
+    // Control: the server's own write does record the flag, so the stripping
+    // assertions above cannot pass by the write path never writing it.
+    provider
+        .update_model_config(
+            FLAGGED.into(),
+            catalog.version,
+            "listed".into(),
+            Some(serde_json::from_value(serde_json::json!({"vision": true})).unwrap()),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record = stored_record_json(&home, FLAGGED);
+    assert!(
+        record.contains("normalizedOverride"),
+        "the edit stores the completion flag on its own override: {record}"
+    );
+    let view = serde_json::to_value(
+        provider
+            .management(FLAGGED.into(), None, &cancel)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !serde_json::to_string(&view).unwrap().contains("normalizedOverride"),
+        "not even the server's own override echoes the flag: {view}"
+    );
+
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test]
 #[ignore = "records warm provider-read measurements against a disposable store"]
 async fn measure_on_demand_provider_reads() {

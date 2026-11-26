@@ -244,7 +244,11 @@ impl ProviderService {
                         ));
                     }
                     // A user model states its own limits, so what it declares
-                    // is what the bundle must not override.
+                    // is what the bundle must not override. It is not an
+                    // override, so the normalization mark the server's own
+                    // override writes carry (#2189) is not the client's to
+                    // state.
+                    model.normalized_override = false;
                     if model.capabilities.context_window.is_some() {
                         declare(&mut model, "contextWindow");
                     }
