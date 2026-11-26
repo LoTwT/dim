@@ -140,6 +140,8 @@ Rejected: translating the prompt texts per locale. It doubles the policy texts a
 
 ## 8. Judging a change
 
+A policy text may ship without the comparison below when its owner records a design rationale in the owner's design. The rationale states what the text asks of the model, why that is expected to help, and where the expectation comes from, such as an earlier product's experience with the same text. It must be logically sound. It stands in for the evaluation until one is run, and any later candidate change to that text is still judged by the rule below.
+
 ### 8.1 The rule
 
 **The comparison.** A change to a policy text is judged against the current text, on the same cases, the same model with the same reasoning settings, and the same budget — the same window, tools, turn limit and starting workspace — with **one fixed judge** for both arms. One comparison is the candidate arm's loss against the current arm on one rate: a loss of at most `δ = 0.05` never rejects, and a larger loss is a regression when a one-sided mid-p Fisher exact test on the two arms' counts rejects "no loss". Each evaluation has one family of comparisons, fixed before any data:
