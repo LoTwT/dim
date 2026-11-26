@@ -1269,6 +1269,7 @@ async fn restore_preserves_each_parent_tools_own_confirmed_child_effects() {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
                 turn_id: "turn".into(),
             })
             .into(),
@@ -1459,6 +1460,7 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
         timeline
             .append(
                 EventKind::TurnStart(TurnStartData {
+                    tool_mode: None,
                     turn_id: "turn".into(),
                 })
                 .into(),
@@ -1954,6 +1956,7 @@ async fn a_restored_queue_writes_one_owed_deletion_for_a_handover_input() {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
                 turn_id: "turn-1".into(),
             })
             .into(),

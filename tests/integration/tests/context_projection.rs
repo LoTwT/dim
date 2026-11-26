@@ -133,6 +133,7 @@ fn prompt_changes_and_scope_ends_are_not_projected() {
         event(
             1,
             EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
                 turn_id: "turn-1".into(),
             }),
         ),

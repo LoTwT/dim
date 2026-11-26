@@ -665,6 +665,7 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
                 })
                 .into(),
                 EventKind::TurnStart(TurnStartData {
+                    tool_mode: None,
                     turn_id: id.clone(),
                 })
                 .into(),

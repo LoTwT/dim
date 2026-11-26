@@ -276,8 +276,13 @@ impl AgentLoop {
             deferred: None,
             tool_mode,
         });
-        self.timeline
-            .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
+        self.timeline.append(
+            EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
+                turn_id: id,
+            })
+            .into(),
+        )?;
         Ok(())
     }
     fn end(&self, turn: &mut Turn, outcome: TurnOutcome) -> Result<()> {

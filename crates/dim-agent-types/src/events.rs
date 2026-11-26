@@ -307,6 +307,12 @@ pub struct InputConsumedData {
 #[serde(deny_unknown_fields)]
 pub struct TurnStartData {
     pub turn_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub tool_mode: Option<ToolMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1448,6 +1448,7 @@ async fn a_cut_check_starts_at_the_last_completed_compaction() {
         record(
             sequence,
             EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
                 turn_id: format!("turn-{sequence}"),
             }),
         )
@@ -1585,6 +1586,7 @@ async fn a_cut_on_another_branch_replays_the_segment() {
             record(
                 1,
                 EventKind::TurnStart(TurnStartData {
+                    tool_mode: None,
                     turn_id: "turn-main".into(),
                 }),
             ),
@@ -1618,6 +1620,7 @@ async fn a_cut_on_another_branch_replays_the_segment() {
             record(
                 2,
                 EventKind::TurnStart(TurnStartData {
+                    tool_mode: None,
                     turn_id: "turn-child".into(),
                 }),
             ),
@@ -9370,6 +9373,7 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
     let main = key("mixed", "main");
     let kinds = [
         EventKind::TurnStart(TurnStartData {
+            tool_mode: None,
             turn_id: "turn".into(),
         }),
         EventKind::ModelStart(StepData {
@@ -9377,6 +9381,7 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
             request_id: "request".into(),
         }),
         EventKind::TurnStart(TurnStartData {
+            tool_mode: None,
             turn_id: "turn".into(),
         }),
         EventKind::ModelStart(StepData {

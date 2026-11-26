@@ -1062,7 +1062,7 @@ impl ContextUsage {
                         values: vec![serde_json::json!("turn/start")],
                     }),
                     select: QuerySelect::Fields {
-                        fields: vec!["position.sequence".into()],
+                        fields: vec!["position.sequence".into(), "data.tool_mode".into()],
                     },
                     group_by: vec![],
                     pick: None,
@@ -1077,14 +1077,23 @@ impl ContextUsage {
                 }),
             })
             .await?;
-        let start = match &reply.result {
-            QueryOutput::Rows { rows } => {
-                rows.first().and_then(|row| match row.values.as_slice() {
-                    [QueryValue::Value { value }] => value.as_u64(),
+        let (start, pin) = match &reply.result {
+            QueryOutput::Rows { rows } => rows
+                .first()
+                .and_then(|row| match row.values.as_slice() {
+                    [
+                        QueryValue::Value { value },
+                        QueryValue::Value { value: mode },
+                    ] => Some((
+                        value.as_u64(),
+                        serde_json::from_value::<Option<ToolMode>>(mode.clone())
+                            .ok()
+                            .flatten(),
+                    )),
                     _ => None,
                 })
-            }
-            _ => None,
+                .unwrap_or((None, None)),
+            _ => (None, None),
         };
         let Some(start) = start else {
             return Ok(self.registry.effective_tool_mode_now());
@@ -1130,6 +1139,9 @@ impl ContextUsage {
         };
         if ended.is_some_and(|end| end >= start) {
             return Ok(self.registry.effective_tool_mode_now());
+        }
+        if let Some(mode) = pin {
+            return Ok(mode);
         }
         let reply = self
             .timeline

@@ -1265,6 +1265,7 @@ fn consumed(input: &str) -> EventKind {
 
 fn turn_start(turn: &str) -> EventKind {
     EventKind::TurnStart(TurnStartData {
+        tool_mode: None,
         turn_id: turn.into(),
     })
 }

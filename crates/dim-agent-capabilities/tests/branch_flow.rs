@@ -721,6 +721,7 @@ fn moved_turn(timeline: &Timeline, turn: &str) -> Arc<AgentEvent> {
     timeline
         .append(
             EventKind::TurnStart(TurnStartData {
+                tool_mode: None,
                 turn_id: turn.into(),
             })
             .into(),

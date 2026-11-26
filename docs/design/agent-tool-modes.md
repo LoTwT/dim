@@ -285,6 +285,9 @@ session.create.toolMode ──▶ SessionConfig.toolMode ──▶ ToolRegistry 
 A member Session records the creating Session's current mode when it is created. Switching the
 creator later does not change it: the member is its own Session with its own operator control.
 
+The turn records its pin in `turn/start` as an additive optional `toolMode`, so a usage read for an
+open turn uses the turn's mode even when a follow-up input was applied inside it.
+
 ## 6. Shell mode's tool
 
 The product's local-execution profile does not mount the persistent shell today; `execute` exists

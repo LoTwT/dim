@@ -450,6 +450,7 @@ async fn rounds(
                         sequence += 1;
                         let kind = match chain_kind {
                             ChainKind::Turn => EventKind::TurnStart(TurnStartData {
+                                tool_mode: None,
                                 turn_id: format!("turn-{sequence}"),
                             }),
                             ChainKind::Consumed => EventKind::InputConsumed(InputConsumedData {
@@ -660,6 +661,7 @@ async fn read_load(
                     vec![record(
                         sequence,
                         EventKind::TurnStart(TurnStartData {
+                            tool_mode: None,
                             turn_id: format!("turn-{sequence}"),
                         }),
                     )],
@@ -756,6 +758,7 @@ async fn reads() -> std::result::Result<(), Error> {
                 record(
                     1,
                     EventKind::TurnStart(TurnStartData {
+                        tool_mode: None,
                         turn_id: "turn".into(),
                     }),
                 ),

@@ -116,7 +116,7 @@ impl ToolBinding {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let (visible, delegated) = project(mode, tools);
+        let (visible, delegated) = project(self.registry.effective_of_mode(mode), tools);
         self.bind_snapshot(request_id, &visible, &delegated, sets)?;
         let mut state = self.state.lock().unwrap();
         if let Some(newest) = state
@@ -142,7 +142,7 @@ impl ToolBinding {
     ) -> Result<Vec<ToolDefinition>, String> {
         let (definitions, sets) = self.registry.snapshot();
         let tools = declared.unwrap_or(&definitions);
-        let (visible, delegated) = project(mode, tools);
+        let (visible, delegated) = project(self.registry.effective_of_mode(mode), tools);
         self.bind_snapshot(request_id, &visible, &delegated, sets)?;
         Ok(visible)
     }

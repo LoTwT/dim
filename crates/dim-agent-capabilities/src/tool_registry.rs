@@ -327,6 +327,9 @@ pub struct ToolRegistry {
     /// The mode an entry registration is settling; turns pinned to it wait
     /// before their first request.
     settling: watch::Sender<Option<ToolMode>>,
+    /// A registration whose settle failed: the mode stays `normal` until a
+    /// later settle succeeds.
+    settle_failed: Mutex<Option<ToolMode>>,
     /// Serializes mode updates and registration settlements.
     mode_gate: tokio::sync::Mutex<()>,
     transition: Arc<ModeTransition>,
@@ -472,6 +475,9 @@ impl ToolRegistry {
         *self.settling.borrow()
     }
     pub fn effective_of_mode(&self, mode: ToolMode) -> ToolMode {
+        if *self.settle_failed.lock().unwrap() == Some(mode) {
+            return ToolMode::Normal;
+        }
         if *self.settling.borrow() == Some(mode) {
             return mode;
         }
@@ -488,6 +494,7 @@ impl ToolRegistry {
     /// Marks an entry tool as registering: a turn that pins `mode` now waits
     /// for the registration's settle before its first request.
     pub fn begin_entry(&self, mode: ToolMode) {
+        *self.settle_failed.lock().unwrap() = None;
         if self.tool_mode() == mode {
             self.settling.send_replace(Some(mode));
         }
@@ -507,6 +514,7 @@ impl ToolRegistry {
             .transition
             .settle(mode, ModeChangeCause::Registration)
             .await;
+        *self.settle_failed.lock().unwrap() = result.as_ref().err().map(|_| mode);
         let _ = self.snapshot();
         self.settling.send_replace(None);
         result
@@ -553,6 +561,9 @@ impl ToolRegistry {
     }
     fn effective_of(&self, declared: &[ToolDefinition]) -> ToolMode {
         let mode = self.tool_mode();
+        if *self.settle_failed.lock().unwrap() == Some(mode) {
+            return ToolMode::Normal;
+        }
         match mode.entry_tool() {
             Some(entry) if declared.iter().any(|tool| tool.name == entry) => mode,
             _ => ToolMode::Normal,
@@ -561,11 +572,12 @@ impl ToolRegistry {
     /// Replaces the live mode. It does not re-adopt a tool set: the next
     /// request projects the same callable set under the new mode.
     pub fn set_tool_mode(&self, mode: ToolMode) {
+        *self.settle_failed.lock().unwrap() = None;
         *self.mode.lock().unwrap() = mode;
     }
     /// The declarations of `mode`'s visible tools in their mounted order.
     pub fn visible_for(&self, mode: ToolMode) -> Vec<ToolDefinition> {
-        project(mode, &self.snapshot().0).0
+        project(self.effective_of_mode(mode), &self.snapshot().0).0
     }
     /// The declarations the model request carries: the callable set projected
     /// by the effective mode.
@@ -1149,6 +1161,7 @@ impl DynPlugin for ToolRegistryPlugin {
                 missing: Mutex::default(),
                 mode: Mutex::new(config.tool_mode),
                 settling: watch::Sender::new(None),
+                settle_failed: Mutex::new(None),
                 mode_gate: tokio::sync::Mutex::new(()),
                 transition: Arc::new(ModeTransition::default()),
                 session_id: identity.session_id.clone(),
@@ -1252,6 +1265,7 @@ mod tests {
             missing: Mutex::default(),
             mode: Mutex::new(ToolMode::Normal),
             settling: watch::Sender::new(None),
+            settle_failed: Mutex::new(None),
             mode_gate: tokio::sync::Mutex::new(()),
             transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),
@@ -1285,6 +1299,7 @@ mod tests {
             missing: Mutex::default(),
             mode: Mutex::new(mode),
             settling: watch::Sender::new(None),
+            settle_failed: Mutex::new(None),
             mode_gate: tokio::sync::Mutex::new(()),
             transition: Arc::new(ModeTransition::default()),
             session_id: "session".into(),

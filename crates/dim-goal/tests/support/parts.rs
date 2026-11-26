@@ -1665,6 +1665,7 @@ impl Env {
         self.emit(
             branch,
             EventKind::TurnStart(dim_agent_types::TurnStartData {
+                tool_mode: None,
                 turn_id: turn_id.to_owned(),
             }),
         );
@@ -1703,6 +1704,7 @@ impl Env {
         self.emit(
             branch,
             EventKind::TurnStart(dim_agent_types::TurnStartData {
+                tool_mode: None,
                 turn_id: turn_id.to_owned(),
             }),
         )

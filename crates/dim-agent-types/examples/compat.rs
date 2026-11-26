@@ -87,7 +87,10 @@ fn native_events() -> Vec<AgentEvent> {
             mode: Some(InputMode::Queue),
             tool_mode: None,
         }),
-        EventKind::TurnStart(TurnStartData { turn_id: turn() }),
+        EventKind::TurnStart(TurnStartData {
+            tool_mode: None,
+            turn_id: turn(),
+        }),
         EventKind::ModelStart(StepData {
             turn_id: turn(),
             request_id: request_id(),

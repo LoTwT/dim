@@ -355,6 +355,7 @@ async fn a_reload_drops_the_streak_and_explicit_resume_starts_at_zero() {
     seed.append(
         "main",
         EventKind::TurnStart(dim_agent_types::TurnStartData {
+            tool_mode: None,
             turn_id: "t1".into(),
         }),
     );
@@ -379,6 +380,7 @@ async fn a_reload_drops_the_streak_and_explicit_resume_starts_at_zero() {
     seed.append(
         "main",
         EventKind::TurnStart(dim_agent_types::TurnStartData {
+            tool_mode: None,
             turn_id: "t2".into(),
         }),
     );
@@ -527,6 +529,7 @@ async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
     seed.append(
         "main",
         EventKind::TurnStart(dim_agent_types::TurnStartData {
+            tool_mode: None,
             turn_id: "t1".into(),
         }),
     );
@@ -551,6 +554,7 @@ async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
     seed.append(
         "main",
         EventKind::TurnStart(dim_agent_types::TurnStartData {
+            tool_mode: None,
             turn_id: "t2".into(),
         }),
     );

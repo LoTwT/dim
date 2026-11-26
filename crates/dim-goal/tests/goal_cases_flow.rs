@@ -367,6 +367,7 @@ async fn d5_a_restored_line_repeats_no_decision() {
     seed.append(
         "main",
         EventKind::TurnStart(dim_agent_types::TurnStartData {
+            tool_mode: None,
             turn_id: "t1".into(),
         }),
     );
