@@ -49,7 +49,8 @@ use std::sync::{Arc, Weak};
 pub type Routed<T> = std::result::Result<T, RouteError>;
 
 /// Why a routed call did not reach a reply.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
 pub enum RouteError {
     /// The Session is not there, has no owner, or is closed and cannot load
     /// again. Only a process caller receives it; Agents loads and holds a
@@ -185,11 +186,13 @@ impl SessionCall {
 const RELOADING: &str = "Reloading";
 
 /// Operations a route does not resolve even though their service is a data
-/// face: each takes a cancellation the caller observes through the future, or
-/// hands the caller something to settle, and a routed call carries data only.
-/// The generated authoring requests read this same list, so the runtime and the
-/// declarations agree on what is routable.
-pub const LIFECYCLE_METHODS: [(&str, &str); 4] = [
+/// face: each takes a function, or hands the caller a subscription or a
+/// cancellation to settle, and a routed call carries data only. The list is
+/// maintained by hand; the generated authoring requests read this same
+/// constant, so the runtime and the declarations cannot disagree.
+pub const LIFECYCLE_METHODS: [(&str, &str); 6] = [
+    ("dispatcher", "consume"),
+    ("dispatcher", "listen"),
     ("permission", "check"),
     ("toolHost", "execute"),
     ("treeCommands", "create"),

@@ -1404,6 +1404,18 @@ export interface PartRegistry {
 }
 
 
+/** Why a routed call did not reach a reply. */
+export type RouteError =
+  | /** The Session is not there, has no owner, or is closed and cannot load again. Only a process caller receives it; Agents loads and holds a Session that is merely not loaded (ADR 027 D5), so this is final. */ { noSession: string }
+  | /** The Session instance is closing, and so is a call to one of its lines. A Session-scoped caller ends its work; a process caller treats it as [`Self::NoSession`]. */ { sessionClosing: string }
+  | /** Agents is reloading and cannot take calls yet. A process caller retries later. */ { sessionReloading: string }
+  | /** The Session exists but cannot be loaded now: its restore failed, or the Agent that owns it is unavailable. The caller reports the reason and does not retry. */ { sessionUnavailable: { session: string; reason: string } }
+  | /** The Session is live but the line is closing, closed, or not one of its lines. Final for that line: no hold and no retry. */ { noLine: { session: string; line: string } }
+  | /** The name is not a data face a route resolves there: the assembly marks it internal, it is a mechanism registration point, or it is a scope lifecycle service. A permanent answer: the request is wrong. */ { notDataFace: { service: string } }
+  | /** The service is a data face a route resolves, but this operation of it is not: its call needs a cancellation or a cleanup the routed call cannot carry, so only a direct call keeps its lifetime behaviour. */ { methodNotRoutable: { service: string; method: string } }
+  | /** The name is a data face, but not of the scope the route reaches. */ { wrongScope: { service: string; group: string } }
+  | /** The owner's own failure, with the name and message it wrote; routing does not read or restate it. `reloading` is the owner's own code for "try again later", so a caller retries exactly what the owner says it may retry. */ { owner: { name: string; message: string; data?: import('./plugin.js').BridgeJsonValue | null; reloading: boolean } }
+
 
 /**
  * One Session's own lines and data faces, provided to the Session's parts and
@@ -1801,7 +1813,7 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
 /** What a method returning `Err(RouteError)` throws. */
-export type RouteErrorThrown = RustError<"RouteError", "NoSession" | "SessionClosing" | "SessionReloading" | "SessionUnavailable" | "NoLine" | "NotDataFace" | "MethodNotRoutable" | "WrongScope" | "Owner", undefined>
+export type RouteErrorThrown = RustError<"RouteError", "noSession" | "sessionClosing" | "sessionReloading" | "sessionUnavailable" | "noLine" | "notDataFace" | "methodNotRoutable" | "wrongScope" | "owner", RouteError>
 
 /** What a method returning `Err(SessionInstanceError)` throws. */
 export type SessionInstanceErrorThrown = RustError<"SessionInstanceError", "Create" | "NotReady" | "Cleanup", undefined>
@@ -1868,7 +1880,7 @@ export type LineFaces = {
   approval: Approval
   backgroundExec: BackgroundExec
   branchLine: BranchLine
-  dispatcher: Dispatcher
+  dispatcher: Omit<Dispatcher, 'consume' | 'listen'>
   inputQueue: InputQueue
   permission: Omit<Permission, 'check'>
   timeline: Timeline

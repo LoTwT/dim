@@ -2,7 +2,12 @@
 // the two data operations (#2127). The request's `service`, `method` and
 // `args` are the target's own, so a typo fails to compile.
 import type { Sessions } from '../../npm/plugin.js'
-import type { SessionScope } from '../../npm/branch-services.js'
+import type { RouteError, SessionScope } from '../../npm/branch-services.js'
+
+/** A Session part reads the owner's structured failure from the routed error. */
+export function ownerFailure(error: RouteError): string | null {
+  return 'owner' in error ? `${error.owner.name}: ${error.owner.message}` : null
+}
 
 export async function readByCalls(
   scope: SessionScope,
@@ -48,6 +53,8 @@ void scope.lineCall({ lineId: 'main', service: 'inputQueue', method: 'withdraw',
 void scope.call({ service: 'inputQueue', method: 'withdraw', args: [] })
 // @ts-expect-error a reply keeps the target method's own type.
 void scope.lineCall({ lineId: 'main', service: 'timeline', method: 'sequence', args: [] }).then((reply: string) => reply)
+// @ts-expect-error a subscription an operation hands the caller is not routed.
+void scope.lineCall({ lineId: 'main', service: 'dispatcher', method: 'listen', args: ['n', [], (_e: unknown) => {}] })
 // @ts-expect-error an operation that needs a caller-side cancellation is not routed.
 void scope.lineCall({ lineId: 'main', service: 'wait', method: 'wait', args: [] })
 // @ts-expect-error a Session service takes no lineId.

@@ -59,10 +59,9 @@ The request types are generated, so `service`, `method` and `args` are the targe
 a typo fails `tsc`. Nothing a call returns may be kept: the next call looks the target up
 again.
 
-A line is admitted while it is published and not closing: after its durable `branch/end` it
-stays reachable until its instance starts closing, and then `no_line` is final for it. A call
-that was admitted keeps its owner's own result and failure, including one that arrives after
-the end. Rust calls the same operations: it builds `args` from the target operation's request
+A line is admitted while it is published and not closing. Its durable `branch/end` takes it
+out of the published set at once, so a later call answers `no_line`, which is final for that
+line; a call admitted before the end keeps its owner's own result and failure. Rust calls the same operations: it builds `args` from the target operation's request
 type and reads the reply as that operation's reply type.
 
 ## Available services

@@ -380,6 +380,17 @@ async fn routing_resolves_only_data_faces_of_the_scope_it_reaches() {
     );
     assert_eq!(
         scope
+            .line_call(LineCall::new("main", "dispatcher", "listen", vec![]))
+            .await
+            .unwrap_err(),
+        RouteError::MethodNotRoutable {
+            service: "dispatcher".into(),
+            method: "listen".into()
+        },
+        "an operation that hands the caller a subscription is not routed"
+    );
+    assert_eq!(
+        scope
             .call(SessionCall::new("treeCommands", "create", vec![]))
             .await
             .unwrap_err(),
