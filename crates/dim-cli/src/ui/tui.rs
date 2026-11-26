@@ -6585,12 +6585,6 @@ impl App {
             }
             (cursor.1 as usize, prompt_width + cursor.0 as usize)
         };
-        if self.fullscreen {
-            let minimum = FULLSCREEN_COMPOSER_ROWS.min((size.1 as usize).saturating_sub(7).max(1));
-            if rows.len() < minimum {
-                rows.resize(minimum, String::new());
-            }
-        }
         let box_top = live.len();
         if self.fullscreen && self.prompt.is_none() && !palette_overlay {
             frame.composer = Some(Rect::new(
@@ -6599,6 +6593,12 @@ impl App {
                 text_width as u16,
                 rows.len() as u16,
             ));
+        }
+        if self.fullscreen {
+            let minimum = FULLSCREEN_COMPOSER_ROWS.min((size.1 as usize).saturating_sub(7).max(1));
+            if rows.len() < minimum {
+                rows.resize(minimum, String::new());
+            }
         }
         let shell_title = shell.map(|shell| match shell {
             Shell::Recorded => t("! shell mode"),
