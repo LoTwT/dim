@@ -135,6 +135,10 @@ pub(super) async fn stop(
         Err(super::background::TaskError::Closed) => Err(HostError::Cancelled(
             dim_agent_runtime::CAPABILITY_RELOADING.into(),
         )),
+        Err(super::background::TaskError::Running) => Ok(failed(
+            "The stop was requested; the command is still running because the owner has not confirmed its release. It is not stopped yet, and its result will follow.",
+            "exec_task_running",
+        )),
     }
 }
 

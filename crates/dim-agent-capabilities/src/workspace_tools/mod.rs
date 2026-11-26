@@ -575,6 +575,11 @@ impl DynPlugin for WorkspaceToolsPlugin {
                                 ),
                                 background::TaskError::Closed => RpcError::reloading(),
                                 background::TaskError::Read(error) => error.into(),
+                                background::TaskError::Running => RpcError::app(
+                                    -32000,
+                                    "exec_task_running",
+                                    "The task is still running",
+                                ),
                             })?;
                         Ok(serde_json::json!({"text":text}))
                     })

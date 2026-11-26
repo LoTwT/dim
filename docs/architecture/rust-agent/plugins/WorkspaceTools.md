@@ -142,8 +142,10 @@ App Server calls the branch's `BackgroundExec` in every profile; the operation m
 `unknown`/`closed`/`read` to the same RPC errors. It waits for cleanup and returns the committed terminal
 `{task_id, status, result}` in the model-readable content. An already-ended task
 keeps its result. Only `cancelled` confirms cancellation; `failed` remains an error,
-including when the process tree could not be released. An unknown task fails
-without stopping any command. Detached exec results name this operation and
+including when the process tree could not be released. When the owner has not
+confirmed the release, the operation answers `running` — an explicit pending stop:
+the task stays running, keeps its cleanup and Session hold, and its terminal
+follows. An unknown task fails without stopping any command. Detached exec results name this operation and
 distinguish their Task ID from Collaboration's Agent and Session identities.
 
 ```text
@@ -519,7 +521,7 @@ stopped."
 The other tools' refusal codes (`invalid_input`, `not_regular_file`,
 `is_directory`, `file_modified_since_read`, `text_binding_required`,
 `permission_denied`, `write_error`, `exec_invalid_request`,
-`exec_task_unknown`, `exec_terminate_failed`, `exec_wait_failed`,
+`exec_task_unknown`, `exec_task_running`, `exec_terminate_failed`, `exec_wait_failed`,
 `exec_output_offload_failed`) reach clients and persistence in
 `structuredContent`; `ToolResult.content` carries the sentence the model reads,
 and HistoryRenderer renders the content alone, so no code reaches the model. A
@@ -673,8 +675,9 @@ clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
 `cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
 ended task at once and otherwise waits for its dispatch until `timeoutMs` elapses.
 For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it stops
-a running task and answers the owner's terminal, and an already ended task keeps
-its record and wake. The terminal decides the wake: `cancelled` stays silent and
+a running task and answers the owner's terminal, or `running` when the owner has
+not confirmed the release (the task keeps its record and cleanup, and the terminal
+follows); an already ended task keeps its record and wake. The terminal decides the wake: `cancelled` stays silent and
 every other status posts the completion notice. A command that started as a
 native process and a persistent shell's background job both end `cancelled`, so
 neither wakes. A shell command is interrupted in its persistent shell; its

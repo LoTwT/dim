@@ -1642,6 +1642,11 @@ impl Connection {
                         TaskError::Read(_) => {
                             RpcError::app(-32603, "exec_task_read", "Task facts could not be read")
                         }
+                        TaskError::Running => RpcError::app(
+                            -32000,
+                            "exec_task_running",
+                            "The stop was requested; the command is still running and its release is not confirmed",
+                        ),
                     })?;
                 Reply::ExecEnded(result)
             }
