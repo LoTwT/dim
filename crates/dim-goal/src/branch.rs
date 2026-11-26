@@ -13,8 +13,8 @@ use dim_agent_runtime::{
     TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::{
-    AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, GoalViewStatus,
-    InputBlock, InputMessageData, InputMode, InterruptScope, ToolMode, TurnEndData, TurnOutcome,
+    AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, InputBlock,
+    InputMessageData, InputMode, InterruptScope, TurnEndData, TurnOutcome,
 };
 use dim_app_server::settings::{Settings, SettingsScope};
 use rutis::Ctx;
@@ -291,7 +291,6 @@ impl DynPlugin for GoalBranch {
                 branch_id: identity.branch_id.clone(),
             };
             let registered = self.changes.register(key.clone(), &owner);
-            let mode_key = key.clone();
             let cleanup = owner.clone();
             let changes = self.changes.clone();
             ctx.effect(move || async move {

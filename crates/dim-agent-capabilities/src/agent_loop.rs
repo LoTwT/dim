@@ -236,7 +236,10 @@ impl AgentLoop {
         if let Some(mode) = self.binding.settling() {
             let owner = self.clone();
             self.tasks.spawn(async move {
-                owner.binding.await_mode(mode).await;
+                tokio::select! {
+                    _ = owner.lifecycle.cancelled() => return,
+                    _ = owner.binding.await_mode(mode) => {}
+                }
                 let mut slot = owner.turn.lock().unwrap();
                 if let Err(error) = owner.try_start(&mut slot) {
                     owner.dispatcher.fail(error);
@@ -595,7 +598,7 @@ impl AgentLoop {
             cancel.cancel();
         }
     }
-    async fn rebuild(&self) -> Result<u64> {
+    async fn rebuild(self: &Arc<Self>) -> Result<u64> {
         let through = self.timeline.committed();
         let equal = |path: &str, value: serde_json::Value| QueryFilter::Compare {
             left: QueryOperand::Field { path: path.into() },
@@ -1201,7 +1204,7 @@ impl AgentLoop {
         *slot = restored;
         self.publish(&slot);
         match slot.as_mut() {
-            None => self.try_start(&mut slot)?,
+            None => self.start_when_settled(&mut slot)?,
             Some(turn) => {
                 if let Some(request) = turn
                     .request

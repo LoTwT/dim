@@ -2523,7 +2523,7 @@ async fn the_first_shell_request_in_the_settle_window_carries_the_pause() {
         .await
         .unwrap();
     assert!(submitted.get("error").is_none(), "{submitted}");
-    registry.settle_entry(ToolMode::Shell).await;
+    assert!(registry.settle_entry(ToolMode::Shell).await.is_ok());
     let idle = fixture
         .client
         .rpc(

@@ -1168,7 +1168,7 @@ impl ContextUsage {
                     pick: None,
                     order_by: vec![QueryOrder {
                         key: QueryOrderKey::Position,
-                        direction: TimelineQueryDirection::Descending,
+                        direction: TimelineQueryDirection::Ascending,
                     }],
                 },
                 page: Some(QueryPage {
