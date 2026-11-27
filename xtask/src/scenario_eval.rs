@@ -2869,9 +2869,10 @@ struct RunRecord {
     /// use.
     judge_reasks: u32,
     /// The view's estimate against the judge's budget the fit check compared:
-    /// present when the check ran — judged, unreadable, a failed call, or
-    /// unfit — and `None` when no view was built, the judge was not resolved,
-    /// the run is incomplete, or the judge phase did not finish in time.
+    /// present when the check ran — judged, unreadable, a failed call, unfit,
+    /// or a judge phase that timed out after it — and `None` when no view was
+    /// built, the judge was not resolved, the run is incomplete, or the judge
+    /// phase timed out before the check ran.
     judge_estimate: Option<f64>,
     judge_budget: Option<f64>,
     /// One entry per judge call the run made, in order: what its stream
