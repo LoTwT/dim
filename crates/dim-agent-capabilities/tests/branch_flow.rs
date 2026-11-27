@@ -3605,23 +3605,30 @@ async fn until_events(
     branch: &str,
     done: impl Fn(&[Arc<AgentEvent>]) -> bool,
 ) -> Vec<Arc<AgentEvent>> {
-    let mut published = session
-        .publication(branch)
-        .unwrap_or_else(|error| panic!("line {branch} has no publication: {error}"))
-        .watch();
+    let mut published = session.publication(branch).ok().map(|line| line.watch());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(events) = line_events(session, branch).await
-            && done(&events)
-        {
-            return events;
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for line {branch}"
+        );
+        match line_events(session, branch).await {
+            Ok(events) if done(&events) => return events,
+            Ok(_) => {}
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+        }
+        // An ended line has no publication; read once above, then fail instead
+        // of waiting for a commit that cannot come.
+        if published.is_none() || session.ended_head(branch).is_some() {
+            panic!("timed out waiting for line {branch}");
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "timed out waiting for line {branch}");
-        match tokio::time::timeout(remaining, published.changed()).await {
+        match tokio::time::timeout(remaining, published.as_mut().unwrap().changed()).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => panic!("line {branch} closed while waiting"),
-            Err(_) => panic!("timed out waiting for line {branch}"),
+            Ok(Err(_)) | Err(_) => published = None,
         }
     }
 }
@@ -8060,6 +8067,34 @@ async fn an_end_from_outside_a_tool_line_wakes_main_with_a_notice() {
             .iter()
             .any(|event| matches!(&event.kind, EventKind::BranchEnd(data)
         if data.source == source && data.ancestor.is_none()))
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn until_events_reads_an_already_ended_line() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default(), Default::default()))
+        .await
+        .unwrap();
+    let line = open_line(&session, "watch the tests").await;
+    let source = BranchSource::Host {
+        operation_id: "test-end".into(),
+    };
+    soon(session.end_branch(&line, source.clone()))
+        .await
+        .unwrap();
+    let events = until_events(&session, &line, |events| {
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::BranchEnd(data) if data.source == source))
+    })
+    .await;
+    assert!(
+        events.iter().any(
+            |event| matches!(&event.kind, EventKind::BranchEnd(data) if data.source == source)
+        )
     );
     soon(agent.close()).await.unwrap();
 }
