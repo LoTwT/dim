@@ -7414,10 +7414,12 @@ impl App {
         frame: &mut Frame,
     ) {
         let rows = replay.rows;
-        let recorded_end = replay.window.iter().rposition(|row| {
-            !(row.kind == RowKind::Thinking && row.streaming && row.provisional_id.is_none())
+        let first_preview = replay.window.iter().position(|row| {
+            row.kind == RowKind::Thinking && row.streaming && row.provisional_id.is_none()
         });
-        let window = &replay.window[..recorded_end.map_or(0, |i| i + 1)];
+        let (window, live) = replay
+            .window
+            .split_at(first_preview.unwrap_or(replay.window.len()));
         let mut common = rows
             .iter()
             .rev()
@@ -7454,9 +7456,17 @@ impl App {
             }
         };
         write(Block::Boundary(t("Full conversation history").into()));
+        let live_ids: HashSet<_> = live.iter().map(|row| row.row_id.as_str()).collect();
+        let mut already_printed = Vec::new();
         for (index, row) in rows[..rows.len() - common].iter().enumerate() {
             if row.kind == RowKind::ToolCall && !opens_group(&rows, index) {
                 continue;
+            }
+            if live_ids.contains(row.row_id.as_str()) {
+                if row.streaming || row.pending {
+                    continue;
+                }
+                already_printed.push(row.row_id.clone());
             }
             let detail = if row.kind == RowKind::Thinking {
                 thinking_detail
@@ -7465,6 +7475,7 @@ impl App {
             };
             write(project_row(&rows, index, detail));
         }
+        self.commits.plan(&already_printed);
     }
 
     fn thought_frames(&mut self, width: usize) -> HashMap<String, ThoughtFrame> {
@@ -23669,7 +23680,7 @@ mod tests {
         use crate::projection::Projection;
         use serde_json::json;
 
-        let results = [true, false].map(|settle_first| {
+        let run = |member_result: bool, settle_first: bool| {
             let mut drawn = attached();
             let mut projection = Projection::default();
             let event = |id, seq, name, delta| {
@@ -23695,6 +23706,18 @@ mod tests {
             recorded.push(std::sync::Arc::new(answer.clone()));
             answer.text = "answer.".into();
             let recent = [std::sync::Arc::new(answer)];
+            if member_result {
+                let result = serde_json::from_value(json!({
+                    "id":"member-done", "sequence":1, "create_at":900,
+                    "type":"collaboration", "name":"result", "data":{
+                        "request_event_id":"background", "agent_id":"helper", "session_id":"member",
+                        "status":"completed", "text":"Member finished."
+                    }
+                }))
+                .unwrap();
+                projection.apply("main", &result);
+                recorded.push(projection.rows().last().unwrap().clone());
+            }
             let live_rows = |p: &Projection| [recent.as_slice(), p.rows()].concat();
             let window = live_rows(&projection);
             show(&mut drawn, window.clone());
@@ -23707,24 +23730,32 @@ mod tests {
             if !settle_first {
                 drawn.draw();
             }
-            projection.apply("main", &event("thought", 1, "thinking", "Settled thought."));
-            projection.apply("main", &event("answer", 2, "text", "New response."));
+            projection.apply("main", &event("thought", 2, "thinking", "Settled thought."));
+            projection.apply("main", &event("answer", 3, "text", "New response."));
             show(&mut drawn, live_rows(&projection));
             let text = drawn.transcript();
             let (_, replay) = text.split_once("Full conversation history").unwrap();
             let labels = ["ask 0", "ask 1", "answer.", "Settled thought."];
+            let after_answer = replay.split_once("Recorded answer.").unwrap().1;
             (
                 labels.map(|label| replay.matches(label).count()),
-                replay
-                    .split_once("Recorded answer.")
-                    .is_some_and(|(_, tail)| tail.contains("Settled thought.")),
+                replay.matches("Member finished.").count(),
+                if member_result {
+                    after_answer
+                        .split_once("Member finished.")
+                        .is_some_and(|(_, tail)| tail.contains("Settled thought."))
+                } else {
+                    after_answer.contains("Settled thought.")
+                },
             )
-        });
-        assert_eq!(
-            results,
-            [([1; 4], true); 2],
-            "settled before / after replay frame"
-        );
+        };
+        for member_result in [false, true] {
+            assert_eq!(
+                [true, false].map(|settle_first| run(member_result, settle_first)),
+                [([1; 4], usize::from(member_result), true); 2],
+                "settled before / after replay frame"
+            );
+        }
     }
 
     /// `/earlier` at the drawn top asks for the page and draws it when it lands.
