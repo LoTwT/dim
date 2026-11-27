@@ -2400,17 +2400,27 @@ fn a_turn_a_continuation_opened_is_indexed_by_that_block_not_by_the_append_ahead
     assert!(!error, "{page}");
     let line = line_of(&page, &turn);
     assert!(
-        line.contains("turn: dim-goal kind=continuation count=1 limit=20 after=12 branch=main"),
-        "{line}"
+        line.contains(
+            "turn: dim-goal kind=continuation count=1 limit=20 after=12 branch=main: \
+             Continue working toward the active goal for branch main."
+        ),
+        "a turn its blocks open is titled as its line reads (§3.6): {line}"
     );
     assert!(!line.contains("dim-state"), "{line}");
 
-    // The state block is still a line of the turn.
+    // The state block is still a line of the turn; its body and closing tag
+    // share one line, and the line keeps only the body (§3.4).
     let (page, error) = recorded.answer("t1", json!({ "open": turn }));
     assert!(!error, "{page}");
     assert!(
-        line_of(&page, &state).contains("dim-state source=dim/skills/list (current)"),
+        line_of(&page, &state).ends_with("dim-state source=dim/skills/list (current): - a: user a"),
         "{page}"
+    );
+    let (full, error) = recorded.answer("t1", json!({ "open": state }));
+    assert!(!error, "{full}");
+    assert!(
+        full.contains("- a: user a</dim-state>"),
+        "opening the block shows its text as written: {full}"
     );
     assert!(
         line_of(&page, &continuation)
