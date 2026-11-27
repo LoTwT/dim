@@ -332,9 +332,9 @@ Per [ADR 026](../adr/026-verification-tiers-and-ci-governance.md) D4, synchronou
 | `changes` (routing + ADR freeze) | L1 | Self-hosted | ≤ 1 min | 5 min | Shallow fetch (`depth=2`), Node only |
 | `dependencies` (`cargo-deny`) | L1 | Self-hosted Windows x64 | ≤ 2 min | 15 min | `cargo install --jobs 2` on miss |
 | `web` (stage + test + lint + build) | L1 / L2 | Self-hosted Windows x64 | ≤ 5 min | 15 min | Isolated npm workspace check |
-| `windows-cli` (`dim-cli --lib`, native flows) | L3 | Self-hosted Windows x64 | `dim-cli --lib`: ≤ 1 min warm (≤ 4 min cold); native flows: not yet measured | 15 min | Per-runner target dir capped at 12 GiB |
+| `windows-cli` (`dim-cli --lib`, native flows) | L3 | Self-hosted Windows x64 | `dim-cli --lib`: ≤ 1 min warm (≤ 4 min cold); native flows: 1.1–4.4 min across 25 runs, p90 pending | 15 min | Per-runner target dir capped at 12 GiB |
 | `macos-native` (macOS Rust + packaging) | L3 | Self-hosted macOS ARM64 | ≤ 6 min | 30 min | `CARGO_BUILD_JOBS=4`, checkout `target/` |
-| `verify (linux)` (build + clippy + tests) | L1 / L2 / L3 | Self-hosted Linux x64 (`dim-verify`) | ≤ 30 min (full runs measured 8m12s–30m49s) | 75 min | `CARGO_BUILD_JOBS=8`, `CARGO_PROFILE_DEV_DEBUG=0`, CPU-scaled `DIM_TEST_JOBS` / `--test-threads`, 15 min target cap |
+| `verify (linux)` (build + clippy + tests) | L1 / L2 / L3 | Self-hosted Linux x64 (`dim-verify`) | ≤ 15 min target (four post-change runs 8m12s–14m18s; p90 pending) | 75 min | `CARGO_BUILD_JOBS=8`, `CARGO_PROFILE_DEV_DEBUG=0`, CPU-scaled `DIM_TEST_JOBS` / `--test-threads`, 15 min target cap |
 | `code-layout` (native layout matrix) | L3 | Hosted Linux, macOS, Windows | Not yet recorded | 10 / 30 / 240 min per job | Hosted runners; `native-layout` runs on layout changes |
 
 The `verify (linux)` row is measured from full runs on the `dim-verify` pool: 8m12s (45931687899), 11m24s (45932777661), 11m48s (45932038211) and 14m18s (45933158819), against 18m17s–30m49s in the six runs recorded before the CPU-scaled test settings (44724315336, 44722644428, 44719273152, 44718768375, 44717853591, 44716244403). p90 is not recorded yet; it needs ten green runs spanning both group selections.

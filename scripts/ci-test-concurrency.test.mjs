@@ -5,6 +5,7 @@ import {plan} from './ci-test-concurrency.mjs';
 test('the plan scales by physical cores', () => {
   assert.deepEqual(plan('linux', 32, 16, 32), {jobs: 5, threads: 4}, 'sixteen physical cores');
   assert.deepEqual(plan('linux', 8, 8, 8), {jobs: 3, threads: 2}, 'no SMT siblings');
+  assert.deepEqual(plan('linux', 64, 32, 64), {jobs: 8, threads: 6}, 'the upper clamps');
 });
 
 test('the plan falls back to the CPU count without a topology', () => {
