@@ -3813,8 +3813,11 @@ Scrollback `/earlier` reveals one preceding page and redraws the shown branch in
 same terminal, oldest to newest, with the draft below. Like a width-change redraw,
 this replaces native scrollback. Losing shell output from before Dim started is an
 accepted consequence of keeping the loaded conversation in chronological order in the
-same terminal. The `/earlier` hint above the oldest message warns of this loss before
-the command is used. At the beginning there is no redraw. Paging does not open another
+same terminal. The redraw restores the banner and conversation rows, including recorded
+`!` shell runs. Private `!!` shell runs are not part of the conversation and are not
+restored. The warning appears only in the hint above
+the oldest message. Running `/earlier` from the composer does not ask for confirmation,
+even when the hint is offscreen. At the beginning there is no redraw. Paging does not open another
 window or switch screens. Fullscreen `/earlier` reads a bounded
 older window at the original cutoff and reveals it at the join; scrolling up or pressing
 PageUp at the drawn top does the same.
@@ -3824,11 +3827,11 @@ and whole-page retention budgets in the [client window contract](clients.md#open
 additional older rows are retained only when the user explicitly loads them. Raw pages are released
 after projection. Export remains a complete fixed-prefix read.
 
-For example, each column shows native scrollback after one action:
+In this example, `↑` stands for the full hint: `↑ Earlier messages · /earlier · Clears terminal output from before Dim started`.
 
 ```text
 Resume                 First /earlier         Second /earlier
-↑ Earlier messages     ↑ Earlier messages     messages 1–10
+↑                      ↑                      messages 1–10
 messages 61–69         messages 11–60         messages 11–60
                        messages 61–69         messages 61–69
 > draft                > draft                > draft
