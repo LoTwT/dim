@@ -1842,7 +1842,6 @@ fn a_line_starts_at_the_first_text_that_says_something() {
     assert!(call.contains("→ ok: applied"), "{call}");
 }
 
-/// A turn with one consumed input and one reply.
 #[test]
 // §3.4: a call's declared effects are part of its full view and of what
 // `about` searches, and stay off its line.
@@ -1900,6 +1899,7 @@ fn opening_a_call_shows_the_effects_it_declared() {
     );
 }
 
+/// A turn with one consumed input and one reply.
 fn simple_turn(recorded: &mut Recorded, turn: &str, text: &str, reply: &str) {
     let input = recorded.push(input_message(text));
     recorded.push(turn_start(turn));

@@ -130,7 +130,7 @@ Recall 按块文本的开头标签与属性，以及 `InputBlock::Raw` 的 `key`
 
 **结果**是 `content` 的文本；blob 和图片为 `[file]` 与 `[image]`；工具带入的上下文消息为 `with <n> context messages`。展开这次调用时给出全部内容。结果比调用晚到不同的分钟时，结局带上结果的时间。
 
-**声明的效果**是工具在文本之外声明自己做过的事：写了一个文件，或运行了一条命令（[Session Boundary §5](../contracts/session-boundary.md#5-context-mapping)）。它们属于这次调用的记录，不属于结果文本：行里不出现；展开这次调用时，在结局下逐条给出，`wrote <path>` 或 `ran <command> (exit <code>)`、`(signal <name>)` 或不带状态，命令按摘要的规则截短。
+**声明的效果**是工具在文本之外声明自己做过的事：写了一个文件，或运行了一条命令（[Session Boundary §5](../contracts/session-boundary.md#5-上下文映射)）。它们属于这次调用的记录，不属于结果文本：行里不出现；展开这次调用时，在结局下逐条给出，`wrote <path>` 或 `ran <command> (exit <code>)`、`(signal <name>)` 或不带状态，命令按摘要的规则截短。
 
 ### 3.5 不重复讲
 

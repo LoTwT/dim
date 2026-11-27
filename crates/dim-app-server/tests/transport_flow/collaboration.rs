@@ -1863,8 +1863,32 @@ async fn leader_delegates_and_team_members_communicate() {
             .count()
     };
     let before = facts(&member_session).await;
+    let member_read = async |query: Value| {
+        let mut input = json!({"action": "read", "agentId": default_agent, "sessionId": lead});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(query.as_object().unwrap().clone());
+        member_session
+            .submit(tool(input), dim_agent_types::InputMode::Queue, "main")
+            .await
+            .unwrap();
+        member_session.idle("main").await.unwrap();
+        last_text(&events(&member_session).await)
+    };
+    let found = member_read(json!({"about": "note for leader"})).await;
+    let message = found
+        .lines()
+        .find(|line| line.contains(" dim-agent-message agent="))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or_else(|| panic!("a member finds its message on its leader's line: {found}"))
+        .to_owned();
+    let opened = member_read(json!({"open": message})).await;
+    assert!(
+        opened.contains("sent you this message:\nnote for leader"),
+        "opening the message shows its whole body: {opened}"
+    );
     for input in [
-        json!({"action": "read", "agentId": default_agent, "sessionId": lead, "about": "note for leader"}),
         json!({"action": "list"}),
         json!({"action": "request", "agentId": default_agent, "prompt": "x"}),
         json!({"action": "inspect", "agentId": default_agent}),
@@ -1876,12 +1900,6 @@ async fn leader_delegates_and_team_members_communicate() {
         member_session.idle("main").await.unwrap();
     }
     let member_results = results(&events(&member_session).await);
-    let (error, read) = &member_results[member_results.len() - 4];
-    assert!(!error, "{read}");
-    assert!(
-        read.contains("dim-agent-message") && read.contains("note for leader"),
-        "a member reads its leader's line: {read}"
-    );
     let listed: Value = serde_json::from_str(&member_results[member_results.len() - 3].1).unwrap();
     assert_eq!(listed["role"], "member");
     assert!(listed.get("agents").is_none());
