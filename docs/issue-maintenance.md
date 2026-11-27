@@ -181,7 +181,7 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 
 1. 检查 linked PR、验收条件和未完成子 issue；
 2. 写一条关闭评论，链接 PR 或证据；
-3. 移除 `question` / `needs-split`；
+3. 移除 `question` / `needs-split`；非实现关闭时同时移除 `P0`-`P3` 优先级标签，避免已关闭的 issue 继续被 gate 当作 accepted；
 4. 从优先级地图和 milestone 中更新该条目的状态。
 
 ## 6. 停滞与无人接管

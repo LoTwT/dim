@@ -6,7 +6,7 @@ Do not treat the author's proposed solution as the requirement. Do not assume th
 
 ## Review Every Issue
 
-Judge every change by asking four questions:
+Judge every Issue by asking four questions:
 
 1. **Value**: Whose problem does it solve? Is the problem worth adding complexity to the repository?
 2. **Behavior**: How does the user behave today, and how will the behavior change? State what this change must not alter.
