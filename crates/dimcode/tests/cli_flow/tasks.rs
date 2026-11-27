@@ -677,9 +677,9 @@ fn event(wire: &mut Wire, branch: &str, event: Value) {
 
 #[test]
 fn tui_resume_draws_complete_thinking_in_the_first_indexed_window() {
-    for fullscreen in [false, true] {
+    for (fullscreen, after_tool) in [(false, true), (true, true), (false, false), (true, false)] {
         let home = Home::new();
-        let daemon = home.daemon(|wire| {
+        let daemon = home.daemon(move |wire| {
             wire.hello(&["session.history.display", "session.history.detail",
                 "session.history.display.transcript"]);
             let attach = wire.read("session.attach");
@@ -689,11 +689,18 @@ fn tui_resume_draws_complete_thinking_in_the_first_indexed_window() {
             let page = wire.read("session.history.display");
             assert_eq!(page["params"]["transcript"], true);
             assert_eq!(page["params"]["limit"], 32);
-            let mut items = vec![
+            let mut items = if after_tool { vec![
+                fact("start", 10, 0, "step", "tool-start", json!({"turn_id":"turn","request_id":"previous",
+                    "call_event_id":"batch","call_id":"call"})),
+                fact("completed", 11, 0, "step", "tool-completed", json!({"turn_id":"turn","request_id":"previous",
+                    "call_event_id":"batch","call_id":"call","result":{"content":"ok"}})),
+                fact("result", 12, 0, "step", "tool-result", json!({"turn_id":"turn","request_id":"previous",
+                    "call_event_id":"batch","results":[{"call_id":"call","result":{"content":"ok"}}]})),
+            ] } else { vec![
                 fact("input", 10, 0, "input", "message", json!({"user":{"content":[{"type":"text","text":"question"}]}})),
                 fact("applied", 11, 0, "input", "applied", json!({"input_id":"input"})),
                 fact("consumed", 12, 0, "input", "consumed", json!({"input_id":"input"})),
-            ];
+            ] };
             for seq in 13..40 {
                 let (kind, delta) = match seq {
                     13 => ("thinking", "Check the "),
@@ -726,7 +733,7 @@ fn tui_resume_draws_complete_thinking_in_the_first_indexed_window() {
                 .matches("Thought for 2.0s · Check the first page.")
                 .count(),
             1,
-            "fullscreen={fullscreen}: {screen}"
+            "fullscreen={fullscreen}, after_tool={after_tool}: {screen}"
         );
         home.kill(&terminal);
         terminal.wait();
