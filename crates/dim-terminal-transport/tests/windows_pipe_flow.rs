@@ -9,7 +9,7 @@ use tokio::{
 use uuid::Uuid;
 
 #[tokio::test]
-async fn closing_one_rpc_pipe_releases_its_target_while_another_keeps_working() {
+async fn either_end_of_a_shared_rpc_pipe_can_finish_while_the_link_stays_open() {
     let temp = tempfile::tempdir().unwrap();
     let ready = temp.path().join("ready");
     let target = format!(r"\\.\pipe\dim-test-target-{}", Uuid::new_v4());
@@ -50,12 +50,13 @@ async fn closing_one_rpc_pipe_releases_its_target_while_another_keeps_working() 
         second_target.read_exact(&mut request).await.unwrap();
         assert_eq!(&request, b"request");
         second_target.write_all(b"reply").await.unwrap();
-        let mut reply = [0; 5];
-        second.read_exact(&mut reply).await.unwrap();
-        assert_eq!(&reply, b"reply");
+        drop(second_target);
+        let mut reply = Vec::new();
+        second.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply, b"reply");
     })
     .await
-    .expect("a completed RPC releases only its own target pipe");
+    .expect("the keyboard receives the complete reply and EOF while the sharing link is open");
     proxy_host.kill().await.unwrap();
     let _ = target_host.kill().await;
 }

@@ -31,7 +31,7 @@ async fn call<T: DeserializeOwned>(
     )?)
 }
 
-async fn relay(face: &Face, id: &str, socket: impl Duplex) -> Result<(), Error> {
+async fn relay(face: &Face, id: &str, socket: impl Duplex, named_pipe: bool) -> Result<(), Error> {
     let (mut input, mut output) = tokio::io::split(socket);
     let send = async {
         let mut buf = vec![0; CHUNK];
@@ -50,13 +50,19 @@ async fn relay(face: &Face, id: &str, socket: impl Duplex) -> Result<(), Error> 
         output.shutdown().await?;
         Ok::<_, Error>(())
     };
+    if named_pipe {
+        return tokio::select! {
+            result = send => result,
+            result = receive => result,
+        };
+    }
     tokio::try_join!(send, receive)?;
     Ok(())
 }
 
 async fn serve_rpc(face: Face, stream: impl Duplex) -> Result<(), Error> {
     let id: String = call(&face, "open", Vec::<()>::new()).await?;
-    let result = relay(&face, &id, stream).await;
+    let result = relay(&face, &id, stream, cfg!(windows)).await;
     let _ = call::<()>(&face, "close", [id]).await;
     result
 }
@@ -97,7 +103,7 @@ async fn serve_leaf(face: Face, mut control: impl Duplex) -> Result<(), Error> {
             .write_all(format!("{}\n", remote.address).as_bytes())
             .await?;
         call::<()>(&face, "acceptLeaf", [&remote.id]).await?;
-        relay(&face, &remote.id, local_leaf(addr.trim_end()).await?).await
+        relay(&face, &remote.id, local_leaf(addr.trim_end()).await?, false).await
     }
     .await;
     let _ = call::<()>(&face, "close", [remote.id]).await;

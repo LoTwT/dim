@@ -716,7 +716,9 @@ async fn supervise_sharing(
                     status = child.wait() => eprintln!("Remote sharing stopped: {status:?}"),
                     () = stop.cancelled() => {
                         drop(lifetime);
-                        if tokio::time::timeout(Duration::from_secs(15), child.wait()).await.is_err()
+                        if tokio::time::timeout(Duration::from_secs(15), child.wait())
+                            .await
+                            .is_err()
                         {
                             let _ = child.kill().await;
                         }

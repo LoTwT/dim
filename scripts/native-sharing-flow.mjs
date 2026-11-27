@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
@@ -9,7 +10,13 @@ import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const cli = path.resolve(process.env.DIM_SHARING_TEST_CLI || 'target/debug/dimcode');
+const windows = process.platform === 'win32';
+const suffix = windows ? '.exe' : '';
+const debug = path.resolve(process.env.CARGO_TARGET_DIR || 'target', 'debug');
+const cli = path.resolve(process.env.DIM_SHARING_TEST_CLI || path.join(debug, 'dimcode' + suffix));
+const helper = path.join(path.dirname(cli), 'dim-sharing' + suffix);
+const fixture = path.join(debug, 'examples', 'sharing-shutdown-fixture' + suffix);
+const model = path.resolve(import.meta.dirname, '../crates/dim-agent-aimux/examples/offline.json');
 
 async function rpc(socket) {
   const stream = connect(socket);
@@ -33,48 +40,52 @@ async function rpc(socket) {
   return { stream, call, hello, receive };
 }
 
-test('a remembered shared link carries independent native streams, large frames and revocation', { skip: process.platform === 'win32', timeout: 90_000 }, async (t) => {
+async function environment(t) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'dim-net-'));
   const a = path.join(temp, 'a'), b = path.join(temp, 'b'), tmp = path.join(temp, 'tmp');
-  const target = path.join(b, 'rust', 'daemon.sock');
   const env = { ...process.env, HOME: temp, TMPDIR: tmp, DIMCODE_HOME: b, DIMCODE_UPDATE_CHECK: '0', DIMCODE_SHARING_LISTEN: '127.0.0.1:0' };
   const children = new Set();
-  function start(args, program = cli) {
-    const child = spawn(program, args, { env, cwd: temp, stdio: 'pipe' });
+  function start(args, program = cli, extraEnv) {
+    const child = spawn(program, args, { env: { ...env, ...extraEnv }, cwd: temp, stdio: 'pipe' });
     children.add(child);
     child.on('close', () => children.delete(child));
     return child;
   }
-  async function run(args, input = '') {
-    const child = start(args), out = [], err = [];
+  async function run(args, input = '', program = cli, extraEnv) {
+    const child = start(args, program, extraEnv), out = [], err = [];
     child.stdout.on('data', chunk => out.push(chunk));
     child.stderr.on('data', chunk => err.push(chunk));
     child.stdin.end(input);
     const [code] = await once(child, 'close');
     return { code, out: Buffer.concat(out).toString(), err: Buffer.concat(err).toString() };
   }
-  async function share(...args) {
-    const result = await run(['--home', b, '--model-config', path.resolve(import.meta.dirname, '../crates/dim-agent-aimux/examples/offline.json'), 'share', ...args]);
-    assert.equal(result.code, 0, result.err);
-    return JSON.parse(result.out);
-  }
   t.after(async () => {
     for (const child of children) child.kill();
     await Promise.allSettled([...children].map(child => once(child, 'close')));
     await rm(temp, { recursive: true, force: true });
   });
+  await mkdir(tmp, { mode: 0o700 });
+  return { temp, a, b, tmp, env, start, run };
+}
+
+test('a remembered shared link carries independent native streams, large frames and revocation', { skip: windows, timeout: 50_000 }, async (t) => {
+  const { temp, a, b, tmp, env, start, run } = await environment(t);
+  const target = path.join(b, 'rust', 'daemon.sock');
+  async function share(...args) {
+    const result = await run(['--home', b, '--model-config', model, 'share', ...args]);
+    assert.equal(result.code, 0, result.err);
+    return JSON.parse(result.out);
+  }
   await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   await chmod(path.dirname(target), 0o700);
-  await mkdir(tmp, { mode: 0o700 });
-  const model = path.resolve(import.meta.dirname, '../crates/dim-agent-aimux/examples/offline.json');
   const disabled = await run(['--home', a, 'share', 'disable']);
   assert.equal(disabled.code, 0, disabled.err);
   assert.equal(JSON.parse(disabled.out).enabled, false);
   await assert.rejects(readFile(path.join(a, 'rust', 'daemon.sock')), { code: 'ENOENT' });
-  const helper = path.join(temp, 'sharing-helper');
-  await writeFile(helper, '', { mode: 0o600 });
-  env.DIM_TEST_SHARING_HELPER = path.join(path.dirname(cli), 'dim-sharing');
-  const server = start(['app-server', '--sharing-helper', helper, '--home', path.dirname(target), '--model-config', model, '--no-ws', '--unix', target]);
+  const replacement = path.join(temp, 'sharing-helper');
+  await writeFile(replacement, '', { mode: 0o600 });
+  env.DIM_TEST_SHARING_HELPER = helper;
+  const server = start(['app-server', '--sharing-helper', replacement, '--home', path.dirname(target), '--model-config', model, '--no-ws', '--unix', target]);
   const diagnostics = createInterface({ input: server.stderr })[Symbol.asyncIterator]();
   async function waitForDiagnostic(message) {
     for (;;) {
@@ -86,12 +97,12 @@ test('a remembered shared link carries independent native streams, large frames 
   await Promise.all([once(server.stdout, 'data'), waitForDiagnostic('Remote sharing could not start')]);
   const direct = await rpc(target);
   t.after(() => direct.stream.destroy());
-  await writeFile(helper, [
+  await writeFile(replacement, [
     '#!/bin/sh', 'if [ ! -e "$2/restart-check" ]; then',
     '  touch "$2/restart-check"', '  exit 1', 'fi',
     'echo "starting repaired helper" >&2', 'exec "$DIM_TEST_SHARING_HELPER" "$@"', '',
   ].join('\n'));
-  await chmod(helper, 0o700);
+  await chmod(replacement, 0o700);
   await waitForDiagnostic('starting repaired helper');
   assert.equal((await share('status')).enabled, false);
   const { token, addresses: [address] } = await share('enable');
@@ -169,42 +180,49 @@ test('a remembered shared link carries independent native streams, large frames 
   assert.equal(alternate.code, 0, alternate.err);
   assert.doesNotMatch(alternate.err, /Sharing token: /, 'a different route to the same authenticated instance can reconnect');
   assert.deepEqual((await share('disable')).addresses, []);
-  const fixture = path.resolve('target/debug/examples/sharing-shutdown-fixture');
-  const helperPath = path.join(path.dirname(cli), 'dim-sharing');
+});
+
+test('daemon stop reports the same cleanup result through direct and shared connections', { timeout: 90_000 }, async (t) => {
+  const { temp, a, start, run } = await environment(t);
   for (const fail of [false, true]) {
     await t.test(fail ? 'remote stop preserves a delayed cleanup error' : 'remote stop waits for successful cleanup', async () => {
       const results = [];
-      if (fail) env.DIM_TEST_FAIL_CLEANUP = '1';
       for (const shared of [false, true]) {
         const home = path.join(temp, 'stop-' + Number(fail) + Number(shared));
         const native = path.join(home, 'rust');
-        const endpoint = path.join(native, 'daemon.sock');
+        const endpoint = windows ? String.raw`\\.\pipe\dim-test-${randomUUID()}` : path.join(native, 'daemon.sock');
         await mkdir(native, { recursive: true, mode: 0o700 });
-        const owner = start(['--home', native, '--model-config', model, '--unix', endpoint, '--no-ws',
-          '--sharing-helper', helperPath], fixture);
+        const owner = start(['--home', native, '--model-config', model, windows ? '--pipe' : '--unix', endpoint,
+          '--no-ws', '--sharing-helper', helper], fixture, fail ? { DIM_TEST_FAIL_CLEANUP: '1' } : {});
         const ended = once(owner, 'close');
-        await once(owner.stdout, 'data');
-        const posix = await rpc(endpoint);
-        assert.ok((await posix.call('session.create', { cwd: temp })).result);
-        posix.stream.destroy();
+        let diagnostics = '';
+        owner.stderr.on('data', chunk => { diagnostics += chunk; });
+        const ready = createInterface({ input: owner.stdout })[Symbol.asyncIterator]();
+        assert.equal((await ready.next()).done, false, diagnostics);
+        const setup = await rpc(endpoint);
+        assert.ok((await setup.call('session.create', { cwd: temp })).result);
+        setup.stream.destroy();
         let args = ['--home', home], input = '';
         if (shared) {
-          const enabled = await run([...args, 'share', 'enable']);
+          const enabled = await run(['--home', native, 'enable'], '', helper);
           assert.equal(enabled.code, 0, enabled.err);
           const { addresses, token } = JSON.parse(enabled.out);
           args = ['--home', a, 'share', 'connect', addresses[0], '--pair', '--'];
           input = token + '\n';
         }
-        results.push(await run([...args, 'daemon', 'stop'], input));
+        const directPipe = !shared && windows ? { DIMCODE_TERMINAL_PROXY: endpoint } : {};
+        const result = await run([...args, 'daemon', 'stop'], input, cli, directPipe);
+        assert.equal(result.code === 0, !fail, result.err);
+        if (fail) assert.match(result.err, /shutdown_failed/);
+        else assert.match(result.out, /Daemon stopped/);
+        results.push(result);
         const [code] = await ended;
         assert.equal(code === 0, !fail);
       }
-      const [posix, shared] = results;
-      assert.equal(posix.code === 0, !fail);
-      if (fail) assert.match(posix.err, /shutdown_failed/);
-      assert.equal(shared.code, posix.code);
-      assert.equal(shared.out, posix.out);
-      assert.equal(shared.err.replace('Sharing token: ', ''), posix.err);
+      const [direct, shared] = results;
+      assert.equal(shared.code, direct.code);
+      assert.equal(shared.out, direct.out);
+      assert.equal(shared.err.replace('Sharing token: ', ''), direct.err);
     });
   }
 });
