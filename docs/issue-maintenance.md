@@ -62,6 +62,7 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 ### 1.3 合并门禁
 
 - PR 必须链接至少一个 accepted issue（`Fixes #N`、`Closes #N`、`Resolves #N` 或 `Refs #N`），且该 issue 带 `P0`/`P1`/`P2`；
+- 维护巡检不评价 PR 的业务或技术内容，只核对 linked issue 与 accepted 状态；PR 业务/技术 review、CI 排障和 merge 决定由 reviewer/maintainer 负责，详见 [PRODUCT.md](../PRODUCT.md#maintain-pr-merge-eligibility)；
 - `issue-gate` 由 `main` 上的 workflow 定义，PR 不能修改检查逻辑；无 issue、只链接 `P3`/未接受 issue、或把 PR 当 issue 的 PR 直接失败；
 - 关联 issue 的 `P` 标签变化会重新评估关联 PR 的检查；
 - 执行分两层：required check 尚未配置时，链接 accepted issue 的规则由人工 review 执行；required check 配置后，由 `main` 上的 `issue-gate` 强制执行；
