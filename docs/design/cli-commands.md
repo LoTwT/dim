@@ -3811,8 +3811,11 @@ the turn settled, while a result read before its call asks nothing.
 
 Scrollback `/earlier` reveals one preceding page and redraws the shown branch in the
 same terminal, oldest to newest, with the draft below. Like a width-change redraw,
-this replaces native scrollback, including output from before the UI started. It
-does not open another window or switch screens. Fullscreen `/earlier` reads a bounded
+this replaces native scrollback. Losing shell output from before Dim started is an
+accepted consequence of keeping the loaded conversation in chronological order in the
+same terminal. The `/earlier` hint above the oldest message warns of this loss before
+the command is used. At the beginning there is no redraw. Paging does not open another
+window or switch screens. Fullscreen `/earlier` reads a bounded
 older window at the original cutoff and reveals it at the join; scrolling up or pressing
 PageUp at the drawn top does the same.
 Line mode prints a labelled older segment. None changes

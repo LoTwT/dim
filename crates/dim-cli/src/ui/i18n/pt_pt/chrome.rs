@@ -363,6 +363,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "new session" => "nova sessão",
         "resumed {id} · {count} messages" => "{id} retomada · {count} mensagens",
         "Earlier messages · {key}" => "Mensagens anteriores · {key}",
+        "Clears terminal output from before Dim started" => {
+            "Apaga a saída do terminal anterior ao início do Dim"
+        }
         "Error: {message}" => "Erro: {message}",
         "working…  {elapsed}" => "a trabalhar…  {elapsed}",
         "thinking…  {elapsed}" => "a pensar…  {elapsed}",

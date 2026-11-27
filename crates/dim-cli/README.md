@@ -1364,23 +1364,25 @@ Resuming draws up to 100 messages from main's initial history window. Both modes
 mark unread history above the oldest message, never below the transcript. In fullscreen a
 click, or `Tab` up to it and `Enter`, shows the preceding page at the join. Scrolling
 up or pressing PageUp at the top does the same. `/earlier` reveals one page in fullscreen.
-In scrollback it appends only the preceding page, oldest first, below a separator in the
-same terminal. Another `/earlier` continues backward without repeating messages. The next live reply follows the page.
+In scrollback, `/earlier` reveals one preceding page and redraws the loaded conversation
+in the same terminal, with older messages above newer ones and the draft below.
+**This replaces native scrollback, including terminal output from before Dim started.**
+The hint above the oldest message warns before you page. At the beginning, `/earlier`
+only shows a notice; it does not redraw. See [Loading earlier conversation](../../docs/design/cli-commands.md#loading-earlier-conversation).
 `/timeline` still jumps to a specific message; a draft typed meanwhile stays editable.
 
 ```text
-↑ Earlier messages · /earlier
+↑ Earlier messages · /earlier · Clears terminal output from before Dim started
 > paged-message-051
 ...
 > paged-message-150
 --- resumed paged · 100 messages ---
 [ Ask anything... ]
 
-/earlier (scrollback)
---- Earlier history · paged · 50 messages ---
+/earlier (same terminal, after redraw)
 > paged-message-001
 ...
-> paged-message-050
+> paged-message-150
 [ Ask anything... ]
 ```
 

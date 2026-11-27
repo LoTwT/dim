@@ -264,12 +264,20 @@ const scenarios = [
         session ??= output.trim().split('\n').map((line) => JSON.parse(line).params?.sessionId).find(Boolean);
         assert(session, 'all turns belong to one Session');
       }
+      const sentinel = 'pre-Dim shell output';
+      const warning = 'Clears terminal output from before Dim started';
       for (const fullscreen of [true, false]) {
-        const terminal = await tui.launch(['--resume', session, ...(fullscreen ? ['--fullscreen'] : [])], {rows: 40});
+        const terminal = await tui.launch(['--resume', session, ...(fullscreen ? ['--fullscreen'] : [])], {
+          rows: 40,
+          command: fullscreen ? undefined : ['/bin/sh', '-c', 'printf "%s" "$0"; exec "$@"',
+            sentinel + '\n'.repeat(41), tui.binary, '--home', tui.home, '--model-config', tui.modelFile],
+        });
         const initial = await terminal.waitFor(/resumed .* messages/, {history: true});
         assert(initial.includes('history-turn-16') && !initial.includes('history-turn-10'), initial);
         const hint = 'Earlier messages · /earlier';
         assert(initial.includes(hint) && initial.indexOf(hint) < initial.search(/┃ history-turn-/), initial);
+        assert.equal(initial.includes(warning), !fullscreen, initial);
+        if (!fullscreen) assert(initial.includes(sentinel), initial);
         assert(!/earlier|\/timeline/i.test(initial.slice(initial.indexOf('resumed '))), initial);
         if (fullscreen) {
           terminal.send('/earlier');
@@ -287,6 +295,7 @@ const scenarios = [
             const last = String(oldest - 1).padStart(2, '0');
             const page = await terminal.waitFor(new RegExp(`┃ history-turn-${last}[\\s\\S]*┃ history-turn-16[\\s\\S]*draft stays here`), {history: true});
             const first = turns(page)[0];
+            assert(!page.includes(sentinel), page);
             assert(first >= 1 && first < oldest, page);
             assert.deepEqual(page.match(/┃ history-turn-\d+|The fixture answer is deterministic\./g),
               Array.from({length: 17 - first}, (_, i) => [`┃ history-turn-${String(first + i).padStart(2, '0')}`, ANSWER]).flat());

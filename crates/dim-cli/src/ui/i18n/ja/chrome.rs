@@ -345,6 +345,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "new session" => "新規セッション",
         "resumed {id} · {count} messages" => "{id} を再開 · {count} 件",
         "Earlier messages · {key}" => "以前のメッセージ · {key}",
+        "Clears terminal output from before Dim started" => "Dim 起動前の端末出力は消去されます",
         "Error: {message}" => "エラー：{message}",
         "working…  {elapsed}" => "処理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",

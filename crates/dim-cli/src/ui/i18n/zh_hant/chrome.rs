@@ -325,6 +325,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "new session" => "新工作階段",
         "resumed {id} · {count} messages" => "已繼續 {id} · {count} 則訊息",
         "Earlier messages · {key}" => "還有更早的訊息 · {key}",
+        "Clears terminal output from before Dim started" => "會清除啟動 Dim 前的終端輸出",
         "Error: {message}" => "錯誤：{message}",
         "working…  {elapsed}" => "處理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",

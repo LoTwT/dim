@@ -331,6 +331,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "new session" => "새 세션",
         "resumed {id} · {count} messages" => "{id} 재개됨 · 메시지 {count}개",
         "Earlier messages · {key}" => "이전 메시지 · {key}",
+        "Clears terminal output from before Dim started" => "Dim 시작 전의 터미널 출력을 지웁니다",
         "Error: {message}" => "오류: {message}",
         "working…  {elapsed}" => "작업 중…  {elapsed}",
         "thinking…  {elapsed}" => "생각 중…  {elapsed}",
