@@ -43,10 +43,10 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 ### 1.1 accepted 与 planned
 
 - **accepted**：可以按 issue 的类型推进下一步。bug、feature、task 可以开发、提 PR、合并；design 可以开始设计/决策，设计接受后再拆实现 issue，不把“设计已接受”当成“实现已接受”。
-- **planned**：已 accepted，并进入某个版本 milestone；版本发布只列 planned 项。
+- **planned**：已 accepted，并进入某个版本 milestone；milestone 和版本承诺只覆盖 planned 项，release notes 记录实际发布的 PR。
 - 标签映射：`P0`、`P1`、`P2` 表示 accepted；`P3` 表示尚未 accepted（需信息、拆分、决策或已停滞）。
 - `P0` = accepted + 当前版本；`P1` = accepted + 下一版本候选；`P2` = accepted + later；`P3` = 未 accepted。
-- accepted 但未 planned 的实现 PR 可以合并到 `main`，但合并后它就在 `main` 上，下一次构建会包含它。milestone 是版本承诺和 release notes 的范围，不是构建过滤器；若某项不应进入本次发布，就不要在发布前合并，或 revert 后再发版，不能只靠地图/milestone 排除。
+- accepted 但未 planned 的实现 PR 可以合并到 `main`，但合并后它就在 `main` 上，下一次构建会包含它。milestone 是版本承诺的范围，不是构建过滤器；release notes 记录实际发布的 PR，未 planned 但随构建发布的 PR 单独列出并说明。若某项不应进入本次发布，就不要在发布前合并，或 revert 后再发版，不能只靠地图/milestone 排除。
 
 ### 1.2 没有 accept 的情况
 
@@ -57,13 +57,14 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 - 需拆分：加 `needs-split`，先拆出可独立接受的子 issue。
 - 不值得做：关闭并说明原因（`wontfix`/`invalid`/`duplicate`），不保留实现 PR。
 - 产品定位不属于 Dim（应在插件、桌面端或另一个仓库）：关闭或转交，不在本仓库实现。
-- 开发者发现的 bug：先开 issue，补复现和预期，按上面三条快速 accept，并在同一轮加 `P0`/`P1`/`P2` 标签；评论只作解释，标签是 gate 读取的记录。trivial fix 也不能只靠评论 accept。
+- 开发者发现的 bug：先开 issue，补复现和预期，按上面三条快速 accept，并在同一轮加 `P0`/`P1`/`P2` 标签；评论只作解释，标签是 gate 读取的记录。trivial fix 也不能只靠评论 accept。例行依赖更新、typo 和格式化修复也要先开 lightweight issue；没有例外。
 
 ### 1.3 合并门禁
 
 - PR 必须链接至少一个 accepted issue（`Fixes #N`、`Closes #N`、`Resolves #N` 或 `Refs #N`），且该 issue 带 `P0`/`P1`/`P2`；
 - `issue-gate` 由 `main` 上的 workflow 定义，PR 不能修改检查逻辑；无 issue、只链接 `P3`/未接受 issue、或把 PR 当 issue 的 PR 直接失败；
-- 关联 issue 的 `P` 标签变化会重新评估关联 PR 的检查；required check 尚未配置时，这条规则仍按人工 review 执行，配置后由 check 强制；
+- 关联 issue 的 `P` 标签变化会重新评估关联 PR 的检查；
+- 执行分两层：required check 尚未配置时，链接 accepted issue 的规则由人工 review 执行；required check 配置后，由 `main` 上的 `issue-gate` 强制执行；
 - 合并还需要一次 maintainer approval；作者不能自审，自己的 PR 由另一位 maintainer 批准；
 - 发布按 milestone 中的 planned 范围做承诺，但构建的是选定 commit；合并到 `main` 的代码会进入该 commit，不能只靠 milestone 排除。
 
@@ -131,7 +132,7 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 
 ### 3.3 发版
 
-- 发版 PR 链接优先级地图；release notes 列出实际发布的 PR；
+- 发版 PR 链接优先级地图；release notes 列出实际发布的 PR，其中 planned 是版本承诺，未 planned 但已合入构建的 PR 单独列出并说明；
 - 只把地图中当前版本范围内的条目作为版本承诺；范围变化先更新地图，再开或改发版 PR；
 - release 构建的是选定 commit，milestone/地图不是源码过滤器；不应进入本次发布的实现不要在发布前合入，已合入的要先 revert；
 - 发布门禁按 `dim-release` skill 执行：catalog 同步、版本 PR、必需 CI、从 `main` dispatch、draft 检查；npm 和容器发布各自需要单独授权；
@@ -172,10 +173,10 @@ feature、design 和架构变更的产品定位与技术目标按 [PRODUCT.md](.
 
 关闭分两类：
 
-- **实现完成**：已合并的 `Fixes #N` PR，且 issue 的验收条件满足；或 tracker 的 checklist 全部勾选，并有可核对的证据链接。
+- **实现完成**：已合并的 `Fixes #N`、`Closes #N` 或 `Resolves #N` PR，且 issue 的验收条件满足；或 tracker 的 checklist 全部勾选，并有可核对的证据链接。
 - **不继续实现**：duplicate、superseded、declined、invalid、not pursuing，或 design-only 已有明确决策；写明 disposition/decision，并链接重复项、替代项或决策记录。
 
-`Fixes #N` 表示完成；`Refs #N` 只表示推进，不能单独作为关闭实现类 issue 的证据。不以“代码完成”“PR 已开”“看起来没问题”关闭。关闭时：
+`Fixes #N`、`Closes #N`、`Resolves #N` 表示完成；`Refs #N` 只表示推进，不能单独作为关闭实现类 issue 的证据。不以“代码完成”“PR 已开”“看起来没问题”关闭。关闭时：
 
 1. 检查 linked PR、验收条件和未完成子 issue；
 2. 写一条关闭评论，链接 PR 或证据；
