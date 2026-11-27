@@ -29,6 +29,11 @@ use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
 mod thinking;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REPLAY_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Reasoning that is still arriving: the row shows what the Timeline holds
 /// plus the progress not written yet.
 struct OpenThought {
@@ -55,7 +60,7 @@ pub struct Projection {
     /// Each line's own user messages, by input id and submission sequence,
     /// to count where a line was cut (timeline UI §6); a withdrawn message
     /// stays, and `withdrawals` decides which cuts still count it.
-    messages: HashMap<String, Vec<(String, u64)>>,
+    messages: HashMap<String, HashMap<String, u64>>,
     /// Each line's user messages withdrawn later, by input id and the sequence
     /// that withdrew them: a cut before that sequence still counts the
     /// message, whichever page carried the input or the withdrawal.
@@ -141,10 +146,11 @@ impl Projection {
     pub fn line_event(&mut self, parent: &str, event: &Event) {
         match &event.content {
             EventContent::Input(data) if data.user.is_some() => {
-                let messages = self.messages.entry(parent.to_owned()).or_default();
-                if !messages.iter().any(|(id, _)| *id == event.id) {
-                    messages.push((event.id.clone(), event.sequence));
-                }
+                self.messages
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .entry(event.id.clone())
+                    .or_insert(event.sequence);
             }
             EventContent::InputDeleted(data) => {
                 let withdrawals = self.withdrawals.entry(parent.to_owned()).or_default();
@@ -232,11 +238,11 @@ impl Projection {
             messages
                 .iter()
                 .filter(|(id, at)| {
-                    *at <= sequence
+                    **at <= sequence
                         && self
                             .withdrawals
                             .get(branch)
-                            .and_then(|withdrawals| withdrawals.get(id))
+                            .and_then(|withdrawals| withdrawals.get(*id))
                             .is_none_or(|withdrawn| *withdrawn > sequence)
                 })
                 .count()
@@ -311,6 +317,8 @@ impl Projection {
     }
 
     fn fold(&mut self, branch_id: &str, event: &Event, replayed: bool) {
+        #[cfg(test)]
+        REPLAY_WORK.set(REPLAY_WORK.get() + 1);
         match &event.content {
             EventContent::ToolCall(data) => {
                 self.questions
@@ -903,6 +911,12 @@ impl Projection {
     }
 
     pub fn snapshot(&self) -> ViewSnapshot {
+        self.snapshot_with_rows(&self.rows)
+    }
+
+    pub fn snapshot_with_rows(&self, rows: &[Arc<ViewRow>]) -> ViewSnapshot {
+        #[cfg(test)]
+        REPLAY_WORK.set(REPLAY_WORK.get() + rows.len());
         let mut pending: Vec<_> = self.user_queue().collect();
         pending.sort_by_key(|input| (!input.applied, input.sequence));
         let queued = pending
@@ -919,7 +933,7 @@ impl Projection {
             })
             .collect();
         ViewSnapshot {
-            rows: self.rows.clone(),
+            rows: rows.to_vec(),
             running: self.running,
             approvals: self.approvals.clone(),
             questions: self.questions.calls().cloned().collect(),
@@ -1343,11 +1357,11 @@ impl Projection {
         older.name_agents(self.agent_names.clone(), Vec::new());
         self.name_agents(older.agent_names.clone(), Vec::new());
         older.rows.retain(|row| {
-            if let Some(existing) = self
-                .rows
-                .iter_mut()
-                .find(|existing| existing.row_id == row.row_id)
-            {
+            if let Some(existing) = self.rows.iter_mut().find(|existing| {
+                #[cfg(test)]
+                REPLAY_WORK.set(REPLAY_WORK.get() + 1);
+                existing.row_id == row.row_id
+            }) {
                 if matches!(
                     row.kind,
                     RowKind::AssistantMessage | RowKind::StreamingAssistant
@@ -1477,6 +1491,10 @@ impl Projection {
 
     pub fn rows(&self) -> &[Arc<ViewRow>] {
         &self.rows
+    }
+
+    pub fn into_rows(self) -> Vec<Arc<ViewRow>> {
+        self.rows
     }
 
     /// The lines `main` recorded, without `main` itself (design §14).

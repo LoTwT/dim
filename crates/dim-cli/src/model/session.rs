@@ -1334,8 +1334,13 @@ impl DeleteOutcome {
     }
 }
 
+pub struct HistoryReplay {
+    pub rows: Vec<std::sync::Arc<crate::model::view::ViewRow>>,
+    pub window: Vec<std::sync::Arc<crate::model::view::ViewRow>>,
+}
+
 pub enum Update {
-    ReplayHistory,
+    ReplayHistory(HistoryReplay),
     Reportable {
         error: crate::report::Captured,
         show_error: bool,

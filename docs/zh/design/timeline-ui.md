@@ -108,7 +108,7 @@ scrollback 在 live 交互区以确认框替换输入框，不提交到历史；
 ╰── ~/repo (main) · ⑂ main ▸ parser race ▸ the guard · after message 4 ─╯
 ```
 
-`after message N` 是切点时父线历史中的用户消息数，包括它继承的部分。祖先链上任一段已保留的历史没有覆盖到分支起点时，这个数未知：本条 attachment 从没打开过的父线，以及停在分支起点之前的已加载窗口，都让标签不写它。计数不会去读完整的父线历史（[有界窗口](../../design/clients.md#opening-a-conversation-with-a-bounded-window)），所以线宁可不写计数，也不写一个偏小的数；读到起点的那次读取（比如在显示的线上用 `/earlier` 翻到起点）会把计数补上。
+`after message N` 是切点时父线历史中的用户消息数，包括它继承的部分。祖先链上任一段已保留的历史没有覆盖到分支起点时，这个数未知：本条 attachment 从没打开过的父线，以及停在分支起点之前的已加载窗口，都让标签不写它。计数不会去读完整的父线历史（[有界窗口](../../design/clients.md#opening-a-conversation-with-a-bounded-window)），所以线宁可不写计数，也不写一个偏小的数；窗口扩展到起点时（比如在 Fullscreen 中用 `/earlier` 翻到起点），才会补上计数。
 
 这个标签的工作区部分先于线让步。左侧状态很宽时，它先整体缩短（截掉路径前段，再放弃分支，再只保留截断的路径），而不是直接消失；只有连这些都放不下时边框才丢掉它。显示线时仍是原来那三档：完整标签、只剩 `⑂`、不画，所以路径信息永远不会挤掉线的信息。标签写的是 Session 实际工作的目录，不是进程的启动目录；attach 到别的目录的 Session（显式 `--cwd`、`/resume` 到另一个 worktree）时它连同那个目录的分支一起跟过去。还没有 Session 的 Home 写回启动工作区。文件提及、粘贴路径和拖入的文件仍以本地 `--cwd` 为基准（[CLI 附件输入](../../design/cli-attachment-input.md)），所以跨工作区 resume 之后，标签写的目录可能与它们不同；不同时 `@` 面板会在标题里写出该基准。
 

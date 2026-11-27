@@ -1421,7 +1421,7 @@ struct App {
     /// `show_earlier`, cleared once the page is shown or the read ends
     /// without one.
     reveal_pending: bool,
-    full_history_section: bool,
+    replay_rows: Option<crate::model::session::HistoryReplay>,
     /// The user message a `/timeline` jump or a loaded page lands on, once
     /// drawn: `(row id, pick it)`.
     landing: Option<(String, bool)>,
@@ -1901,7 +1901,7 @@ impl App {
             history_floor: 0,
             load_more: false,
             reveal_pending: false,
-            full_history_section: false,
+            replay_rows: None,
             landing: None,
             startup_session: None,
             awaiting_window: false,
@@ -2768,11 +2768,9 @@ impl App {
                     self.set_notice(text);
                 }
             }
-            Update::ReplayHistory => {
+            Update::ReplayHistory(rows) => {
                 if !self.fullscreen {
-                    self.rebuild_window(0);
-                    self.load_more = false;
-                    self.full_history_section = true;
+                    self.replay_rows = Some(rows);
                 }
             }
             Update::Snapshot(snapshot) => {
@@ -6406,16 +6404,8 @@ impl App {
             self.banner_committed = true;
         }
         let ready = self.arm_window();
-        if ready && std::mem::take(&mut self.full_history_section) {
-            let block = Block::Boundary(t("Full conversation history").into());
-            frame.commits.push(chunk(&render_block(
-                &block,
-                width,
-                &self.palette,
-                &self.markdown,
-                false,
-            )));
-            self.record(block);
+        if ready && let Some(rows) = self.replay_rows.take() {
+            self.draw_replay(rows, width, &mut frame);
         }
         if ready && let Some(shown) = self.pending_line.take() {
             let lines = self.snapshot.as_ref().map_or(&[][..], |s| &s.lines[..]);
@@ -7415,6 +7405,62 @@ impl App {
         true
     }
 
+    fn draw_replay(
+        &mut self,
+        replay: crate::model::session::HistoryReplay,
+        width: usize,
+        frame: &mut Frame,
+    ) {
+        let rows = replay.rows;
+        let mut common = rows
+            .iter()
+            .rev()
+            .zip(replay.window.iter().rev())
+            .take(HISTORY_WINDOW)
+            .take_while(|(a, b)| a == b || a.row_id == b.row_id && (a.streaming || a.pending))
+            .count();
+        while common > 0
+            && rows[rows.len() - common].kind == RowKind::ToolCall
+            && !opens_group(&rows, rows.len() - common)
+        {
+            common -= 1;
+        }
+        let skipped = replay.window.len() - common;
+        let floor = skipped
+            .checked_sub(1)
+            .and_then(|index| {
+                self.snapshot
+                    .as_ref()?
+                    .rows
+                    .iter()
+                    .position(|r| r.row_id == replay.window[index].row_id)
+            })
+            .map_or(0, |index| index + 1);
+        self.rebuild_window(floor);
+        self.load_more = false;
+        let tool_detail = self.tool_detail;
+        let thinking_detail = self.thinking_detail;
+        let mut write = |block| {
+            let lines = render_block(&block, width, &self.palette, &self.markdown, false);
+            if !lines.is_empty() {
+                frame.commits.push(chunk(&lines));
+                self.record(block);
+            }
+        };
+        write(Block::Boundary(t("Full conversation history").into()));
+        for (index, row) in rows[..rows.len() - common].iter().enumerate() {
+            if row.kind == RowKind::ToolCall && !opens_group(&rows, index) {
+                continue;
+            }
+            let detail = if row.kind == RowKind::Thinking {
+                thinking_detail
+            } else {
+                tool_detail
+            };
+            write(project_row(&rows, index, detail));
+        }
+    }
+
     fn thought_frames(&mut self, width: usize) -> HashMap<String, ThoughtFrame> {
         let mut frames = HashMap::new();
         let Some(snapshot) = &self.snapshot else {
@@ -7917,7 +7963,7 @@ impl App {
         self.history_floor = 0;
         self.load_more = false;
         self.reveal_pending = false;
-        self.full_history_section = false;
+        self.replay_rows = None;
         self.landing = None;
         self.window_messages = 0;
         self.history_request = None;
@@ -8017,7 +8063,7 @@ impl App {
         self.history_floor = 0;
         self.load_more = false;
         self.reveal_pending = false;
-        self.full_history_section = false;
+        self.replay_rows = None;
         self.landing = None;
         self.window_messages = 0;
         self.history_request = None;
@@ -8583,7 +8629,7 @@ impl App {
 
     fn set_fullscreen(&mut self, on: bool) {
         self.reveal_pending = false;
-        self.full_history_section = false;
+        self.replay_rows = None;
         self.fullscreen = on;
         if on {
             self.redraw_window();
@@ -23568,6 +23614,40 @@ mod tests {
             page(rows),
             straight,
             "a prepend before the first frame draws the same page"
+        );
+    }
+
+    #[test]
+    fn scrollback_replay_before_first_frame_keeps_the_whole_prefix_and_live_tail() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
+        let rows = window_rows(151);
+        let window = rows[45..150].to_vec();
+        show_window(&mut drawn, rows[45..].to_vec());
+        drawn.app.apply(Update::ReplayHistory(
+            crate::model::session::HistoryReplay {
+                rows: rows[..150].to_vec(),
+                window,
+            },
+        ));
+        let frame = drawn.app.frame((80, 40));
+        let text = crate::sanitize::safe(&frame.commits.join("\n"));
+        let (_, mut rest) = text.split_once("Full conversation history").unwrap();
+        for n in 0..=150 {
+            let label = format!("ask {n}");
+            rest = rest
+                .split_once(&label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+                .1;
+        }
+        assert_eq!(text.matches("ask ").count(), 151);
+        assert!(
+            !drawn
+                .app
+                .frame((80, 40))
+                .commits
+                .join("\n")
+                .contains("ask ")
         );
     }
 

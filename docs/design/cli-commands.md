@@ -3809,10 +3809,12 @@ the turn settled, while a result read before its call asks nothing.
 
 ### Loading earlier conversation
 
-`/earlier` reads bounded older windows for the shown branch, retaining its original
-cutoff and advancing its backward cursor. Scrollback reads to the beginning and prints the
-whole conversation oldest first under a new label, without switching screens. Fullscreen
-reveals one page at the join; scrolling up or pressing PageUp at the drawn top does the same.
+Scrollback `/earlier` reads the shown branch forward from the beginning to its applied
+cursor and prints the conversation under a new label without switching screens. Events
+received during the read continue below the replay. This does not expand the working
+window used by `/timeline` or later live updates. Fullscreen `/earlier` reads a bounded
+older window at the original cutoff and reveals it at the join; scrolling up or pressing
+PageUp at the drawn top does the same.
 Line mode prints a labelled older segment. None changes
 live event/state cutoffs or resubmits an input. Opening uses the separate read-stop
 and whole-page retention budgets in the [client window contract](clients.md#opening-a-conversation-with-a-bounded-window);

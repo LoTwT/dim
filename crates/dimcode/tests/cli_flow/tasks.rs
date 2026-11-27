@@ -256,7 +256,9 @@ fn tui_lines_count_a_cut_read_from_a_transcript_window() {
                 }
             }
         });
-        let mut terminal = Terminal::resume_tui(home.command());
+        let mut command = home.command();
+        command.arg("--fullscreen");
+        let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.write(b"/lines\r");
         terminal.until("parser race");
@@ -675,14 +677,22 @@ fn event(wire: &mut Wire, branch: &str, event: Value) {
 
 #[test]
 fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft() {
-    for resume_on_launch in [true, false] {
+    const WINDOW_HEAD: usize = 384 * 7;
+    const THROUGH: usize = WINDOW_HEAD + 1;
+    for (resume_on_launch, display) in [(true, true), (false, false)] {
         let home = Home::new();
         let workspace = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
         let workspace = workspace.to_string_lossy().into_owned();
         let (ready, readiness) = std::sync::mpsc::channel();
         let (proceed, control) = std::sync::mpsc::channel();
         let daemon = home.daemon(move |wire| {
-            wire.hello(&[]);
+            let (method, field) = if display {
+                wire.hello(&["session.history.display", "session.history.detail", "session.history.display.tail"]);
+                ("session.history.display", "items")
+            } else {
+                wire.hello(&[]);
+                ("session.history", "events")
+            };
             if !resume_on_launch {
                 let attach = wire.read("session.attach");
                 wire.reply(&attach, attach_record(&attach));
@@ -713,7 +723,7 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             wire.reply(&attach, json!({"sessionId":"paged","cwd":"/workspace",
                 "model":{"providerId":"test","modelId":"restored-model"},"createdAt":1,
                 "running":false,"sequence":0,"attachedClients":1}));
-            let first = wire.read("session.history");
+            let first = wire.read(method);
             wire.no_context();
             if resume_on_launch {
                 let providers = wire.read("account.providers");
@@ -721,33 +731,52 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             }
             ready.send(()).unwrap();
             control.recv_timeout(Duration::from_secs(10)).unwrap();
-            let mut request = first;
-            for page in 0..2 {
-                let start = (1 - page) * 75 + 1;
-                if page == 0 { assert_eq!(request["params"]["latestTurn"], true); }
-                else { assert_eq!(request["params"]["before"], 228); }
-                let mut events = Vec::new();
-                for index in start..start + 75 {
-                    events.push(fact(&format!("message-{index}"), index * 3, index * 3, "input", "message",
-                        json!({"mode":"append","user":{"content":[{"type":"text","text":format!("paged-message-{index:03}")}]}})));
-                    events.push(fact(&format!("applied-{index}"), index * 3 + 1, index * 3, "input", "applied",
-                        json!({"input_id": format!("message-{index}"), "mode": "append"})));
-                    events.push(fact(&format!("consumed-{index}"), index * 3 + 2, index * 3, "input", "consumed",
-                        json!({"input_id": format!("message-{index}")})));
-                }
-                let last = if page == 0 { 452 } else { 227 };
-                let before = if page == 0 { 228 } else { 1 };
-                wire.reply(&request, json!({"events":events,"through":452,"nextAfter":last,"nextBefore":before,"done":page==1}));
-                if page == 0 {
-                    let submit = wire.read("session.submit");
-                    assert_eq!(submit["params"]["sessionId"], "paged");
-                    assert_eq!(submit["params"]["text"], "draft during history");
-                    wire.reply(&submit, json!({"event":{}}));
-                    request = wire.read("session.history");
-                    assert_eq!(request["params"]["through"], 452);
+            let mut events = Vec::new();
+            for index in 1..=384 {
+                let message = format!("message-{index}");
+                let turn = format!("turn-{index}");
+                let request = format!("request-{index}");
+                for (kind, name, data) in [
+                    ("input", "message", json!({"mode":"append","user":{"content":[{"type":"text","text":format!("paged-message-{index:03}")}]}})),
+                    ("input", "applied", json!({"input_id":message,"mode":"append"})),
+                    ("input", "consumed", json!({"input_id":message})),
+                    ("step", "text", json!({"turn_id":turn,"request_id":request,"delta":"paged-reply-"})),
+                    ("step", "text", json!({"turn_id":turn,"request_id":request,"delta":format!("{index:03}")})),
+                    ("step", "model-output-end", json!({"turn_id":turn,"request_id":request,"status":"completed","finish_reason":"end_turn"})),
+                    ("turn", "end", json!({"turn_id":turn,"status":"completed","reason":"end_turn"})),
+                ] {
+                    let sequence = events.len() as u64 + 1;
+                    let id = if name == "message" { message.clone() } else { format!("event-{sequence}") };
+                    events.push(fact(&id, sequence, sequence, kind, name, data));
                 }
             }
-            assert_eq!(wire.trailing_request(), None, "earlier history is already loaded");
+            events.push(configured_event(THROUGH as u64, "before-replay", json!({})));
+            let start = WINDOW_HEAD - 9 * 7;
+            assert_eq!(first["params"][if display { "tail" } else { "latestTurn" }], true);
+            wire.reply(&first, json!({(field):events[start..WINDOW_HEAD],"through":WINDOW_HEAD,
+                "nextAfter":WINDOW_HEAD,"nextBefore":start + 1,"done":false}));
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["sessionId"], "paged");
+            assert_eq!(submit["params"]["text"], "draft during history");
+            wire.reply(&submit, json!({"event":{}}));
+            let notice = |wire: &mut Wire, event: &Value| wire.notice("session.event",
+                json!({"sessionId":"paged","branchId":"main","event":event}));
+            notice(wire, &events[WINDOW_HEAD]);
+            for after in (0..THROUGH).step_by(256) {
+                let page = wire.read(method);
+                assert_eq!(page["params"], json!({"sessionId":"paged","branchId":"main",
+                    "after":after,"through":THROUGH,"limit":256}));
+                if after == 0 {
+                    notice(wire, &fact("live-end", THROUGH as u64 + 1, THROUGH as u64 + 1, "turn", "end",
+                        json!({"turn_id":"live","status":"failed","error":"live failure while paging"})));
+                    notice(wire, &configured_event(THROUGH as u64 + 2, "during-replay", json!({})));
+                    control.recv_timeout(PATIENCE).unwrap();
+                }
+                let end = (after + 256).min(THROUGH);
+                wire.reply(&page, json!({(field):events[after..end],"through":THROUGH,
+                    "nextAfter":end,"done":end == THROUGH}));
+            }
+            assert_eq!(wire.trailing_request(), None, "replay reads each page once");
         });
         let mut command = home.command();
         if resume_on_launch {
@@ -768,29 +797,41 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.until("draft during history");
         proceed.send(()).unwrap();
         terminal.until("Earlier messages · /earlier");
-        terminal.until("paged-message-150");
+        terminal.until("paged-message-384");
         terminal.until("resumed paged");
-        terminal.until("75 messages");
-        // The window title names the session's first message; only the
-        // screen is windowed.
-        let screen = terminal
-            .transcript
-            .replace("\x1b]0;DIM | paged-message-001\x07", "");
-        assert!(screen.contains("paged-message-076"));
-        assert!(!screen.contains("paged-message-075"));
+        terminal.until("18 messages");
+        let screen = strip_ansi(&terminal.transcript);
+        assert!(screen.contains("paged-message-376"));
+        assert!(!screen.contains("paged-message-375"));
         assert!(!screen.contains("paged-message-001"));
         assert!(
             !terminal.transcript.contains("resumed paged · 0 messages"),
             "resume_on_launch={resume_on_launch}: {}",
             terminal.transcript
         );
-        terminal.write(b"\r/earlier\r");
+        terminal.write(b"\r");
+        terminal.until("test / before-replay");
+        terminal.write(b"/earlier\r");
+        terminal.until("test / during-replay");
+        proceed.send(()).unwrap();
         terminal.until("Full conversation history");
-        for index in 1..=150 {
+        let replay_start = terminal.consumed;
+        for index in 1..=384 {
             terminal.until(&format!("paged-message-{index:03}"));
+            terminal.until(&format!("paged-reply-{index:03}"));
         }
+        terminal.until("live failure while paging");
+        let replay = strip_ansi(&terminal.transcript[replay_start..]);
+        assert_eq!(replay.matches("paged-reply-").count(), 384);
+        assert_eq!(replay.matches("paged-message-").count(), 384);
         terminal.write(b"/timeline\r");
-        terminal.until("#150");
+        terminal.until("#9  paged-message-384");
+        assert_eq!(
+            strip_ansi(&terminal.transcript)
+                .matches("live failure while paging")
+                .count(),
+            1
+        );
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();
