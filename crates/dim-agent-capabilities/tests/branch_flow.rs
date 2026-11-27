@@ -28,7 +28,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -3605,15 +3605,25 @@ async fn until_events(
     branch: &str,
     done: impl Fn(&[Arc<AgentEvent>]) -> bool,
 ) -> Vec<Arc<AgentEvent>> {
-    for _ in 0..600 {
+    let mut published = session
+        .publication(branch)
+        .unwrap_or_else(|error| panic!("line {branch} has no publication: {error}"))
+        .watch();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         if let Ok(events) = line_events(session, branch).await
             && done(&events)
         {
             return events;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for line {branch}");
+        match tokio::time::timeout(remaining, published.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => panic!("line {branch} closed while waiting"),
+            Err(_) => panic!("timed out waiting for line {branch}"),
+        }
     }
-    panic!("timed out waiting for line {branch}");
 }
 fn line_block(events: &[Arc<AgentEvent>]) -> Option<(String, bool)> {
     keyed_block(events, "branch:line")
