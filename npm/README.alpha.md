@@ -33,14 +33,19 @@ Dim's original source uses MIT. See `NOTICE` for distribution attribution. Nativ
 
 ### Share an App Server
 
-On the computer you want to use, open `/settings` and select **Remote access**. Turn on **Allow connections to this computer**. The panel shows the computer name, reachable addresses and the complete sharing token. Select the token to read it on a narrow screen. Sharing starts off and follows the background App Server when you exit the TUI.
+On the computer you want to control, open `/settings → Remote access` and turn on **Allow connections to this computer**, or run `dima share enable` in a shell. Both show the reachable addresses and the complete token. The token is readable on a narrow screen by selecting it in Settings. Sharing starts off and stays available when you exit the TUI while the App Server is running.
+
+On the computer at the keyboard, run `dima share discover` to see LAN candidates, or use an address from the other computer directly. A Tailscale IP or DNS name works too. The default port is 7443.
+
+**Open the remote TUI from a shell.** Run the following in your terminal. At the first prompt, type the token from the computer you want to control and press Enter. Input is hidden. Successful pairing opens an interactive TUI on that computer.
 
 ```text
-Target computer                          Computer at the keyboard
-/settings -> Remote access               dima share discover
-  Allow connections to this computer     dima share connect <address>
-  Computer name                            Sharing token: _
-  Sharing token                            [ordinary Dim terminal]
+$ dima share connect <address>
+Sharing token: _
+    |
+    +-- Enter --> remote TUI
 ```
 
-You can also enter a Tailscale IP or DNS name directly. Addresses without a port use 7443. The client remembers a successful pairing on this computer. Use `--no-remember` for a one-time connection. To run one command, use `dima share connect <address> -- mcp list`. After a token reset, enter the new one with `dima share connect <address> --pair`. Resetting the token or turning sharing off disconnects existing remote terminals. Remote access in Settings always controls the computer at the keyboard.
+**Run one remote CLI command.** Put the command after `--`. For example, `dima share connect <address> -- mcp list` prints the target's MCP configuration and returns to the shell. A previous successful pairing lets you run this without another token prompt. For a specific target directory, use `dima share connect <address> -- --cwd /srv/project mcp list`. To reopen a known session in the TUI, use `dima share connect <address> -- --resume <session-id>`.
+
+Use `--no-remember` for a one-time pairing. After a token reset, enter the new one with `dima share connect <address> --pair`. Resetting the token or turning sharing off disconnects existing remote terminals. Remote access in Settings always controls the computer at the keyboard.
