@@ -77,6 +77,14 @@ const rules=[
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
 
+// The platforms full verification runs on for an event: pull requests verify
+// Linux, a `main` push verifies macOS, and a sweep or manual run covers both.
+export function platforms(event) {
+  if (event === 'pull_request') return ['linux'];
+  if (event === 'push') return ['macos'];
+  return ['linux', 'macos'];
+}
+
 export function classify(files) {
   const needed=new Set();
   for (const file of files) {
@@ -120,5 +128,5 @@ if (import.meta.main) {
   }
   const lines=Object.entries(result).map(([group,value])=>`${group}=${value}`);
   console.log(lines.join('\n'));
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,lines.join('\n')+'\n');
+  if(process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,`${lines.join('\n')}\nplatforms=${JSON.stringify(platforms(process.env.GITHUB_EVENT_NAME))}\n`);
 }

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
 import {pathToFileURL} from 'node:url';
-import {classify,groups} from './ci-changes.mjs';
+import {classify,groups,platforms} from './ci-changes.mjs';
 
 const only=(...names)=>Object.fromEntries(groups.map(group=>[group,names.includes(group)]));
 const hasGit=spawnSync('git',['--version']).status===0;
@@ -228,4 +228,11 @@ test('main push checks use the whole push range in a shallow checkout',{skip:!ha
   const clientPush=runSelector(checkout,'push',clientBase);
   assert.equal(clientPush.windows,true,'a push changing crates/dim-client/src/lib.rs keeps Windows verification');
   assert.deepEqual(clientPush,only(...groups),'code pushes keep the full main run until the scheduled sweep is verified');
+});
+
+test('each event verifies its own platforms', () => {
+  assert.deepEqual(platforms('pull_request'), ['linux'], 'a pull request verifies the primary platform');
+  assert.deepEqual(platforms('push'), ['macos'], 'a main push verifies the secondary platform');
+  assert.deepEqual(platforms('schedule'), ['linux', 'macos'], 'a sweep verifies both');
+  assert.deepEqual(platforms('workflow_dispatch'), ['linux', 'macos'], 'a manual run verifies both');
 });
