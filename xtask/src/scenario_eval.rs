@@ -1197,6 +1197,8 @@ fn pooled_record(source: &Path, run: SavedRun, scenarios: &[Scenario]) -> Result
         error: run.error,
         judge_error: run.judge_error,
         judge_reasks: run.judge_reasks,
+        judge_estimate: run.judge_estimate,
+        judge_budget: run.judge_budget,
         judge_calls: run.judge_calls,
         temperature_dropped: run.temperature_dropped,
         decline_retries: run.decline_retries,
@@ -1300,6 +1302,8 @@ async fn rejudge_one(
         judge_error: judging.error,
         judge_reasks: judging.reasks,
         judge_calls: judging.calls,
+        judge_estimate: judging.fit.map(|(estimate, _)| estimate),
+        judge_budget: judging.fit.map(|(_, budget)| budget),
         temperature_dropped: Some(judging.temperature_dropped),
         decline_retries: saved.decline_retries,
         switch_retries: saved.switch_retries,
@@ -1340,6 +1344,10 @@ struct SavedRun {
     judge_error: Option<String>,
     #[serde(default)]
     judge_reasks: u32,
+    #[serde(default)]
+    judge_estimate: Option<f64>,
+    #[serde(default)]
+    judge_budget: Option<f64>,
     #[serde(default)]
     judge_calls: Vec<JudgeCall>,
     /// The texts the arm was given; empty in a record written before the
@@ -2856,6 +2864,13 @@ struct RunRecord {
     /// How many times the judge was asked again for an answer it could not
     /// use.
     judge_reasks: u32,
+    /// The view's estimate against the judge's budget the fit check compared;
+    /// `None` when no view reached the judge, and in records written before
+    /// the runner recorded them.
+    #[serde(default)]
+    judge_estimate: Option<f64>,
+    #[serde(default)]
+    judge_budget: Option<f64>,
     /// One entry per judge call the run made, in order: what its stream
     /// reported.
     judge_calls: Vec<JudgeCall>,
@@ -3200,6 +3215,12 @@ struct ChildOutcome {
     /// The judge's declared window and output cap: `(0, 0)` when the child
     /// never resolved them, as a run the parent killed has not.
     judge_window: (u64, u64),
+    /// The view's estimate and the judge's budget the fit check compared;
+    /// absent in an outcome written before the child recorded them.
+    #[serde(default)]
+    judge_estimate: Option<f64>,
+    #[serde(default)]
+    judge_budget: Option<f64>,
 }
 
 /// The child outcome of a run the harness aborted.
@@ -3230,6 +3251,8 @@ fn harness_outcome(error: String, preflight: Vec<PreflightCheck>) -> ChildOutcom
         model_configuration: None,
         judge_configuration: None,
         judge_window: (0, 0),
+        judge_estimate: None,
+        judge_budget: None,
     }
 }
 
@@ -3800,6 +3823,8 @@ async fn child_drive(
         model_configuration: carried_parts(&instrument_configuration(&model)),
         judge_configuration: carried_parts(&instrument_configuration(&judge)),
         judge_window: (limits.window, limits.max_output),
+        judge_estimate: judging.fit.map(|(estimate, _)| estimate),
+        judge_budget: judging.fit.map(|(_, budget)| budget),
     })
 }
 
@@ -5383,6 +5408,8 @@ fn supervisor_outcome(
         model_configuration: None,
         judge_configuration: None,
         judge_window: (0, 0),
+        judge_estimate: None,
+        judge_budget: None,
     }
 }
 
@@ -5740,6 +5767,8 @@ fn child_record(
 
         judge_error: outcome.judge_error.clone(),
         judge_reasks: outcome.judge_reasks,
+        judge_estimate: outcome.judge_estimate,
+        judge_budget: outcome.judge_budget,
         judge_calls: outcome.judge_calls.clone(),
         temperature_dropped: Some(outcome.temperature_dropped),
         decline_retries: Some(outcome.decline_retries),
@@ -5839,6 +5868,10 @@ struct Judging {
     calls: Vec<JudgeCall>,
     /// Whether the judge had to drop its temperature.
     temperature_dropped: bool,
+    /// The view's estimate and the judge's budget the fit check compared,
+    /// when a view reached the judge: `None` for a run that never produced
+    /// one (model-prompts §8.1).
+    fit: Option<(f64, f64)>,
 }
 impl Judging {
     /// A run the judge was never asked about: it left no export, the profile
@@ -5852,6 +5885,7 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: None,
         }
     }
     /// A timed-out run whose judge did not answer within its cleanup grace:
@@ -5864,6 +5898,7 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: None,
         }
     }
     /// A run the harness stopped before a request its probes read existed:
@@ -5878,6 +5913,7 @@ impl Judging {
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit: None,
         }
     }
 }
@@ -9024,6 +9060,7 @@ async fn judge_export(
     let facts = window_facts(limits.window, allowance, &whole);
     let estimate = facts.count_tokens(&whole);
     let budget = facts.context_window() - facts.output_tokens();
+    let fit = Some((estimate, budget));
     if estimate > budget {
         return Judging {
             outcome: JudgeOutcome::Unfit,
@@ -9034,6 +9071,7 @@ async fn judge_export(
             reasks: 0,
             calls: Vec::new(),
             temperature_dropped: false,
+            fit,
         };
     }
     let (outcome, probes, error) = loop {
@@ -9117,6 +9155,7 @@ async fn judge_export(
         reasks,
         calls,
         temperature_dropped: dropped,
+        fit,
     }
 }
 
@@ -9848,6 +9887,8 @@ mod tests {
             error: None,
             judge_error: None,
             judge_reasks: 0,
+            judge_estimate: None,
+            judge_budget: None,
             judge_calls: Vec::new(),
             temperature_dropped: Some(false),
             decline_retries: Some(0),
@@ -17197,24 +17238,24 @@ mod tests {
         assert_eq!(records.len(), 4, "one run per arm and scenario");
         for record in &records {
             assert_eq!(record["failed"], false, "{record}");
+            let estimate = record["judgeEstimate"].as_f64().unwrap();
+            let budget = record["judgeBudget"].as_f64().unwrap();
             if record["scenario"] == "case" {
                 assert_eq!(record["judgeOutcome"], "judged", "{record}");
                 assert_eq!(record["probes"][0]["verdict"], "present", "{record}");
+                assert!(
+                    budget - estimate > 4_000.,
+                    "the judged view keeps headroom under the judge's budget: {record}"
+                );
             } else {
                 assert_eq!(record["judgeOutcome"], "unfit", "{record}");
                 assert_eq!(record["probes"][0]["verdict"], "unparsed", "{record}");
                 let error = record["judgeError"].as_str().unwrap();
                 assert!(error.starts_with("the judge view needs about "), "{error}");
                 assert!(error.contains(" tokens; the judge's budget is "), "{error}");
-                let numbers = error
-                    .split(|character: char| !character.is_ascii_digit() && character != '.')
-                    .filter(|part| !part.is_empty())
-                    .map(|part| part.parse::<f64>().unwrap())
-                    .collect::<Vec<_>>();
-                assert_eq!(numbers.len(), 2, "{error}");
                 assert!(
-                    numbers[0] - numbers[1] > 4_000.,
-                    "the overgrown view clears the judge's budget with room to spare: {error}"
+                    estimate - budget > 4_000.,
+                    "the overgrown view clears the judge's budget with room to spare: {record}"
                 );
             }
         }
