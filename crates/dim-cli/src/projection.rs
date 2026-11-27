@@ -525,7 +525,7 @@ impl Projection {
                 }
             }
             EventContent::ModelStart(_) => {}
-            EventContent::Thinking(data) => {
+            EventContent::Thinking(data) | EventContent::SettledThinking(data, _) => {
                 *self
                     .thinking_characters
                     .entry(data.request_id.clone())
@@ -557,6 +557,9 @@ impl Projection {
                         &mut row.row_id,
                         format!("thinking-{}", event.id),
                     ));
+                }
+                if let EventContent::SettledThinking(_, closed_at) = &event.content {
+                    self.close_thinking(&data.request_id, *closed_at);
                 }
             }
             EventContent::Text(data) => {

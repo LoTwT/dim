@@ -252,7 +252,9 @@ const scenarios = [
     area: 'terminal-modes',
     title: 'Append the preceding page in native scrollback and reveal it in place in fullscreen',
     async run(tui) {
-      await tui.setup({respond: () => ({text: ANSWER})});
+      const thought = 'Check the first turn.';
+      await tui.setup({respond: (request) => userText(request).includes('history-turn-01')
+        ? {thinking: thought, text: ANSWER} : {text: ANSWER}});
       let session;
       for (let turn = 1; turn <= 16; turn++) {
         const output = await tui.runCommandAsync([
@@ -302,6 +304,7 @@ const scenarios = [
           }
           const beginning = await terminal.waitFor('Beginning of conversation', {history: true});
           assert.equal(beginning.split('Earlier history ·').length, pages + 1);
+          assert.equal(beginning.split(thought).length, 2, beginning);
           assert(!/\x1b\[\?(?:47|1047|1049)h|\x1b\[3J/.test(terminal.raw()), 'no alternate screen or cleared scrollback');
           terminal.key('Enter');
           const live = await terminal.waitFor(/┃ draft stays here[\s\S]*The fixture answer is deterministic\./, {history: true});
@@ -314,6 +317,7 @@ const scenarios = [
         assert(!join.includes('history-turn-01'), `the viewport lands at the join: ${join}`);
         terminal.key('Home');
         const oldest = await terminal.waitFor('history-turn-01');
+        assert(oldest.includes('Thought for ') && oldest.includes(thought), oldest);
         terminal.key('End');
         const newest = await terminal.waitFor('history-turn-16');
         for (const page of [oldest, join, newest]) {

@@ -664,7 +664,7 @@ impl Worker {
                     .get_mut(&request.branch_id)
                     .expect("current history");
                 history.window_error = None;
-                let events = history.window.take_transcript();
+                let events = history.window.take_transcript(at_start);
                 let missing_prefix =
                     history.window.dropped_pages() || history.window.before.is_some() && !at_start;
                 history.window_complete = true;

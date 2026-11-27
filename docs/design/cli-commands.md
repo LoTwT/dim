@@ -3821,11 +3821,16 @@ and whole-page retention budgets in the [client window contract](clients.md#open
 additional older rows are retained only when the user explicitly loads them. Raw pages are released
 after projection. Export remains a complete fixed-prefix read.
 
+For example, native scrollback grows downward as the operator pages backward:
+
 ```text
-[earlier content not loaded]  <- /earlier, or PageUp at the loaded top
-older requested rows
-initial window
-live output
+↑ Earlier messages · /earlier
+messages 61–69                         (initial window)
+Earlier history · paged · 50 messages  (first /earlier)
+messages 11–60
+Earlier history · paged · 10 messages  (second /earlier)
+messages 1–10
+Beginning of conversation              (next /earlier; no repeated rows)
 ```
 
 ### Pending terminal frames

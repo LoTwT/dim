@@ -677,7 +677,7 @@ fn event(wire: &mut Wire, branch: &str, event: Value) {
 
 #[test]
 fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft() {
-    const WINDOW_HEAD: usize = 69 * 7;
+    const WINDOW_HEAD: usize = 69 * 7 + 4;
     for (resume_on_launch, display) in [(true, true), (false, false)] {
         let home = Home::new();
         let workspace = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
@@ -732,6 +732,19 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             control.recv_timeout(Duration::from_secs(10)).unwrap();
             let mut events = Vec::new();
             for index in 1..=69 {
+                if index == 61 {
+                    for delta in ["Check the ", "boundary."] {
+                        let seq = events.len() as u64 + 1;
+                        events.push(fact(&format!("thought-{seq}"), seq, seq * 1000, "step", "thinking",
+                            json!({"turn_id":"reasoning","request_id":"reasoning","delta":delta})));
+                    }
+                    let seq = events.len() as u64 + 1;
+                    events.push(fact("output-end", seq, seq * 1000, "step", "model-output-end",
+                        json!({"turn_id":"reasoning","request_id":"reasoning",
+                            "status":"completed","finish_reason":"end_turn"})));
+                    events.push(fact("turn-end", seq + 1, (seq + 1) * 1000, "turn", "end",
+                        json!({"turn_id":"reasoning","status":"completed","reason":"end_turn"})));
+                }
                 let message = format!("message-{index}");
                 let turn = format!("turn-{index}");
                 let request = format!("request-{index}");
@@ -746,10 +759,10 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
                 ] {
                     let sequence = events.len() as u64 + 1;
                     let id = if name == "message" { message.clone() } else { format!("event-{sequence}") };
-                    events.push(fact(&id, sequence, sequence, kind, name, data));
+                    events.push(fact(&id, sequence, sequence * 1000, kind, name, data));
                 }
             }
-            let start = WINDOW_HEAD - 9 * 7;
+            let start = 60 * 7 + if display { 1 } else { 2 };
             assert_eq!(first["params"][if display { "tail" } else { "latestTurn" }], true);
             wire.reply(&first, json!({(field):events[start..WINDOW_HEAD],"through":WINDOW_HEAD,
                 "nextAfter":WINDOW_HEAD,"nextBefore":start + 1,"done":false}));
@@ -761,7 +774,9 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
                 json!({"sessionId":"paged","branchId":"main","event":event}));
             notice(wire, &configured_event(WINDOW_HEAD as u64 + 1, "before-page", json!({})));
             let split = 10 * 7 + 1;
-            for (lower, upper) in [(45 * 7, start), (35 * 7, 45 * 7), (25 * 7, 35 * 7), (split, 25 * 7), (0, split)] {
+            for (lower, upper) in [
+                (45 * 7, start), (35 * 7, 45 * 7), (25 * 7, 35 * 7), (split, 25 * 7), (0, split),
+            ] {
                 let page = wire.read(method);
                 let mut params = json!({"sessionId":"paged","branchId":"main",
                     "before":upper + 1,"through":WINDOW_HEAD,"limit":256});
@@ -836,6 +851,16 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.write(b"/earlier\r");
         terminal.until("Beginning of conversation");
         let pages = strip_ansi(&terminal.transcript[paging..terminal.consumed]);
+        assert!(
+            pages.contains("Thought for 2.0s · Check the boundary."),
+            "{pages}"
+        );
+        assert_eq!(
+            strip_ansi(&terminal.transcript)
+                .matches("Thought for ")
+                .count(),
+            1
+        );
         assert_eq!(pages.matches("Earlier history · paged").count(), 2);
         assert_eq!(pages.matches("paged-message-").count(), 60);
         assert_eq!(pages.matches("paged-reply-").count(), 60);
