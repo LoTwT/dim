@@ -900,46 +900,38 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.write(b"/earlier\r");
         terminal.until("test / during-page");
         proceed.send(()).unwrap();
-        terminal.until("Earlier history · paged · 99 messages");
         terminal.until("paged-reply-011");
-        for index in 12..=60 {
+        for index in 12..=69 {
             terminal.until(&format!("paged-message-{index:03}"));
             terminal.until(&format!("paged-reply-{index:03}"));
         }
+        let first = strip_ansi(&terminal.transcript[paging..terminal.consumed]);
+        assert!(!first.contains("paged-message-010"));
         readiness.recv_timeout(PATIENCE).unwrap();
+        let paging = terminal.consumed;
         terminal.write(b"/earlier\r");
-        terminal.until("Earlier history · paged · 21 messages");
-        for index in 1..=10 {
+        for index in 1..=69 {
             terminal.until(&format!("paged-message-{index:03}"));
             terminal.until(&format!("paged-reply-{index:03}"));
         }
-        terminal.until("paged-message-011");
+        terminal.until("live failure while paging");
         terminal.write(b"/earlier\r");
         terminal.until("Beginning of conversation");
-        let pages = strip_ansi(&terminal.transcript[paging..terminal.consumed]);
-        assert!(
-            pages.contains("Thought for 2.0s · Check the boundary."),
-            "{pages}"
-        );
-        assert_eq!(
-            strip_ansi(&terminal.transcript)
-                .matches("Thought for ")
-                .count(),
-            1
-        );
-        assert_eq!(pages.matches("Earlier history · paged").count(), 2);
-        assert_eq!(pages.matches("paged-message-").count(), 60);
-        assert_eq!(pages.matches("paged-reply-").count(), 60);
+        let page = strip_ansi(&terminal.transcript[paging..terminal.consumed]);
+        for redraw in [&first, &page] {
+            assert_eq!(
+                redraw
+                    .matches("Thought for 2.0s · Check the boundary.")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(page.matches("paged-message-").count(), 69);
+        assert_eq!(page.matches("paged-reply-").count(), 69);
         terminal.write(b"/timeline\r");
         terminal.until("#69  paged-message-069");
         terminal.write(b"\x1b[H");
         terminal.until("#1  paged-message-001");
-        assert_eq!(
-            strip_ansi(&terminal.transcript)
-                .matches("live failure while paging")
-                .count(),
-            1
-        );
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();

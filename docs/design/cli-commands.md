@@ -3809,10 +3809,10 @@ the turn settled, while a result read before its call asks nothing.
 
 ### Loading earlier conversation
 
-Scrollback `/earlier` prints one preceding page of the shown branch, oldest first,
-under an earlier-history label in the same terminal. The next invocation continues
-backward from that page; neither invocation reprints already shown messages or reads
-to the beginning to fill the page. Live output continues below. Fullscreen `/earlier` reads a bounded
+Scrollback `/earlier` reveals one preceding page and redraws the shown branch in the
+same terminal, oldest to newest, with the draft below. Like a width-change redraw,
+this replaces native scrollback, including output from before the UI started. It
+does not open another window or switch screens. Fullscreen `/earlier` reads a bounded
 older window at the original cutoff and reveals it at the join; scrolling up or pressing
 PageUp at the drawn top does the same.
 Line mode prints a labelled older segment. None changes
@@ -3821,16 +3821,14 @@ and whole-page retention budgets in the [client window contract](clients.md#open
 additional older rows are retained only when the user explicitly loads them. Raw pages are released
 after projection. Export remains a complete fixed-prefix read.
 
-For example, native scrollback grows downward as the operator pages backward:
+For example, each column shows native scrollback after one action:
 
 ```text
-↑ Earlier messages · /earlier
-messages 61–69                         (initial window)
-Earlier history · paged · 50 messages  (first /earlier)
-messages 11–60
-Earlier history · paged · 10 messages  (second /earlier)
-messages 1–10
-Beginning of conversation              (next /earlier; no repeated rows)
+Resume                 First /earlier         Second /earlier
+↑ Earlier messages     ↑ Earlier messages     messages 1–10
+messages 61–69         messages 11–60         messages 11–60
+                       messages 61–69         messages 61–69
+> draft                > draft                > draft
 ```
 
 ### Pending terminal frames

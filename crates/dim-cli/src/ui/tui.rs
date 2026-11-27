@@ -8101,7 +8101,9 @@ impl App {
             .nth(HISTORY_WINDOW - 1)
             .map_or(0, |(i, _)| i);
         if !self.fullscreen {
-            self.jump_to(start);
+            self.rebuild_window(start);
+            self.banner_committed = false;
+            self.request_reflow();
             return true;
         }
         self.landing = snapshot.rows[floor..]
@@ -8155,8 +8157,7 @@ impl App {
         }
     }
 
-    /// Draws the fullscreen transcript again from row `floor`, the way a
-    /// line switch draws a line's.
+    /// Draws the shown line's transcript again from row `floor`.
     fn rebuild_window(&mut self, floor: usize) {
         self.planner.reset();
         self.thoughts.clear();

@@ -250,7 +250,7 @@ const scenarios = [
   {
     name: 'earlier_reveals_resumed_history_in_both_modes',
     area: 'terminal-modes',
-    title: 'Append the preceding page in native scrollback and reveal it in place in fullscreen',
+    title: 'Redraw native scrollback oldest first and reveal the preceding page at the fullscreen join',
     async run(tui) {
       const thought = 'Check the first turn.';
       await tui.setup({respond: (request) => userText(request).includes('history-turn-01')
@@ -283,19 +283,14 @@ const scenarios = [
         if (!fullscreen) {
           const turns = (text) => [...text.matchAll(/┃ history-turn-(\d+)/g)].map((m) => Number(m[1]));
           let oldest = turns(initial)[0];
-          let pages = 0;
           while (oldest > 1) {
-            pages++;
             const last = String(oldest - 1).padStart(2, '0');
-            const page = await terminal.waitFor(new RegExp(`(?:Earlier history ·[\\s\\S]*?){${pages}}┃ history-turn-${last}[\\s\\S]*draft stays here`), {history: true});
-            const sections = page.split('Earlier history ·');
-            assert.equal(sections.length, pages + 1);
-            assert.deepEqual(turns(sections[0]), turns(initial));
-            const segment = sections.at(-1);
-            const first = turns(segment)[0];
-            assert(first >= 1 && first < oldest, segment);
-            assert.deepEqual(segment.match(/┃ history-turn-\d+|The fixture answer is deterministic\./g),
-              Array.from({length: oldest - first}, (_, i) => [`┃ history-turn-${String(first + i).padStart(2, '0')}`, ANSWER]).flat());
+            const page = await terminal.waitFor(new RegExp(`┃ history-turn-${last}[\\s\\S]*┃ history-turn-16[\\s\\S]*draft stays here`), {history: true});
+            const first = turns(page)[0];
+            assert(first >= 1 && first < oldest, page);
+            assert.deepEqual(page.match(/┃ history-turn-\d+|The fixture answer is deterministic\./g),
+              Array.from({length: 17 - first}, (_, i) => [`┃ history-turn-${String(first + i).padStart(2, '0')}`, ANSWER]).flat());
+            assert.equal(page.includes(hint), first > 1);
             oldest = first;
             terminal.key('C-o');
             await terminal.waitFor('Suggestions');
@@ -303,12 +298,11 @@ const scenarios = [
             terminal.key('Enter');
           }
           const beginning = await terminal.waitFor('Beginning of conversation', {history: true});
-          assert.equal(beginning.split('Earlier history ·').length, pages + 1);
           assert.equal(beginning.split(thought).length, 2, beginning);
-          assert(!/\x1b\[\?(?:47|1047|1049)h|\x1b\[3J/.test(terminal.raw()), 'no alternate screen or cleared scrollback');
+          assert(!/\x1b\[\?(?:47|1047|1049)h/.test(terminal.raw()), 'no alternate screen');
           terminal.key('Enter');
           const live = await terminal.waitFor(/┃ draft stays here[\s\S]*The fixture answer is deterministic\./, {history: true});
-          assert.equal(live.split('Earlier history ·').length, pages + 1);
+          assert.deepEqual(turns(live), Array.from({length: 16}, (_, i) => i + 1));
           assert.equal(live.split('┃ draft stays here').length, 2);
           await exitWith(terminal);
           continue;

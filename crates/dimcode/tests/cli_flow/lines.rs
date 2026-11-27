@@ -947,8 +947,8 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
         assert!(attempts < 25, "the earlier read never started");
         terminal.write(b"/earlier\r");
     }
-    terminal.until("Earlier history · on-the-l · 1 messages");
     terminal.until("older page");
+    terminal.until("resumed line");
     terminal.write(b"/timeline\r");
     terminal.until("#2  resumed line");
     terminal.until_anywhere("#1  older page");
