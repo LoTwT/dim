@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -866,6 +867,52 @@ const scenarios = [
       assert(!terminal.capture().includes('SEARCH-MEMORY-FIRST'), 'the row closes again');
 
       await exitWith(terminal);
+    },
+  },
+  {
+    name: 'settings_manage_inbound_sharing',
+    area: 'commands',
+    title: 'Settings controls inbound access, displays the complete token and revokes it on reset',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch(['--fullscreen'], {
+        env: {DIMCODE_SHARING_LISTEN: '127.0.0.1:0'}, waitForComposer: true, cols: 90, rows: 36,
+      });
+      terminal.send('/settings');
+      terminal.key('Enter');
+      await terminal.waitFor('Language');
+      terminal.key('End');
+      if (!fs.existsSync(path.join(path.dirname(tui.binary), 'dim-sharing'))) {
+        assert(!terminal.capture().includes('Remote access'));
+        return;
+      }
+      const status = () => JSON.parse(execFileSync(tui.binary, ['--home', tui.home, 'share', 'status'], {
+        env: tui.environment({}), encoding: 'utf8',
+      }));
+      assert.equal(status().enabled, false);
+      await terminal.waitFor('Remote access');
+      terminal.key('Enter');
+      await terminal.waitFor('Allow connections to this computer');
+      terminal.key('Enter');
+      await terminal.waitFor('DIM1-');
+      const token = status().token;
+      terminal.key('Down', 'Enter');
+      await terminal.waitFor('Enter save');
+      terminal.send('-fixture');
+      terminal.key('Enter');
+      await terminal.waitFor('-fixture');
+      terminal.key('Down', 'Enter');
+      await terminal.waitFor('Esc back');
+      assert(terminal.capture().includes(token), 'the complete sharing token is readable');
+      terminal.key('Escape', 'Down', 'Enter');
+      await terminal.waitFor('Disconnect all shared terminals');
+      terminal.key('y');
+      await terminal.waitFor('Allow connections to this computer');
+      for (let i = 0; i < 30 && status().token === token; i++) await sleep(100);
+      assert(status().token !== token, 'confirming reset must rotate the token');
+      terminal.key('Home', 'Enter');
+      await terminal.waitFor('off');
+      assert.equal(status().enabled, false);
     },
   },
   {

@@ -361,6 +361,7 @@ pub fn run_with(
     {
         config.startup_timeout = std::time::Duration::from_millis(timeout);
     }
+    let mut sharing_helper = None;
     let mut threads = 2usize;
     let mut model_config = None;
     let mut mock_model = false;
@@ -383,6 +384,11 @@ pub fn run_with(
                 )
             }
             "--no-ws" => config.websocket_address = None,
+            "--sharing-helper" => {
+                sharing_helper = Some(PathBuf::from(
+                    args.next().ok_or("--sharing-helper needs a path")?,
+                ))
+            }
             "--database" => {
                 config.database_path = Some(PathBuf::from(
                     args.next().ok_or("--database requires a path")?,
@@ -637,7 +643,36 @@ pub fn run_with(
             defaults::tool_host(&mut builder, Arc::new(MockTools));
             collaboration::install(&mut builder);
         }
+        let sharing_home = config.target_home.clone();
         let server = serve(builder, config).await?;
+        let endpoint = server
+            .unix_path
+            .clone()
+            .or_else(|| server.pipe_name.as_ref().map(PathBuf::from));
+        let mut sharing = match sharing_home.zip(endpoint) {
+            Some((home, endpoint)) => {
+                let helper = sharing_helper.unwrap_or(
+                    std::env::current_exe()?
+                        .with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX)),
+                );
+                if helper.is_file() {
+                    Some(
+                        tokio::process::Command::new(helper)
+                            .arg("--home")
+                            .arg(home)
+                            .arg("serve")
+                            .arg(endpoint)
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::null())
+                            .kill_on_drop(true)
+                            .spawn()?,
+                    )
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
         println!(
             "{}",
             serde_json::json!({"unixPath": server.unix_path, "pipeName": server.pipe_name, "websocketAddress": server.websocket_address.map(|a| a.to_string())})
@@ -645,11 +680,16 @@ pub fn run_with(
         let shutdown = server.shutdown_signal();
         let join = server.join();
         tokio::pin!(join);
-        tokio::select! {
+        let result = tokio::select! {
             result = &mut join => result,
             signal = tokio::signal::ctrl_c() => { signal?; shutdown.cancel(); join.await },
             signal = terminate_signal() => { signal?; shutdown.cancel(); join.await }
+        };
+        if let Some(child) = &mut sharing {
+            drop(child.stdin.take());
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(6), child.wait()).await;
         }
+        result
     };
     let reason = runtime.block_on(operation)?;
     if reason == ShutdownReason::Forced {

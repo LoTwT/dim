@@ -3050,12 +3050,20 @@ impl Worker {
         }
         if self.ui_identity.is_none() && self.client.offers("ui.leaf.2") {
             let leaf = crate::leaf::Leaf::bind(&self.options)?;
-            let params = json!({
-                "sessionId": self.session_id,
-                "kind": "tui",
-                "peer": leaf.peer,
-                "address": leaf.address,
-            });
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct OpenLeaf<'a> {
+                session_id: &'a str,
+                kind: &'static str,
+                peer: &'a str,
+                address: String,
+            }
+            let params = serde_json::to_value(OpenLeaf {
+                session_id: &self.session_id,
+                kind: "tui",
+                peer: &leaf.peer,
+                address: crate::sharing::leaf_address(&leaf.address).await?,
+            })?;
             let end = self
                 .leaf_end
                 .take()

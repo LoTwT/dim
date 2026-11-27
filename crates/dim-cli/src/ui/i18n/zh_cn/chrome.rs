@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Loading…" => "正在加载…",
+        "This computer" => "本机",
+        "Remote access" => "远程访问",
+        "Allow connections to this computer" => "允许其他电脑连接本机",
+        "Computer name" => "电脑名称",
+        "Sharing token" => "共享 Token",
+        "Reset sharing token" => "重置共享 Token",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "断开所有已连接的远程终端并生成新 Token？"
+        }
+        "y confirm · Esc cancel" => "y 确认 · Esc 取消",
+        "Enter save · Esc cancel" => "Enter 保存 · Esc 取消",
         "Tab / Enter complete" => "Tab / Enter 补全",
         "Queue" => "队列",
         "Export session" => "导出会话",

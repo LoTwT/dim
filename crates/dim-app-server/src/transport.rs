@@ -33,7 +33,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 #[cfg(windows)]
-use tokio::net::windows::named_pipe::{NamedPipeServer as LocalStream, ServerOptions};
+use tokio::net::windows::named_pipe::NamedPipeServer as LocalStream;
 #[cfg(unix)]
 use {
     std::path::Path,
@@ -172,105 +172,6 @@ async fn unix_bind(
     Ok((listener, owned))
 }
 
-#[cfg(windows)]
-fn pipe_bind(name: &str, first: bool) -> io::Result<LocalStream> {
-    use std::{
-        ffi::c_void,
-        mem::size_of,
-        os::windows::io::{FromRawHandle, OwnedHandle},
-        ptr::null_mut,
-    };
-    use windows_sys::Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, LocalFree},
-        Security::{
-            Authorization::{
-                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                SDDL_REVISION_1,
-            },
-            GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
-        },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
-    };
-    if !name.starts_with(r"\\.\pipe\") || name.len() == r"\\.\pipe\".len() || name.contains('\0') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "named pipe requires a local \\\\.\\pipe\\ name",
-        ));
-    }
-    struct LocalMemory(*mut c_void);
-    impl Drop for LocalMemory {
-        fn drop(&mut self) {
-            unsafe { LocalFree(self.0) };
-        }
-    }
-    let mut token = null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let _token = unsafe { OwnedHandle::from_raw_handle(token) };
-    let mut length = 0;
-    if unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut length) } == 0
-        && io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let mut user = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
-    if unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            user.as_mut_ptr().cast(),
-            length,
-            &mut length,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let mut sid_text = null_mut();
-    if unsafe { ConvertSidToStringSidW(sid, &mut sid_text) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let _sid_text = LocalMemory(sid_text.cast());
-    let mut sid_length = 0;
-    while unsafe { *sid_text.add(sid_length) } != 0 {
-        sid_length += 1;
-    }
-    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, sid_length) })
-        .map_err(io::Error::other)?;
-    let descriptor: Vec<u16> = format!("O:{sid}D:P(A;;GA;;;{sid})")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let mut security = null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            descriptor.as_ptr(),
-            SDDL_REVISION_1,
-            &mut security,
-            null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let _security = LocalMemory(security);
-    let mut attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: security,
-        bInheritHandle: 0,
-    };
-    unsafe {
-        ServerOptions::new()
-            .first_pipe_instance(first)
-            .reject_remote_clients(true)
-            .create_with_security_attributes_raw(
-                name,
-                (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
-            )
-    }
-}
 /// Addresses actually bound by the transport plugin.
 pub struct ListenAddresses {
     pub unix_path: Option<PathBuf>,
@@ -371,7 +272,7 @@ impl DynPlugin for TransportPlugin {
                 .config
                 .pipe_name
                 .as_ref()
-                .map(|name| pipe_bind(name, true))
+                .map(|name| dim_client::pipe::bind(name, true))
                 .transpose()
                 .map_err(io_failure)?;
             let websocket = match self.config.websocket_address {
@@ -458,7 +359,7 @@ impl DynPlugin for TransportPlugin {
                         };
                         if let Err(error) = accepted {
                             tracing::warn!(%error, "Named pipe accept failed; retrying");
-                            listener = pipe_bind(&name, false)?;
+                            listener = dim_client::pipe::bind(&name, false)?;
                             tokio::select! {
                                 biased;
                                 _ = closing() => return Ok(()),
@@ -467,7 +368,7 @@ impl DynPlugin for TransportPlugin {
                             continue;
                         }
                         let stream = listener;
-                        listener = pipe_bind(&name, false)?;
+                        listener = dim_client::pipe::bind(&name, false)?;
                         let hub = hub.clone();
                         hub.tasks.clone().spawn(async move {
                             run_local(hub, stream).await;

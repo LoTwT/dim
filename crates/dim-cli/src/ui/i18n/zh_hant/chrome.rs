@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This computer" => "本機",
+        "Remote access" => "遠端存取",
+        "Allow connections to this computer" => "允許其他電腦連線到本機",
+        "Computer name" => "電腦名稱",
+        "Sharing token" => "共享 Token",
+        "Reset sharing token" => "重設共享 Token",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "中斷所有遠端終端的連線並產生新 Token？"
+        }
+        "y confirm · Esc cancel" => "y 確認 · Esc 取消",
+        "Enter save · Esc cancel" => "Enter 儲存 · Esc 取消",
+        "Loading…" => "載入中…",
         "Tab / Enter complete" => "Tab / Enter 補全",
         "Queue" => "佇列",
         "Export session" => "匯出工作階段",

@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This computer" => "このコンピューター",
+        "Remote access" => "リモートアクセス",
+        "Allow connections to this computer" => "このコンピューターへの接続を許可",
+        "Computer name" => "コンピューター名",
+        "Sharing token" => "共有トークン",
+        "Reset sharing token" => "共有トークンをリセット",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "すべてのリモート端末を切断し、新しいトークンを発行しますか？"
+        }
+        "y confirm · Esc cancel" => "y 確定 · Esc キャンセル",
+        "Enter save · Esc cancel" => "Enter 保存 · Esc キャンセル",
+        "Loading…" => "読み込み中…",
         "Tab / Enter complete" => "Tab / Enter 補完",
         "Queue" => "キュー",
         "Export session" => "セッションをエクスポート",

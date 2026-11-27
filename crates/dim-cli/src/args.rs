@@ -207,6 +207,10 @@ Commands:
                                   Read tasks or request cancellation
   migration retry TASK [--source OLD_HOME]
                                   Resume a task, reconciling imported objects
+  share status|enable|disable|rename NAME|reset|discover
+                                  Manage inbound sharing on this computer
+  share connect ADDRESS [--pair] [--no-remember] [-- CLI_ARGS...]
+                                  Open a native client on a shared computer
   web [--port N] [--no-open]      Hold the Web workspace until Ctrl+C
   web --off                       Turn off the daemon-owned Web switch
   web install                     Install this version's Web workspace
@@ -378,6 +382,7 @@ pub enum Action {
     Tui,
     Exec,
     Update,
+    Share(Vec<String>),
     Migration(crate::migration_command::Command),
     Acp {
         agent_id: Option<String>,
@@ -573,6 +578,7 @@ pub struct Options {
     /// own file system work resolves against. Requests carry [`Self::workspace`]
     /// instead.
     cwd: PathBuf,
+    remote_workspace: Option<String>,
     /// The workspace the command names in its requests, resolved once the
     /// options are complete; `None` for a command that names none.
     workspace: Option<Workspace>,
@@ -625,6 +631,8 @@ impl Options {
             home_explicit: false,
             modality: ModalityFlags::default(),
             cwd: std::env::current_dir()?,
+            remote_workspace: crate::sharing::proxy()
+                .and_then(|_| std::env::var("DIMCODE_TERMINAL_WORKSPACE").ok()),
             workspace: None,
             server: None,
             model_config: None,
@@ -905,6 +913,9 @@ impl Options {
                 "--home" => {
                     options.home = PathBuf::from(value(&mut args)?);
                     options.home_explicit = true;
+                }
+                "--cwd" if options.remote_workspace.is_some() => {
+                    options.remote_workspace = Some(value(&mut args)?)
                 }
                 "--cwd" => options.cwd = PathBuf::from(value(&mut args)?),
                 "--server" => options.server = Some(PathBuf::from(value(&mut args)?)),
@@ -1514,6 +1525,10 @@ impl Options {
                     };
                     options.action = Action::Recording { enabled };
                 }
+                "share" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Share(args.by_ref().collect());
+                    break;
+                }
                 "web" if matches!(options.action, Action::Chat) => {
                     options.action = Action::Web {
                         port: None,
@@ -2107,7 +2122,10 @@ impl Options {
     pub fn resolve_workspace(&mut self) -> Result<()> {
         self.workspace = self
             .names_workspace()
-            .then(|| Workspace::resolve(&self.cwd))
+            .then(|| match &self.remote_workspace {
+                Some(path) => Ok(Workspace(path.clone())),
+                None => Workspace::resolve(&self.cwd),
+            })
             .transpose()?;
         Ok(())
     }
@@ -2173,6 +2191,7 @@ impl Options {
             | Action::Update
             | Action::DaemonStop
             | Action::Web { .. }
+            | Action::Share(_)
             | Action::WebInstall
             | Action::DefaultTerminalMode { .. }
             | Action::Help

@@ -30,3 +30,17 @@ See the [plugin author's guide](https://github.com/arcships/dim/blob/main/docs/t
 The type-only entry adds no runtime code or plugin registration.
 
 Dim's original source uses MIT. See `NOTICE` for distribution attribution. Native platform packages include `licenses/RUST-THIRD-PARTY-NOTICES.txt`, terminal library licenses under `licenses/grok-build/`, and Aimux's own MIT license under `licenses/aimux/`. The optional `dimcode-web` package includes `web/THIRD-PARTY-NOTICES.txt`, covering its JavaScript dependencies and Geist fonts under their own licenses. Bundled plugins retain the license files supplied by their npm packages.
+
+### Share an App Server
+
+On the computer you want to use, open `/settings` and select **Remote access**. Turn on **Allow connections to this computer**. The panel shows the computer name, reachable addresses and the complete sharing token. Select the token to read it on a narrow screen. Sharing starts off and follows the background App Server when you exit the TUI.
+
+```text
+Target computer                          Computer at the keyboard
+/settings -> Remote access               dima share discover
+  Allow connections to this computer     dima share connect <address>
+  Computer name                            Sharing token: _
+  Sharing token                            [ordinary Dim terminal]
+```
+
+You can also enter a Tailscale IP or DNS name directly. Addresses without a port use 7443. The client remembers a successful pairing on this computer. Use `--no-remember` for a one-time connection. To run one command, use `dima share connect <address> -- mcp list`. After a token reset, enter the new one with `dima share connect <address> --pair`. Resetting the token or turning sharing off disconnects existing remote terminals. Remote access in Settings always controls the computer at the keyboard.

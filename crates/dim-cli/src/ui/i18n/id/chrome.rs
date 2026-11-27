@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This computer" => "Komputer ini",
+        "Remote access" => "Akses jarak jauh",
+        "Allow connections to this computer" => "Izinkan koneksi ke komputer ini",
+        "Computer name" => "Nama komputer",
+        "Sharing token" => "Token berbagi",
+        "Reset sharing token" => "Atur ulang token berbagi",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "Putuskan semua terminal jarak jauh dan buat token baru?"
+        }
+        "y confirm · Esc cancel" => "y konfirmasi · Esc batal",
+        "Enter save · Esc cancel" => "Enter simpan · Esc batal",
+        "Loading…" => "Memuat…",
         "Tab / Enter complete" => "Tab / Enter lengkapi",
         "Queue" => "Antrean",
         "Export session" => "Ekspor sesi",

@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This computer" => "이 컴퓨터",
+        "Remote access" => "원격 접근",
+        "Allow connections to this computer" => "이 컴퓨터에 연결 허용",
+        "Computer name" => "컴퓨터 이름",
+        "Sharing token" => "공유 토큰",
+        "Reset sharing token" => "공유 토큰 재설정",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "모든 원격 터미널의 연결을 끊고 새 토큰을 발급할까요?"
+        }
+        "y confirm · Esc cancel" => "y 확인 · Esc 취소",
+        "Enter save · Esc cancel" => "Enter 저장 · Esc 취소",
+        "Loading…" => "불러오는 중…",
         "Tab / Enter complete" => "Tab / Enter 완성",
         "Queue" => "대기열",
         "Export session" => "세션 내보내기",

@@ -39,6 +39,7 @@ mod sanitize;
 mod session;
 mod session_command;
 mod session_host;
+mod sharing;
 mod ui;
 mod update;
 mod usage;
@@ -835,6 +836,22 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
     // same language as a value.
     let locale = crate::ui::i18n::interface_locale(&options.home);
     crate::ui::i18n::set(locale);
+    if let Action::Share(arguments) = &options.action {
+        if matches!(
+            arguments.first().map(String::as_str),
+            Some("enable" | "disable" | "reset" | "rename")
+        ) {
+            let mut local = options.clone();
+            local.action = Action::Chat;
+            if client::connect_local(&local, false, locale)
+                .await?
+                .is_none()
+            {
+                client::connect_local(&local, true, locale).await?;
+            }
+        }
+        return sharing::run(&options.home, arguments);
+    }
     if let Action::Migration(command) = &options.action {
         return migration_command::run(root, &options, command, locale).await;
     }
@@ -1198,6 +1215,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             worktree_command::run(&mut client, command, options.json).await
         }
         Action::Acp { .. }
+        | Action::Share(_)
         | Action::Migration(_)
         | Action::Help
         | Action::Version

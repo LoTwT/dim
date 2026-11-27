@@ -8,6 +8,9 @@ pub mod wire;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
+#[cfg(windows)]
+pub mod pipe;
+
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 #[cfg(windows)]
