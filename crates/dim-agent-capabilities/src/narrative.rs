@@ -1481,8 +1481,9 @@ fn body_line(text: &str) -> &str {
         Some(head) => {
             let name = head.split(' ').next().unwrap_or_default();
             let (_, rest) = text.split_once('>').unwrap_or_default();
-            rest.trim()
-                .trim_end_matches(format!("</{name}>").as_str())
+            let rest = rest.trim();
+            rest.strip_suffix(format!("</{name}>").as_str())
+                .unwrap_or(rest)
                 .trim()
         }
         None => text,
@@ -1508,13 +1509,16 @@ fn tag(text: &str) -> Option<&str> {
 }
 
 /// An input with blocks only, told by its blocks and the first line of the
-/// first block's body (§3.4); a turn it opens is titled the same (§3.6).
+/// first block's body, or by its blocks alone when that body is empty (§3.4);
+/// a turn it opens is titled the same (§3.6).
 fn blocks_line(blocks: &[InputBlock], live: &[bool]) -> String {
-    let first = match blocks.first() {
-        Some(InputBlock::Raw { text, .. }) => body_line(text),
-        None => "",
-    };
-    format!("{}: {}", part(&blocks_name(blocks, live)), part(first))
+    let names = part(&blocks_name(blocks, live));
+    match blocks.first() {
+        Some(InputBlock::Raw { text, .. }) if !body_line(text).is_empty() => {
+            format!("{names}: {}", part(body_line(text)))
+        }
+        _ => names,
+    }
 }
 
 fn call_line(call: &Call, origin: u64, person: Person) -> String {

@@ -1899,6 +1899,65 @@ fn opening_a_call_shows_the_effects_it_declared() {
     );
 }
 
+#[test]
+// §3.4, §3.6: a block's body is what lies between its own opening and
+// closing tags; a tag inside the body stays, an empty body leaves the
+// blocks alone, and a block with no tag is told by its text.
+fn a_blocks_line_keeps_its_body_and_drops_only_its_own_closing_tag() {
+    let mut recorded = Recorded::new();
+    recorded.at(10, 0);
+    let mut turns = Vec::new();
+    for (number, text) in [
+        "<note><note>Ready</note></note>",
+        "<note>Close it with </note></note>",
+        "<note><b></b></note>",
+        "<note></note>",
+        "plain first line\nsecond line",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let turn = format!("t{number}");
+        let input = recorded.push(EventKind::InputMessage(InputMessageData {
+            blocks: vec![context_block::raw(text.to_owned(), None)],
+            mode: Some(InputMode::Queue),
+            ..InputMessageData::default()
+        }));
+        let started = recorded.push(turn_start(&turn));
+        recorded.push(consumed(&input));
+        recorded.push(turn_ends(&turn, completed_turn()));
+        turns.push((started, input, text));
+    }
+    let (index, error) = recorded.answer("t9", json!({}));
+    assert!(!error, "{index}");
+    for ((started, input, text), told) in turns.iter().zip([
+        "note: <note>Ready</note>",
+        "note: Close it with </note>",
+        "note: <b></b>",
+        "note",
+        "block: plain first line",
+    ]) {
+        assert_eq!(
+            line_of(&index, started),
+            format!("10:00 {started} turn: {told} — completed"),
+            "{text}"
+        );
+        let (page, error) = recorded.answer("t9", json!({ "open": started }));
+        assert!(!error, "{page}");
+        assert_eq!(
+            line_of(&page, input),
+            format!("10:00 {input} {told}"),
+            "{text}"
+        );
+        let (full, error) = recorded.answer("t9", json!({ "open": input }));
+        assert!(!error, "{full}");
+        assert!(
+            full.contains(text),
+            "opening it shows the block as written: {full}"
+        );
+    }
+}
+
 /// A turn with one consumed input and one reply.
 fn simple_turn(recorded: &mut Recorded, turn: &str, text: &str, reply: &str) {
     let input = recorded.push(input_message(text));

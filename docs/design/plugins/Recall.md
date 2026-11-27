@@ -236,7 +236,7 @@ context is the origin of, or joined to, a thing (§14).
 
 | Thing | Line |
 | --- | --- |
-| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`, the body being the text between the block's opening and closing tags. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
+| Input | with user content: `user: <text>` (images as `[image]`), followed by `+ <blocks>` when it also carries blocks; with blocks only: `<blocks>: <first line of the first block's body>`, or `<blocks>` alone when that body is empty. A block's body is the text between its opening tag and its own closing tag, so a tag inside the body stays; a block whose text opens with no tag has that text as its body. `<blocks>` names each block in order by its opening tag and attributes as written, or `block` for a block whose text opens with no tag, with `(current)` for a live block and `(ended)` for one that retires its `key` |
 | Your reply | `you: <text>`, thinking left out; an output that did not complete is `your reply was cut off (<reason>): <partial text>`, with the committed text and the outcome of its `step/model-output-end`; an output the head ends inside is `you (still writing): <text so far>` |
 | Tool call | `you called <tool> <input brief> → <ending>`; a call whose arguments never arrived is `you started calling <tool> (arguments not received) → <ending>` |
 | Interrupt | `the user interrupted the turn` |

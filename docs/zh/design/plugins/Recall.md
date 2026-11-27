@@ -86,7 +86,7 @@ Recall 就像客户端里的会话视图，只是讲给模型而不是展示给�
 
 | 事 | 行 |
 | --- | --- |
-| 输入 | 有用户内容时：`user: <文本>`（图片为 `[image]`），同时带块时后接 `+ <blocks>`；只有块时：`<blocks>: <第一个块正文的第一行>`，正文是块的开头标签与结束标签之间的文本。`<blocks>` 按顺序列出每个块的开头标签和属性（照写），文本不以标签开头的块写作 `block`；生效中的块加 `(current)`，让其 `key` 失效的块加 `(ended)` |
+| 输入 | 有用户内容时：`user: <文本>`（图片为 `[image]`），同时带块时后接 `+ <blocks>`；只有块时：`<blocks>: <第一个块正文的第一行>`，正文为空时只有 `<blocks>`。块的正文是它的开头标签与它自己的结束标签之间的文本，所以正文里的标签保留；文本不以标签开头的块，正文就是它的文本。`<blocks>` 按顺序列出每个块的开头标签和属性（照写），文本不以标签开头的块写作 `block`；生效中的块加 `(current)`，让其 `key` 失效的块加 `(ended)` |
 | 你的回复 | `you: <文本>`，省略 thinking；未完成的输出为 `your reply was cut off (<原因>): <部分文本>`，带已提交的文本和其 `step/model-output-end` 的结果；head 停在其中的输出为 `you (still writing): <目前的文本>` |
 | 工具调用 | `you called <tool> <参数简述> → <结局>`；参数从未到达的调用为 `you started calling <tool> (arguments not received) → <结局>` |
 | 中断 | `the user interrupted the turn` |
