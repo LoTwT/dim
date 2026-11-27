@@ -231,6 +231,11 @@ test('main push checks use the whole push range in a shallow checkout',{skip:!ha
 });
 
 test('the moved job scripts select the jobs that run them', () => {
+  assert.deepEqual(
+    classify(['scripts/ci-test-concurrency.mjs']),
+    only('rust', 'scripts'),
+    'the helper runs in the verify step that hands it the workspace job',
+  );
   assert.deepEqual(classify(['scripts/ci-web-check.ps1']), only('scripts', 'web'));
   assert.deepEqual(classify(['scripts/ci-windows-target.ps1']), only('scripts', 'windows'));
   assert.deepEqual(

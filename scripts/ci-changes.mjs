@@ -46,6 +46,7 @@ const rules=[
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts']],
   [/^scripts\/stage-web\.mjs$/,['scripts','web']],
+  [/^scripts\/ci-test-concurrency\.mjs$/,['rust','scripts']],
   [/^scripts\/ci-web-check\.ps1$/,['scripts','web']],
   [/^scripts\/ci-windows-target\.ps1$/,['scripts','windows']],
   [/^scripts\/ci-windows-native-tools\.ps1$/,['scripts','windows','windows_native']],
