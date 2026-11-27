@@ -1,5 +1,17 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This computer" => "Cet ordinateur",
+        "Remote access" => "Accès à distance",
+        "Allow connections to this computer" => "Autoriser les connexions à cet ordinateur",
+        "Computer name" => "Nom de l’ordinateur",
+        "Sharing token" => "Jeton de partage",
+        "Reset sharing token" => "Réinitialiser le jeton de partage",
+        "Disconnect all shared terminals and issue a new token?" => {
+            "Déconnecter tous les terminaux distants et générer un nouveau jeton ?"
+        }
+        "y confirm · Esc cancel" => "y confirmer · Échap annuler",
+        "Enter save · Esc cancel" => "Entrée enregistrer · Échap annuler",
+        "Loading…" => "Chargement…",
         "Tab / Enter complete" => "Tab / Enter compléter",
         "Queue" => "File d’attente",
         "Export session" => "Exporter la session",

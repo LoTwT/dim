@@ -79,6 +79,7 @@ pub mod progress;
 pub mod prompts;
 pub mod providers_panel;
 pub mod queue_panel;
+mod remote_access;
 pub mod render;
 mod report_panel;
 pub mod rows;

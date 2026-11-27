@@ -1634,6 +1634,7 @@ enum Prompt {
     Theme(ThemePanel),
     Language(LanguagePanel),
     Settings(SettingsPanel),
+    RemoteAccess(Box<super::remote_access::RemoteAccess>),
     Isolation(Box<crate::ui::isolation_panel::IsolationPanel>),
     Exit(ExitConfirm),
     Upgrade(UpgradeDialog),
@@ -2276,6 +2277,7 @@ impl App {
             | Some(Prompt::Approvals(_))
             | Some(Prompt::Theme(_))
             | Some(Prompt::Language(_))
+            | Some(Prompt::RemoteAccess(_))
             | Some(Prompt::Settings(_))
             | Some(Prompt::Isolation(_))
             | Some(Prompt::Lines(_))
@@ -2343,6 +2345,9 @@ impl App {
         self.sync_sessions();
         self.sync_task_details();
         let mut changed = false;
+        if let Some(Prompt::RemoteAccess(panel)) = &mut self.prompt {
+            changed = panel.tick();
+        }
         for excerpt in self.excerpts.values_mut() {
             if excerpt.next != excerpt.text
                 && now.duration_since(excerpt.at) >= Duration::from_millis(500)
@@ -3453,6 +3458,7 @@ impl App {
                     }
                     Some(Prompt::Theme(panel)) => panel.paste(&text),
                     Some(Prompt::Language(panel)) => panel.paste(&text),
+                    Some(Prompt::RemoteAccess(panel)) => panel.paste(&text),
                     Some(Prompt::Settings(panel)) => panel.paste(&text),
                     Some(Prompt::Isolation(panel)) => panel.paste(&text),
                     Some(Prompt::Management(panel)) => panel.paste(&text),
@@ -3582,6 +3588,7 @@ impl App {
                 Prompt::Approvals(p) => p.handle_key(key),
                 Prompt::Theme(p) => p.handle_key(key),
                 Prompt::Language(p) => p.handle_key(key),
+                Prompt::RemoteAccess(p) => p.handle_key(key),
                 Prompt::Settings(p) => p.handle_key(key),
                 Prompt::Isolation(p) => p.handle_key(key),
                 Prompt::Exit(p) => p.handle_key(key),
@@ -5247,6 +5254,9 @@ impl App {
     fn setting(&mut self, setting: Setting) {
         self.settings_return = Some(setting);
         match setting {
+            Setting::RemoteAccess => self.open_prompt(Prompt::RemoteAccess(Box::new(
+                super::remote_access::RemoteAccess::new(self.home.clone()),
+            ))),
             Setting::Theme => {
                 self.settings_return = None;
                 self.run_command("theme", "");
@@ -6855,6 +6865,9 @@ impl App {
                         Some(Prompt::Language(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
+                        Some(Prompt::RemoteAccess(prompt)) => {
+                            Some(prompt.render(list_width, budget, p))
+                        }
                         Some(Prompt::Settings(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
@@ -6899,6 +6912,7 @@ impl App {
             Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Language(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::RemoteAccess(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Settings(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Isolation(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
