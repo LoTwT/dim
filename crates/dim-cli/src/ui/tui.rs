@@ -30,7 +30,7 @@ use crate::ui::Env;
 use crate::ui::Initial;
 use crate::ui::approvals_panel::{ApprovalsPanel, preset_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
-use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
+use crate::ui::composer::{Composer, Outcome as ComposerOutcome, SavedDraft, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
 use crate::ui::lines_panel::{LinesPanel, short_id};
@@ -392,10 +392,15 @@ fn run_terminal(
                 for update in view.updates {
                     next.apply(update);
                 }
-                let old = std::mem::replace(&mut app, next);
-                drafts.insert(previous, (old.composer, old.question_stash));
-                if let Some((composer, question)) = drafts.remove(&key) {
-                    app.composer = composer;
+                let mut old = std::mem::replace(&mut app, next);
+                let draft = old.composer.take_draft();
+                if draft.is_some() || old.question_stash.is_some() {
+                    drafts.insert(previous, (draft, old.question_stash));
+                }
+                if let Some((draft, question)) = drafts.remove(&key) {
+                    if let Some(draft) = draft {
+                        app.composer.put_draft(draft);
+                    }
                     if let Some(Prompt::Ask(current)) = &mut app.prompt
                         && let Some(saved) = question
                         && current.call == saved.call
@@ -1450,7 +1455,7 @@ struct App {
     runs: Runs,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when command entry ends.
-    palette_stash: Option<(String, bool)>,
+    palette_stash: Option<SavedDraft>,
     /// The workspace's git branch for the banner and composer.
     branch: Option<String>,
     git_head: Option<PathBuf>,
@@ -1983,8 +1988,8 @@ impl App {
     /// Opens the command palette on the draft it replaces; the draft comes
     /// back when command entry ends ([`Self::handle`]).
     fn open_palette(&mut self) {
-        if !self.composer.is_empty() || self.composer.skill_draft {
-            self.palette_stash = Some((self.composer.text().to_owned(), self.composer.skill_draft));
+        if let Some(draft) = self.composer.take_draft() {
+            self.palette_stash = Some(draft);
         }
         self.set_draft("/");
     }
@@ -3571,10 +3576,9 @@ impl App {
         let outcome = self.handle_input(event);
         self.restore_question();
         if self.composer.is_empty()
-            && let Some((draft, skill_draft)) = self.palette_stash.take()
+            && let Some(draft) = self.palette_stash.take()
         {
-            self.set_draft(&draft);
-            self.composer.skill_draft = skill_draft;
+            self.composer.put_draft(draft);
         }
         outcome
     }

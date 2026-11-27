@@ -112,6 +112,14 @@ pub enum Outcome {
     Pass,
 }
 
+pub(super) struct SavedDraft {
+    area: TextArea,
+    state: TextAreaState,
+    tokens: Vec<Token>,
+    shell: Option<Shell>,
+    skill_draft: bool,
+}
+
 pub struct Composer {
     area: TextArea,
     state: TextAreaState,
@@ -184,6 +192,28 @@ impl Composer {
     /// What the palette weighs availability against.
     pub fn set_context(&mut self, context: crate::ui::commands::Context) {
         self.context = context;
+    }
+
+    pub(super) fn take_draft(&mut self) -> Option<SavedDraft> {
+        if self.is_empty() && self.shell.is_none() && !self.skill_draft {
+            return None;
+        }
+        Some(SavedDraft {
+            area: std::mem::replace(&mut self.area, TextArea::new()),
+            state: std::mem::take(&mut self.state),
+            tokens: std::mem::take(&mut self.tokens),
+            shell: self.shell.take(),
+            skill_draft: std::mem::take(&mut self.skill_draft),
+        })
+    }
+
+    pub(super) fn put_draft(&mut self, draft: SavedDraft) {
+        self.area = draft.area;
+        self.state = draft.state;
+        self.tokens = draft.tokens;
+        self.shell = draft.shell;
+        self.skill_draft = draft.skill_draft;
+        self.renumber();
     }
 
     /// Replaces the draft (for example with a message taken back from the

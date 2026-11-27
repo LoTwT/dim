@@ -944,7 +944,9 @@ const scenarios = [
             terminal.key('Enter');
             await terminal.waitFor('Remembered');
           };
-          terminal.send('local draft');
+          terminal.send('local draft ');
+          terminal.paste(['one', 'two', 'three', 'four', 'five'].join('\n'));
+          await terminal.waitFor('[... 5 lines]');
           await devicesOverDraft();
           terminal.key('Home', 'Down', 'Enter');
           await terminal.waitFor('OfficeFixture · Active sessions');
@@ -982,8 +984,11 @@ const scenarios = [
           complete();
           await owner.waitFor('Remote work finished');
           complete = undefined;
-          terminal.key('C-c');
-          await terminal.waitForAbsent('local draft');
+          terminal.key('Enter');
+          const local = await waitForRequest(tui.model, request => request.tools?.length
+            && userText(request).includes('local draft') && userText(request).includes('[Pasted text:'));
+          assert(!userText(local.body).includes('[... 5 lines]'), 'the draft retained its paste content');
+          await terminal.waitFor(ANSWER);
           await exitWith(terminal);
           await exitWith(owner);
         }
