@@ -1364,8 +1364,8 @@ Resuming draws up to 100 messages from main's initial history window. Both modes
 mark unread history above the oldest message, never below the transcript. In fullscreen a
 click, or `Tab` up to it and `Enter`, shows the preceding page at the join. Scrolling
 up or pressing PageUp at the top does the same. `/earlier` reveals one page in fullscreen.
-In scrollback it reprints the entire shown branch in order below a separator, in the
-same terminal. The draft stays editable and the next reply follows the reprinted history.
+In scrollback it appends only the preceding page, oldest first, below a separator in the
+same terminal. Another `/earlier` continues backward without repeating messages. The next live reply follows the page.
 `/timeline` still jumps to a specific message; a draft typed meanwhile stays editable.
 
 ```text
@@ -1377,10 +1377,10 @@ same terminal. The draft stays editable and the next reply follows the reprinted
 [ Ask anything... ]
 
 /earlier (scrollback)
---- Full conversation history ---
+--- Earlier history · paged · 50 messages ---
 > paged-message-001
 ...
-> paged-message-150
+> paged-message-050
 [ Ask anything... ]
 ```
 

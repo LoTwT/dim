@@ -37,7 +37,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter save · Esc cancel" => "Entrée enregistrer · Échap annuler",
         "Loading…" => "Chargement…",
         "Beginning of conversation" => "Début de la conversation atteint",
-        "Full conversation history" => "Historique complet de la conversation",
         "Tab / Enter complete" => "Tab / Enter compléter",
         "Queue" => "File d’attente",
         "Export session" => "Exporter la session",

@@ -3809,10 +3809,10 @@ the turn settled, while a result read before its call asks nothing.
 
 ### Loading earlier conversation
 
-Scrollback `/earlier` reads the shown branch forward from the beginning to its applied
-cursor and prints the conversation under a new label without switching screens. Events
-received during the read continue below the replay. This does not expand the working
-window used by `/timeline` or later live updates. Fullscreen `/earlier` reads a bounded
+Scrollback `/earlier` prints one preceding page of the shown branch, oldest first,
+under an earlier-history label in the same terminal. The next invocation continues
+backward from that page; neither invocation reprints already shown messages or reads
+to the beginning to fill the page. Live output continues below. Fullscreen `/earlier` reads a bounded
 older window at the original cutoff and reveals it at the join; scrolling up or pressing
 PageUp at the drawn top does the same.
 Line mode prints a labelled older segment. None changes

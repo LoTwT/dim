@@ -411,7 +411,6 @@ pub enum Command {
     Earlier {
         line: String,
         session: Origin,
-        all: bool,
     },
     Export(crate::export::Format),
     /// `/compact`: ask the line the command was typed on to compact its
@@ -1334,13 +1333,7 @@ impl DeleteOutcome {
     }
 }
 
-pub struct HistoryReplay {
-    pub rows: Vec<std::sync::Arc<crate::model::view::ViewRow>>,
-    pub window: Vec<std::sync::Arc<crate::model::view::ViewRow>>,
-}
-
 pub enum Update {
-    ReplayHistory(HistoryReplay),
     Reportable {
         error: crate::report::Captured,
         show_error: bool,

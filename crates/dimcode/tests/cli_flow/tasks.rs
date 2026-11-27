@@ -677,8 +677,7 @@ fn event(wire: &mut Wire, branch: &str, event: Value) {
 
 #[test]
 fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft() {
-    const WINDOW_HEAD: usize = 384 * 7;
-    const THROUGH: usize = WINDOW_HEAD + 1;
+    const WINDOW_HEAD: usize = 69 * 7;
     for (resume_on_launch, display) in [(true, true), (false, false)] {
         let home = Home::new();
         let workspace = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
@@ -732,7 +731,7 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             ready.send(()).unwrap();
             control.recv_timeout(Duration::from_secs(10)).unwrap();
             let mut events = Vec::new();
-            for index in 1..=384 {
+            for index in 1..=69 {
                 let message = format!("message-{index}");
                 let turn = format!("turn-{index}");
                 let request = format!("request-{index}");
@@ -750,7 +749,6 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
                     events.push(fact(&id, sequence, sequence, kind, name, data));
                 }
             }
-            events.push(configured_event(THROUGH as u64, "before-replay", json!({})));
             let start = WINDOW_HEAD - 9 * 7;
             assert_eq!(first["params"][if display { "tail" } else { "latestTurn" }], true);
             wire.reply(&first, json!({(field):events[start..WINDOW_HEAD],"through":WINDOW_HEAD,
@@ -761,22 +759,27 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             wire.reply(&submit, json!({"event":{}}));
             let notice = |wire: &mut Wire, event: &Value| wire.notice("session.event",
                 json!({"sessionId":"paged","branchId":"main","event":event}));
-            notice(wire, &events[WINDOW_HEAD]);
-            for after in (0..THROUGH).step_by(256) {
+            notice(wire, &configured_event(WINDOW_HEAD as u64 + 1, "before-page", json!({})));
+            for (lower, upper) in [(35 * 7, start), (10 * 7, 35 * 7), (0, 10 * 7)] {
                 let page = wire.read(method);
-                assert_eq!(page["params"], json!({"sessionId":"paged","branchId":"main",
-                    "after":after,"through":THROUGH,"limit":256}));
-                if after == 0 {
-                    notice(wire, &fact("live-end", THROUGH as u64 + 1, THROUGH as u64 + 1, "turn", "end",
+                let mut params = json!({"sessionId":"paged","branchId":"main",
+                    "before":upper + 1,"through":WINDOW_HEAD,"limit":256});
+                if display { params["tail"] = json!(true); }
+                assert_eq!(page["params"], params);
+                if upper == start {
+                    notice(wire, &fact("live-end", WINDOW_HEAD as u64 + 2, WINDOW_HEAD as u64 + 2, "turn", "end",
                         json!({"turn_id":"live","status":"failed","error":"live failure while paging"})));
-                    notice(wire, &configured_event(THROUGH as u64 + 2, "during-replay", json!({})));
+                    notice(wire, &configured_event(WINDOW_HEAD as u64 + 3, "during-page", json!({})));
                     control.recv_timeout(PATIENCE).unwrap();
                 }
-                let end = (after + 256).min(THROUGH);
-                wire.reply(&page, json!({(field):events[after..end],"through":THROUGH,
-                    "nextAfter":end,"done":end == THROUGH}));
+                wire.reply(&page, json!({(field):events[lower..upper],"through":WINDOW_HEAD,
+                    "nextAfter":upper,"nextBefore":lower + 1,"done":lower == 0}));
+                if lower == 10 * 7 {
+                    wire.quiet(Duration::from_millis(150));
+                    ready.send(()).unwrap();
+                }
             }
-            assert_eq!(wire.trailing_request(), None, "replay reads each page once");
+            assert_eq!(wire.trailing_request(), None, "no read at the beginning");
         });
         let mut command = home.command();
         if resume_on_launch {
@@ -797,12 +800,12 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.until("draft during history");
         proceed.send(()).unwrap();
         terminal.until("Earlier messages · /earlier");
-        terminal.until("paged-message-384");
+        terminal.until("paged-message-069");
         terminal.until("resumed paged");
         terminal.until("18 messages");
         let screen = strip_ansi(&terminal.transcript);
-        assert!(screen.contains("paged-message-376"));
-        assert!(!screen.contains("paged-message-375"));
+        assert!(screen.contains("paged-message-061"));
+        assert!(!screen.contains("paged-message-060"));
         assert!(!screen.contains("paged-message-001"));
         assert!(
             !terminal.transcript.contains("resumed paged · 0 messages"),
@@ -810,22 +813,34 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             terminal.transcript
         );
         terminal.write(b"\r");
-        terminal.until("test / before-replay");
-        terminal.write(b"/earlier\r");
-        terminal.until("test / during-replay");
-        proceed.send(()).unwrap();
-        terminal.until("Full conversation history");
-        let replay_start = terminal.consumed;
-        for index in 1..=384 {
-            terminal.until(&format!("paged-message-{index:03}"));
-            terminal.until(&format!("paged-reply-{index:03}"));
+        terminal.until("test / before-page");
+        let paging = terminal.consumed;
+        for (first, last) in [(11, 60), (1, 10)] {
+            terminal.write(b"/earlier\r");
+            if first == 11 {
+                terminal.until("test / during-page");
+                proceed.send(()).unwrap();
+            }
+            let count = 2 * (last - first + 1);
+            terminal.until(&format!("Earlier history · paged · {count} messages"));
+            for index in first..=last {
+                terminal.until(&format!("paged-message-{index:03}"));
+                terminal.until(&format!("paged-reply-{index:03}"));
+            }
+            if first == 11 {
+                readiness.recv_timeout(PATIENCE).unwrap();
+            }
         }
-        terminal.until("live failure while paging");
-        let replay = strip_ansi(&terminal.transcript[replay_start..]);
-        assert_eq!(replay.matches("paged-reply-").count(), 384);
-        assert_eq!(replay.matches("paged-message-").count(), 384);
+        terminal.write(b"/earlier\r");
+        terminal.until("Beginning of conversation");
+        let pages = strip_ansi(&terminal.transcript[paging..terminal.consumed]);
+        assert_eq!(pages.matches("Earlier history · paged").count(), 2);
+        assert_eq!(pages.matches("paged-message-").count(), 60);
+        assert_eq!(pages.matches("paged-reply-").count(), 60);
         terminal.write(b"/timeline\r");
-        terminal.until("#9  paged-message-384");
+        terminal.until("#69  paged-message-069");
+        terminal.write(b"\x1b[H");
+        terminal.until("#1  paged-message-001");
         assert_eq!(
             strip_ansi(&terminal.transcript)
                 .matches("live failure while paging")

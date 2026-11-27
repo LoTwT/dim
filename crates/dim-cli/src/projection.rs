@@ -29,11 +29,6 @@ use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
 mod thinking;
 
-#[cfg(test)]
-thread_local! {
-    pub(crate) static REPLAY_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Reasoning that is still arriving: the row shows what the Timeline holds
 /// plus the progress not written yet.
 struct OpenThought {
@@ -317,8 +312,6 @@ impl Projection {
     }
 
     fn fold(&mut self, branch_id: &str, event: &Event, replayed: bool) {
-        #[cfg(test)]
-        REPLAY_WORK.set(REPLAY_WORK.get() + 1);
         match &event.content {
             EventContent::ToolCall(data) => {
                 self.questions
@@ -911,12 +904,6 @@ impl Projection {
     }
 
     pub fn snapshot(&self) -> ViewSnapshot {
-        self.snapshot_with_rows(&self.rows)
-    }
-
-    pub fn snapshot_with_rows(&self, rows: &[Arc<ViewRow>]) -> ViewSnapshot {
-        #[cfg(test)]
-        REPLAY_WORK.set(REPLAY_WORK.get() + rows.len());
         let mut pending: Vec<_> = self.user_queue().collect();
         pending.sort_by_key(|input| (!input.applied, input.sequence));
         let queued = pending
@@ -933,7 +920,7 @@ impl Projection {
             })
             .collect();
         ViewSnapshot {
-            rows: rows.to_vec(),
+            rows: self.rows.clone(),
             running: self.running,
             approvals: self.approvals.clone(),
             questions: self.questions.calls().cloned().collect(),
@@ -1357,11 +1344,11 @@ impl Projection {
         older.name_agents(self.agent_names.clone(), Vec::new());
         self.name_agents(older.agent_names.clone(), Vec::new());
         older.rows.retain(|row| {
-            if let Some(existing) = self.rows.iter_mut().find(|existing| {
-                #[cfg(test)]
-                REPLAY_WORK.set(REPLAY_WORK.get() + 1);
-                existing.row_id == row.row_id
-            }) {
+            if let Some(existing) = self
+                .rows
+                .iter_mut()
+                .find(|existing| existing.row_id == row.row_id)
+            {
                 if matches!(
                     row.kind,
                     RowKind::AssistantMessage | RowKind::StreamingAssistant
@@ -1491,10 +1478,6 @@ impl Projection {
 
     pub fn rows(&self) -> &[Arc<ViewRow>] {
         &self.rows
-    }
-
-    pub fn into_rows(self) -> Vec<Arc<ViewRow>> {
-        self.rows
     }
 
     /// The lines `main` recorded, without `main` itself (design §14).

@@ -37,7 +37,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter save · Esc cancel" => "Enter 保存 · Esc キャンセル",
         "Loading…" => "読み込み中…",
         "Beginning of conversation" => "会話の先頭です",
-        "Full conversation history" => "会話履歴の全体",
         "Tab / Enter complete" => "Tab / Enter 補完",
         "Queue" => "キュー",
         "Export session" => "セッションをエクスポート",

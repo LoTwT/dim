@@ -37,7 +37,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter save · Esc cancel" => "Enter 저장 · Esc 취소",
         "Loading…" => "불러오는 중…",
         "Beginning of conversation" => "대화의 시작입니다",
-        "Full conversation history" => "전체 대화 기록",
         "Tab / Enter complete" => "Tab / Enter 완성",
         "Queue" => "대기열",
         "Export session" => "세션 내보내기",

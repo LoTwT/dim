@@ -51,50 +51,10 @@ pub(super) struct HistoryRequest {
 
 enum ReadStage {
     History,
-    Replay,
     Cut,
     Inventory(&'static str),
     Goal,
     ToolOrigin { request_id: String, call_id: String },
-}
-
-pub(super) struct Replay {
-    branch: String,
-    after: u64,
-    through: Option<u64>,
-    projection: Projection,
-    window: Vec<std::sync::Arc<crate::model::view::ViewRow>>,
-}
-
-impl Replay {
-    pub(super) fn window(
-        &self,
-        branch: &str,
-    ) -> Option<&[std::sync::Arc<crate::model::view::ViewRow>]> {
-        (self.branch == branch && self.through.is_some()).then_some(&self.window)
-    }
-
-    pub(super) fn new(branch: String) -> Self {
-        Self {
-            projection: Projection::for_branch(&branch),
-            branch,
-            after: 0,
-            through: None,
-            window: Vec::new(),
-        }
-    }
-
-    fn page(&mut self, page: crate::wire::History) -> crate::Result<bool> {
-        let next = page.next(self.after, self.through)?;
-        for value in page.events {
-            self.projection
-                .replay(&self.branch, &serde_json::from_value(value)?);
-        }
-        if let Some(after) = next {
-            self.after = after;
-        }
-        Ok(next.is_none())
-    }
 }
 
 pub(super) struct StopBatch {
@@ -147,7 +107,6 @@ impl Worker {
         self.side = None;
         self.lines.clear();
         self.task_history.clear();
-        self.replay = None;
         self.task_history_queue.clear();
         self.workflow.clear();
         if let Some(request) = &mut self.task_history_request {
@@ -322,6 +281,9 @@ impl Worker {
     }
 
     pub(super) fn earlier(&mut self, line: &str) {
+        if self.earlier_member() {
+            return;
+        }
         let Some(history) = self.task_history.get_mut(line) else {
             return;
         };
@@ -358,77 +320,7 @@ impl Worker {
     }
 
     pub(super) async fn poll_task_history(&mut self) -> crate::Result<()> {
-        if self
-            .replay
-            .as_ref()
-            .is_some_and(|r| r.branch != self.focus || self.members.selected.is_some())
-        {
-            self.replay = None;
-            if let Some(request) = &mut self.task_history_request
-                && matches!(request.stage, ReadStage::Replay)
-            {
-                request.current = false;
-            }
-            self.changed();
-        }
         if self.task_history_request.is_some() || self.session_id.is_empty() {
-            return Ok(());
-        }
-        if let Some(replay) = &mut self.replay
-            && self
-                .task_history
-                .get(&replay.branch)
-                .is_some_and(|h| h.done)
-        {
-            let through = *replay.through.get_or_insert_with(|| {
-                if let Some(p) =
-                    transcript_mut(&mut self.projection, &mut self.lines, &replay.branch)
-                {
-                    replay.window = p.rows().to_vec();
-                }
-                self.cursors.get(&replay.branch).copied().unwrap_or(0)
-            });
-            let method = if self
-                .client
-                .supports(&["session.history.display", "session.history.detail"])
-            {
-                "session.history.display"
-            } else {
-                "session.history"
-            };
-            let branch_id = replay.branch.clone();
-            #[derive(serde::Serialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Page<'a> {
-                session_id: &'a str,
-                branch_id: &'a str,
-                after: u64,
-                through: u64,
-                limit: u32,
-            }
-            let params = serde_json::to_value(Page {
-                session_id: &self.session_id,
-                branch_id: &branch_id,
-                after: replay.after,
-                through,
-                limit: 256,
-            })?;
-            match self.client.send(method, params).await {
-                Ok(id) => {
-                    self.task_history_request = Some(HistoryRequest {
-                        id,
-                        session_id: self.session_id.clone(),
-                        branch_id,
-                        current: true,
-                        stage: ReadStage::Replay,
-                    })
-                }
-                Err(error) => {
-                    self.replay = None;
-                    self.report(error.to_string(), true);
-                    self.changed();
-                }
-            }
             return Ok(());
         }
         if let Some(branch) = self
@@ -624,39 +516,6 @@ impl Worker {
         if !request.current || request.session_id != self.session_id {
             return Ok(());
         }
-        if matches!(request.stage, ReadStage::Replay) {
-            let Some(mut replay) = self.replay.take() else {
-                return Ok(());
-            };
-            let result = result.map_err(crate::Error::from).and_then(|value| {
-                let page = if self
-                    .client
-                    .supports(&["session.history.display", "session.history.detail"])
-                {
-                    serde_json::from_value::<crate::wire::DisplayPage>(value)?.into()
-                } else {
-                    serde_json::from_value(value)?
-                };
-                replay.page(page)
-            });
-            match result {
-                Ok(false) => self.replay = Some(replay),
-                Ok(true) => {
-                    self.send(Update::ReplayHistory(
-                        crate::model::session::HistoryReplay {
-                            rows: replay.projection.into_rows(),
-                            window: replay.window,
-                        },
-                    ));
-                    self.publish();
-                }
-                Err(error) => {
-                    self.report(error.to_string(), true);
-                    self.changed();
-                }
-            }
-            return Ok(());
-        }
         if let ReadStage::ToolOrigin {
             request_id,
             call_id,
@@ -741,10 +600,7 @@ impl Worker {
                         }
                         history.inventory_cursor = next;
                     }
-                    ReadStage::History
-                    | ReadStage::Replay
-                    | ReadStage::Goal
-                    | ReadStage::ToolOrigin { .. } => {
+                    ReadStage::History | ReadStage::Goal | ReadStage::ToolOrigin { .. } => {
                         unreachable!()
                     }
                 }
@@ -1100,74 +956,6 @@ mod tests {
     /// The same event, decoded as the live stream decodes it.
     fn event(sequence: u64, request: &str, delta: &str) -> Event {
         serde_json::from_value(text(sequence, request, delta)).expect("a text event")
-    }
-
-    #[tokio::test]
-    async fn full_replay_stitches_split_thoughts_with_a_linear_projection_budget() {
-        use crate::projection::REPLAY_WORK;
-        let (mut worker, updates, _sent) =
-            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
-        worker.session_id = "s1".into();
-        worker.discover_branch("main");
-        worker.task_history.get_mut("main").unwrap().done = true;
-        const HEAD: u64 = 4098;
-        worker.apply("main", event(HEAD, "tail", "last"));
-        REPLAY_WORK.set(0);
-        worker
-            .command(Command::Earlier {
-                line: "main".into(),
-                session: Origin::Session("s1".into()),
-                all: true,
-            })
-            .await
-            .unwrap();
-        for after in (0..HEAD).step_by(256) {
-            worker.poll_task_history().await.unwrap();
-            let end = (after + 256).min(HEAD);
-            let events: Vec<_> = (after + 1..=end)
-                .map(|seq| {
-                    let mut value = text(
-                        seq,
-                        &format!("r-{}", (seq - 1) / 3),
-                        ["first ", "second", "answer"][((seq - 1) % 3) as usize],
-                    );
-                    if seq % 3 != 0 {
-                        value["name"] = json!("thinking");
-                    }
-                    value
-                })
-                .collect();
-            answer(
-                &mut worker,
-                json!({"events":events,"through":HEAD,"nextAfter":end,"done":end==HEAD}),
-            )
-            .await;
-        }
-        let rows = updates
-            .try_iter()
-            .find_map(|u| match u {
-                Update::ReplayHistory(r) => Some(r.rows),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(rows.len(), (HEAD / 3 * 2) as usize);
-        for [thought, answer] in rows.as_chunks::<2>().0 {
-            assert_eq!(thought.text, "first second");
-            assert!(!thought.streaming);
-            assert_eq!(answer.text, "answer");
-        }
-        assert!(
-            REPLAY_WORK.get() <= 2 * HEAD as usize,
-            "{} event folds, row comparisons and snapshot row copies",
-            REPLAY_WORK.get()
-        );
-        REPLAY_WORK.set(0);
-        worker.apply("main", event(HEAD + 1, "next", "live"));
-        worker.publish();
-        assert!(
-            REPLAY_WORK.get() < 10,
-            "a live update must not copy the replay"
-        );
     }
 
     /// One user message, as the daemon sends it on the wire and in a page.

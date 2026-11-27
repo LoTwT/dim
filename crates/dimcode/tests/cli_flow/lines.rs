@@ -865,14 +865,14 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
                 "session.history" if branch != "line-1" => {
                     wire.reply(&request, history(8, vec![]));
                 }
-                "session.history" if request["params"].get("after").is_some() => {
-                    assert_eq!(request["params"], json!({"sessionId":"on-the-line","branchId":"line-1","after":0,"through":6,"limit":256}));
-                    wire.reply(&request, history(6, events.to_vec()));
+                "session.history" if request["params"].get("before").is_some() => {
+                    assert_eq!(request["params"], json!({"sessionId":"on-the-line","branchId":"line-1","before":4,"through":6,"limit":256}));
+                    wire.reply(&request, json!({"events":events[..3],"through":6,"nextAfter":3,"nextBefore":1,"done":true}));
                     asked.send(()).unwrap();
                     break;
                 }
                 "session.history" => {
-                    assert!(request["params"].get("before").is_none(), "{request}");
+                    assert!(request["params"].get("after").is_none(), "{request}");
                     let mut window_page = history(6, events[3..].to_vec());
                     window_page["nextBefore"] = json!(4);
                     wire.reply(&request, window_page);
@@ -947,11 +947,11 @@ fn tui_a_resumed_line_without_a_configuration_read_reports_it_once() {
         assert!(attempts < 25, "the earlier read never started");
         terminal.write(b"/earlier\r");
     }
-    terminal.until("Full conversation history");
+    terminal.until("Earlier history · on-the-l · 1 messages");
     terminal.until("older page");
-    terminal.until("resumed line");
     terminal.write(b"/timeline\r");
-    terminal.until("#1  resumed line");
+    terminal.until("#2  resumed line");
+    terminal.until_anywhere("#1  older page");
     assert_eq!(
         reported(&terminal),
         1,

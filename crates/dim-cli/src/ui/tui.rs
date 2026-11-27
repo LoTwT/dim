@@ -1421,7 +1421,6 @@ struct App {
     /// `show_earlier`, cleared once the page is shown or the read ends
     /// without one.
     reveal_pending: bool,
-    replay_rows: Option<crate::model::session::HistoryReplay>,
     /// The user message a `/timeline` jump or a loaded page lands on, once
     /// drawn: `(row id, pick it)`.
     landing: Option<(String, bool)>,
@@ -1901,7 +1900,6 @@ impl App {
             history_floor: 0,
             load_more: false,
             reveal_pending: false,
-            replay_rows: None,
             landing: None,
             startup_session: None,
             awaiting_window: false,
@@ -2766,11 +2764,6 @@ impl App {
                 };
                 if !shown {
                     self.set_notice(text);
-                }
-            }
-            Update::ReplayHistory(rows) => {
-                if !self.fullscreen {
-                    self.replay_rows = Some(rows);
                 }
             }
             Update::Snapshot(snapshot) => {
@@ -6406,9 +6399,6 @@ impl App {
             self.banner_committed = true;
         }
         let ready = self.arm_window();
-        if ready && let Some(rows) = self.replay_rows.take() {
-            self.draw_replay(rows, width, &mut frame);
-        }
         if ready && let Some(shown) = self.pending_line.take() {
             let lines = self.snapshot.as_ref().map_or(&[][..], |s| &s.lines[..]);
             let label = match line_name(lines, &shown) {
@@ -7407,77 +7397,6 @@ impl App {
         true
     }
 
-    fn draw_replay(
-        &mut self,
-        replay: crate::model::session::HistoryReplay,
-        width: usize,
-        frame: &mut Frame,
-    ) {
-        let rows = replay.rows;
-        let first_preview = replay.window.iter().position(|row| {
-            row.kind == RowKind::Thinking && row.streaming && row.provisional_id.is_none()
-        });
-        let (window, live) = replay
-            .window
-            .split_at(first_preview.unwrap_or(replay.window.len()));
-        let mut common = rows
-            .iter()
-            .rev()
-            .zip(window.iter().rev())
-            .take(HISTORY_WINDOW)
-            .take_while(|(a, b)| a == b || a.row_id == b.row_id && (a.streaming || a.pending))
-            .count();
-        while common > 0
-            && rows[rows.len() - common].kind == RowKind::ToolCall
-            && !opens_group(&rows, rows.len() - common)
-        {
-            common -= 1;
-        }
-        let skipped = window.len() - common;
-        let floor = skipped
-            .checked_sub(1)
-            .and_then(|index| {
-                self.snapshot
-                    .as_ref()?
-                    .rows
-                    .iter()
-                    .position(|r| r.row_id == window[index].row_id)
-            })
-            .map_or(0, |index| index + 1);
-        self.rebuild_window(floor);
-        self.load_more = false;
-        let tool_detail = self.tool_detail;
-        let thinking_detail = self.thinking_detail;
-        let mut write = |block| {
-            let lines = render_block(&block, width, &self.palette, &self.markdown, false);
-            if !lines.is_empty() {
-                frame.commits.push(chunk(&lines));
-                self.record(block);
-            }
-        };
-        write(Block::Boundary(t("Full conversation history").into()));
-        let live_ids: HashSet<_> = live.iter().map(|row| row.row_id.as_str()).collect();
-        let mut already_printed = Vec::new();
-        for (index, row) in rows[..rows.len() - common].iter().enumerate() {
-            if row.kind == RowKind::ToolCall && !opens_group(&rows, index) {
-                continue;
-            }
-            if live_ids.contains(row.row_id.as_str()) {
-                if row.streaming || row.pending {
-                    continue;
-                }
-                already_printed.push(row.row_id.clone());
-            }
-            let detail = if row.kind == RowKind::Thinking {
-                thinking_detail
-            } else {
-                tool_detail
-            };
-            write(project_row(&rows, index, detail));
-        }
-        self.commits.plan(&already_printed);
-    }
-
     fn thought_frames(&mut self, width: usize) -> HashMap<String, ThoughtFrame> {
         let mut frames = HashMap::new();
         let Some(snapshot) = &self.snapshot else {
@@ -7980,7 +7899,6 @@ impl App {
         self.history_floor = 0;
         self.load_more = false;
         self.reveal_pending = false;
-        self.replay_rows = None;
         self.landing = None;
         self.window_messages = 0;
         self.history_request = None;
@@ -8080,7 +7998,6 @@ impl App {
         self.history_floor = 0;
         self.load_more = false;
         self.reveal_pending = false;
-        self.replay_rows = None;
         self.landing = None;
         self.window_messages = 0;
         self.history_request = None;
@@ -8183,6 +8100,10 @@ impl App {
             .filter(|(_, row)| row.kind.is_message())
             .nth(HISTORY_WINDOW - 1)
             .map_or(0, |(i, _)| i);
+        if !self.fullscreen {
+            self.jump_to(start);
+            return true;
+        }
         self.landing = snapshot.rows[floor..]
             .iter()
             .find(|row| row.kind == RowKind::UserMessage && row.line.is_none())
@@ -8195,15 +8116,7 @@ impl App {
     }
 
     fn show_earlier(&mut self) {
-        if !self.fullscreen {
-            self.host.send(Command::Earlier {
-                line: self.target_line(),
-                session: self.target_session(),
-                all: true,
-            });
-            return;
-        }
-        if self.reveal_earlier() {
+        if self.history_request.is_some() || self.reveal_earlier() {
             return;
         }
         let Some(snapshot) = &self.snapshot else {
@@ -8214,7 +8127,6 @@ impl App {
                 self.host.send(Command::Earlier {
                     line: self.target_line(),
                     session: self.target_session(),
-                    all: false,
                 });
                 self.reveal_pending = true;
             }
@@ -8653,7 +8565,6 @@ impl App {
 
     fn set_fullscreen(&mut self, on: bool) {
         self.reveal_pending = false;
-        self.replay_rows = None;
         self.fullscreen = on;
         if on {
             self.redraw_window();
@@ -23639,123 +23550,6 @@ mod tests {
             straight,
             "a prepend before the first frame draws the same page"
         );
-    }
-
-    #[test]
-    fn scrollback_replay_before_first_frame_keeps_the_whole_prefix_and_live_tail() {
-        let mut drawn = Drawn::new((80, 40), None, true);
-        drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
-        let rows = window_rows(151);
-        let window = rows[45..150].to_vec();
-        show_window(&mut drawn, rows[45..].to_vec());
-        drawn.app.apply(Update::ReplayHistory(
-            crate::model::session::HistoryReplay {
-                rows: rows[..150].to_vec(),
-                window,
-            },
-        ));
-        let frame = drawn.app.frame((80, 40));
-        let text = crate::sanitize::safe(&frame.commits.join("\n"));
-        let (_, mut rest) = text.split_once("Full conversation history").unwrap();
-        for n in 0..=150 {
-            let label = format!("ask {n}");
-            rest = rest
-                .split_once(&label)
-                .unwrap_or_else(|| panic!("missing {label}"))
-                .1;
-        }
-        assert_eq!(text.matches("ask ").count(), 151);
-        assert!(
-            !drawn
-                .app
-                .frame((80, 40))
-                .commits
-                .join("\n")
-                .contains("ask ")
-        );
-    }
-
-    #[test]
-    fn scrollback_replay_keeps_a_live_thought_settled_on_either_side_of_its_frame() {
-        use crate::projection::Projection;
-        use serde_json::json;
-
-        let run = |member_result: bool, settle_first: bool| {
-            let mut drawn = attached();
-            let mut projection = Projection::default();
-            let event = |id, seq, name, delta| {
-                serde_json::from_value(json!({
-                    "id":id, "sequence":seq, "create_at":1000 * seq,
-                    "type":"step", "name":name,
-                    "data":{"turn_id":"t1", "request_id":"r1", "delta":delta}
-                }))
-                .unwrap()
-            };
-            projection.progress(
-                &serde_json::from_value(json!({
-                    "sessionId":"s1", "branchId":"main", "requestId":"r1",
-                    "text":"", "textOffset":0, "thinking":"Preview.", "thinkingOffset":0
-                }))
-                .unwrap(),
-            );
-            let mut recorded = window_rows(2);
-            let mut answer = (*message(false)).clone();
-            answer.row_id = "previous-answer".into();
-            answer.kind = RowKind::AssistantMessage;
-            answer.text = "Recorded answer.".into();
-            recorded.push(std::sync::Arc::new(answer.clone()));
-            answer.text = "answer.".into();
-            let recent = [std::sync::Arc::new(answer)];
-            if member_result {
-                let result = serde_json::from_value(json!({
-                    "id":"member-done", "sequence":1, "create_at":900,
-                    "type":"collaboration", "name":"result", "data":{
-                        "request_event_id":"background", "agent_id":"helper", "session_id":"member",
-                        "status":"completed", "text":"Member finished."
-                    }
-                }))
-                .unwrap();
-                projection.apply("main", &result);
-                recorded.push(projection.rows().last().unwrap().clone());
-            }
-            let live_rows = |p: &Projection| [recent.as_slice(), p.rows()].concat();
-            let window = live_rows(&projection);
-            show(&mut drawn, window.clone());
-            drawn.app.apply(Update::ReplayHistory(
-                crate::model::session::HistoryReplay {
-                    rows: recorded,
-                    window,
-                },
-            ));
-            if !settle_first {
-                drawn.draw();
-            }
-            projection.apply("main", &event("thought", 2, "thinking", "Settled thought."));
-            projection.apply("main", &event("answer", 3, "text", "New response."));
-            show(&mut drawn, live_rows(&projection));
-            let text = drawn.transcript();
-            let (_, replay) = text.split_once("Full conversation history").unwrap();
-            let labels = ["ask 0", "ask 1", "answer.", "Settled thought."];
-            let after_answer = replay.split_once("Recorded answer.").unwrap().1;
-            (
-                labels.map(|label| replay.matches(label).count()),
-                replay.matches("Member finished.").count(),
-                if member_result {
-                    after_answer
-                        .split_once("Member finished.")
-                        .is_some_and(|(_, tail)| tail.contains("Settled thought."))
-                } else {
-                    after_answer.contains("Settled thought.")
-                },
-            )
-        };
-        for member_result in [false, true] {
-            assert_eq!(
-                [true, false].map(|settle_first| run(member_result, settle_first)),
-                [([1; 4], usize::from(member_result), true); 2],
-                "settled before / after replay frame"
-            );
-        }
     }
 
     /// `/earlier` at the drawn top asks for the page and draws it when it lands.

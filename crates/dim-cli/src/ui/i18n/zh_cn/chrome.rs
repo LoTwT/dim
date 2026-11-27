@@ -37,7 +37,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y confirm · Esc cancel" => "y 确认 · Esc 取消",
         "Enter save · Esc cancel" => "Enter 保存 · Esc 取消",
         "Beginning of conversation" => "已到对话开头",
-        "Full conversation history" => "完整历史",
         "Tab / Enter complete" => "Tab / Enter 补全",
         "Queue" => "队列",
         "Export session" => "导出会话",

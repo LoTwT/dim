@@ -52,7 +52,7 @@ mod report;
 mod tasks;
 mod workflow;
 use member::Members;
-use tasks::{BranchHistory, HistoryRequest, Replay, StopBatch};
+use tasks::{BranchHistory, HistoryRequest, StopBatch};
 use workflow::WorkflowReads;
 
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(16);
@@ -328,7 +328,6 @@ struct Worker {
     task_history_queue: std::collections::VecDeque<String>,
     /// A stale request still occupies this slot until its reply arrives.
     task_history_request: Option<HistoryRequest>,
-    replay: Option<Replay>,
     methods: std::collections::HashSet<String>,
     report_generations: std::collections::HashMap<u64, u64>,
     model_through: u64,
@@ -833,7 +832,6 @@ impl Worker {
             task_history: Default::default(),
             task_history_queue: Default::default(),
             task_history_request: None,
-            replay: None,
             methods: Default::default(),
             report_generations: Default::default(),
             model_through: 0,
@@ -1588,7 +1586,7 @@ impl Worker {
                 None,
                 "The centre moved before /usage ran; no report was printed",
             ),
-            Command::Earlier { line, session, .. } => (
+            Command::Earlier { line, session } => (
                 session,
                 Some(line),
                 None,
@@ -2030,15 +2028,9 @@ impl Worker {
                 }
             }
             Command::Rename(title) => self.rename(title).await,
-            Command::Earlier { line, all, .. } => {
-                if !self.earlier_member() {
-                    if all {
-                        self.replay.get_or_insert_with(|| Replay::new(line));
-                    } else {
-                        self.earlier(&line);
-                    }
-                }
-                if !all && self.earlier_view() == Earlier::Reading {
+            Command::Earlier { line, .. } => {
+                self.earlier(&line);
+                if self.earlier_view() == Earlier::Reading {
                     self.publish();
                 }
             }
@@ -5625,13 +5617,7 @@ impl Worker {
                     .values()
                     .any(|line| line.projection.held_input(id).is_some())
         });
-        let shown = self.shown();
-        let rows = self
-            .replay
-            .as_ref()
-            .and_then(|r| r.window(&self.focus))
-            .unwrap_or(shown.rows());
-        let mut snapshot = shown.snapshot_with_rows(rows);
+        let mut snapshot = self.shown().snapshot();
         snapshot.lines = self.line_views();
         snapshot.unread_lines = snapshot
             .lines
