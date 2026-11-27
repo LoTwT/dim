@@ -2,7 +2,6 @@
 
 This index is navigation. Delivery status lives in issues, not here.
 
-- [Issue maintenance rules](issue-maintenance.md)（中文）：判断、沟通、标签、优先级、milestone、关闭、停滞提醒与巡检规则
 - [Timeline 关联部件逐项分析](design/examples/timeline-capability-analysis.md)（中文）：22 个候选部件、55 个事件的状态、恢复、交接与模型边界
 - [Timeline 承诺的有限模型检查](design/examples/capability-models/README.md)（中文）：逐项承诺、TLA+ 模型、恢复反例与可复现的 TLC 运行记录
 - [Timeline 跨模块交接验证](design/examples/timeline-handoff-verification.md)（中文）：SQLite 恢复、输入交接、插件换代与查询成本的流程证据及边界
