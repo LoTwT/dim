@@ -152,7 +152,9 @@ MacBook 上仍从普通输入框开始。在首页或对话中输入 `/devices` 
 
 列表按 Dim Alpha 实例身份归并。办公台式机同时出现在局域网和 Tailscale 时只占一行，可以有两条可用路径。显示名允许重复，初次连接时通过地址区分同名设备，身份确认后再归并。已保存但暂不可达的电脑标为「离线」或「连接失败」并提供重试。发现候选不等于已经连接。选中候选并验证成功后，显示目标电脑的活跃会话。
 
-Alpha 安装包负责提供连接所需组件。rutis-network 的 mDNS 文档列出了 macOS、Linux 的发布支持，其 TCP 示例监听回环。局域网版要在选定接口提供实际可达的 Dim 入口，入口就绪后再公告，Windows 的发布能力也要单独验证。现有 Tailscale 插件能按标签自动连接，也能按名称或 IP 直连，尚需将可用的 Dim 实例呈现给用户选择。个人 tailnet 无法使用标签发现时仍应支持手动名称或地址。两台真实电脑上的发现、共享启停和双向连接是交付条件。[mDNS 发现](https://github.com/arcships/rutis-network/blob/558af1888dff7012a295283d5a4a05d6b9d4da10/discovery/mdns/README.zh-CN.md) · [Tailscale 连接](https://github.com/arcships/rutis-network/blob/558af1888dff7012a295283d5a4a05d6b9d4da10/docs/design/04-link-tailscale.md)
+现有 Alpha 平台包提供原生 CLI 和 App Server。共享功能交付时，平台包还需包含所选链路的 rutis 宿主（Go 链路使用 Go 宿主）、发现及连接插件，并配置加载器，使普通安装完成后即可开启共享。打包和加载验证归入 #2275。[Alpha 安装说明](../../../npm/README.alpha.md) · [共享与传输 #2275](https://github.com/arcships/dim/issues/2275)
+
+rutis-network 的 mDNS 文档列出了 macOS、Linux 的发布支持，其 TCP 示例监听回环。局域网版要在选定接口提供实际可达的 Dim 入口，入口就绪后再公告，Windows 的发布能力也要单独验证。现有 Tailscale 插件能按标签自动连接，也能按名称或 IP 直连，尚需将可用的 Dim 实例呈现给用户选择。个人 tailnet 无法使用标签发现时仍应支持手动名称或地址。两台真实电脑上的发现、共享启停和双向连接是交付条件。[mDNS 发现](https://github.com/arcships/rutis-network/blob/558af1888dff7012a295283d5a4a05d6b9d4da10/discovery/mdns/README.zh-CN.md) · [Tailscale 连接](https://github.com/arcships/rutis-network/blob/558af1888dff7012a295283d5a4a05d6b9d4da10/docs/design/04-link-tailscale.md)
 
 ## 选电脑，再选会话
 
@@ -167,7 +169,9 @@ Alpha 安装包负责提供连接所需组件。rutis-network 的 mDNS 文档列
 +----------------------------------------------------+
 ```
 
-沿用现有会话选择器的列表行、键盘操作和打开会话流程。列表跨目标机的所有工作目录显示用户可见、正在运行或仍有客户端连接的会话，使用目标机报告的 `running` 和 `attachedClients` 判断。按 Enter 接入原会话，直接使用它的工作目录。[会话目录](../appserver/session-catalog.md#31-sessioncatalog) · [会话选择器](../cli-commands.md#the-resume-picker)
+沿用现有会话选择器的列表行、键盘操作和打开会话流程。一条可见会话只要有任一分支正在运行，或仍有客户端连接，就出现在列表里一次，跨工作目录展示。即使默认分支空闲、所有终端均已断开，另一条分支上的运行任务仍能从这里找到。按 Enter 接入原会话，直接使用它的工作目录。
+
+现有 `SessionSummary.running` 表示默认分支的运行状态。#2276 需要目标 App Server 按会话汇总当前所有分支的运行状态，并结合 `attachedClients` 返回活跃列表。列举时只读取已有运行状态，避免为发现会话而恢复历史会话。[选机与会话 #2276](https://github.com/arcships/dim/issues/2276) · [会话目录](../appserver/session-catalog.md#31-sessioncatalog) · [会话选择器](../cli-commands.md#the-resume-picker)
 
 选择「新建会话」打开远端目录选择器，从目标机的文件系统根目录开始。每次只列当前层的可见子目录，过滤点号开头和目标系统标记为隐藏的目录。列表为空时仍可选当前目录。下面是从 `/` 进入 `srv/` 后的画面。
 
@@ -185,7 +189,7 @@ Alpha 安装包负责提供连接所需组件。rutis-network 的 mDNS 文档列
 
 上下键选择，在子目录上按 Enter 进入，选 `../` 返回上一级。根目录省略 `../`。选择「在 /srv 新建会话」打开该目录的普通输入框，首次发送消息或 shell 命令时才创建会话。已经知道路径时，可选「输入路径」直接跳到对应目录。Esc 取消选目录并回到活跃会话列表。没有活跃会话时，列表焦点落在「新建会话」。[TUI Home](../plugins/Tui.md#36-ui-registry-and-ui-leaves)
 
-目录项、隐藏属性和路径校验由目标机提供。需要在创建会话前按层列目录，目录无权访问或已移除时，在原位置提示原因。[现有工作区文件搜索](../../../crates/dim-app-server/src/workspace_files.rs)
+远端工作区所有者在 #2277 提供创建会话前可用的逐层目录枚举与路径校验。每次读取所选目录的直接子目录，可见的 `target/`、`vendor/` 也能选择。目录无权访问或已移除时，在原位置提示原因。现有 `workspace.files.search` 使用文件补全索引，有独立的检索范围。[远端目录与校验 #2277](https://github.com/arcships/dim/issues/2277) · [相关的文件补全接口](../../../crates/dim-app-server/src/workspace_files.rs)
 
 已知目的地时，`dima --target 办公台式机` 等同于在电脑列表选中它。`--cwd /srv/dim` 直接打开指定远端目录的空输入框，`--resume SESSION_ID` 直接恢复指定远端会话。
 
@@ -226,7 +230,7 @@ TCP 原型采用 rutis-network 已有的拨号和监听插件，把通过 mTLS �
 
 **服务面。** 拨号端使用链路行的本地控制服务，调用 `configure`、`start`、`status`、`waitForChange` 和 `stop`。目标侧的连接进程拥有 socket 和监听器。提议在该进程的独立 rutis 宿主中发布一个 `terminalTransport` 数据面，支持打开业务连接、准备并接受一次 UI 回连、按流标识读写字节块和关闭。UI 回连准备就绪后返回流标识和目标侧监听地址。EOF、链路失效或显式关闭要唤醒等待读写的任务，并释放所属资源。该面只搬运终端流量，业务方法仍由 App Server 的现有入口分发。[服务面约定](../service-faces.md) · [App Server 入口](../contracts/session-boundary.md#a3-entries-and-export)
 
-**UI leaf 需要回程。** 终端在首次 attach 时准备本地 leaf。目标侧为这次 `ui.open` 分配一个一次性的私有监听地址，再沿已建立的链路把 daemon 的回连交给该 leaf。daemon 只拨自己机器上的地址。握手、token、代际替换和 `ui.close` 沿用现有所有者。失败须清理两端的监听和连接。切换时只释放旧目标的 leaf，旧 leaf 的结束事件不能终止新目标的 TUI。[UI 注册与关闭](../plugins/Tui.md#36-ui-registry-and-ui-leaves)
+**UI leaf 需要回程。** 首次 attach 时，使用端 A 先准备好本机 leaf 的监听，再向 B 的 `terminalTransport` 申请一次性监听，取得 B 上的私有地址和回连流标识。A 将 B 返回的地址作为 `ui.open` 的 `address`，将 A 的 leaf 标识作为 `peer`。B 的 daemon 拨该地址，B 的共享进程把这条连接交给已准备的回连流，A 将其接到本机 leaf，双方在 `ui.open` 返回前完成握手。TUI 所有者在 #2275 实现时将远端地址的选择写入 §3.6。握手、token、代际替换和 `ui.close` 沿用现有所有者。失败须清理两端的监听和连接。切换时只释放旧目标的 leaf，旧 leaf 的结束事件不能终止新目标的 TUI。[UI 注册与关闭](../plugins/Tui.md#36-ui-registry-and-ui-leaves)
 
 ## 同一个动作在哪一端生效
 
@@ -244,8 +248,8 @@ TCP 原型采用 rutis-network 已有的拨号和监听插件，把通过 mTLS �
 1. 用两个隔离 home 启动 A、B，与各自 POSIX 连接比较完整 `hello.features`、管理读写、Session 调用、错误与并发通知。插件热加载后仍由目标 App Server 决定方法集。覆盖大帧、独立连接关闭以及提交后断线。
 2. 通过同一目标跑 line mode 和 `exec`，验证输出、退出码和脚本输入输出。用 tmux 在两种 TUI 中跑 `Local → A → B → A`，包括 A 有草稿、待批操作和运行中任务，B 连接失败、同名 Session 以及服务端关闭旧 UI 的情况。用两台机器上的同名路径核对输入框底边，成功切换时显示目标设备名，断线时保留该名称，回到本机时只显示本地路径。
 3. 用无共享文件系统的两端验证目录、附件、导出、浏览器回调和 Web 访问。在 B 改一项设置后，从 A、B 的原生 CLI 分别读取，验证只改到了 B。逐项对照现有 CLI 菜单和命令，验证每个动作的实际结果。
-4. 在两台新装 Alpha 的电脑上，分别通过 `/settings → 远程访问` 开启本机共享，再从 A、B 的 `/devices` 完成一次对另一台的操作。在 A 控制 B 时关闭 A 的入站共享，验证 B 的共享状态和 A 到 B 的出站会话保持可用。先走同一局域网，再移到不同局域网走 Tailscale。验证自动发现、手动地址、双路径合并、退出共享方 TUI 后重连、关闭共享后的撤回，以及睡眠恢复。目标暂不可达时，本机仍可正常工作。
+4. 在两台只装了 Alpha 平台包的电脑上，验证安装包自带的宿主及插件能由加载器启动，并分别通过 `/settings → 远程访问` 开启本机共享，再从 A、B 的 `/devices` 完成一次对另一台的操作。在 A 控制 B 时关闭 A 的入站共享，验证 B 的共享状态和 A 到 B 的出站会话保持可用。先走同一局域网，再移到不同局域网走 Tailscale。验证自动发现、手动地址、双路径合并、退出共享方 TUI 后重连、关闭共享后的撤回，以及睡眠恢复。目标暂不可达时，本机仍可正常工作。
 5. 在无剪贴板的窄终端上，从共享方设置页逐字读出完整 Token，在另一台电脑手动输入并连接。用首次发现和手动配置分别验证缺少或错误 Token 时无法打开任何业务流。记住后重启客户端、在局域网和 Tailscale 间切换，均可自动验证并恢复。重置 Token 时现存连接断开，旧 Token 被拒，同地址的替代实例无法收到保存的秘密。
-6. 从普通 `dima` 经 `/devices` 选择 B。跨目录列出 B 上正在运行或有客户端连接的可见会话，包含没有输入预览的活跃会话，排除只有历史的会话。选择一条直接进入原对话。活跃列表为空时仍能选「新建会话」，从 B 的根目录逐层进入一个仅 B 存在的空目录，选定后打开输入框。验证隐藏目录与普通文件不出现在列表，返回上级、手输路径、无效路径、取消以及断线后重连原会话的行为。首次提交前验证新建流程没有创建 Session。
+6. 从普通 `dima` 经 `/devices` 选择 B。跨目录列出 B 上正在运行或有客户端连接的可见会话，覆盖只有非默认分支运行且没有客户端连接的会话、已连接的空闲会话及没有输入预览的活跃会话，排除只有历史的会话。选择一条直接进入原对话。活跃列表为空时仍能选「新建会话」，从 B 的根目录逐层进入一个仅 B 存在的空目录，选定后打开输入框。验证隐藏目录与普通文件不出现在列表，返回上级、手输路径、无效路径、取消以及断线后重连原会话的行为。首次提交前验证新建流程没有创建 Session。
 
 现有 TUI 和 RPC 分发各保留一份实现，每台 App Server 独立拥有 Session 和存储。配对设备入口的设计由 [#1897](https://github.com/arcships/dim/issues/1897) 跟踪，跨机器放置业务插件由 [#1288](https://github.com/arcships/dim/issues/1288) 跟踪。
