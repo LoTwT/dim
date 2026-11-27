@@ -35,6 +35,7 @@ Prerequisites:
 | Requirement | Notes |
 | --- | --- |
 | `target/debug/dimcode` | Built from the checkout; `--binary` names another build |
+| Native sharing helpers | Build `dim-terminal-transport` and run `node scripts/build-sharing.mjs target/debug` for the two-server device scenario. A CLI built on its own exercises the local computer picker. |
 | `target/debug/dim-app-server` | The provider scenario's `--server` profile; `--binary` looks for it beside the CLI, and the case names the build command when it is missing |
 | tmux | 3.2 or newer, on macOS or Linux. `pane_dead_signal` arrived in 3.3: on 3.2 the field is unknown, so a signal death reports an empty status and fails the case instead of naming the signal. tmux 3.6a exits at `new-session -x -y` when `window-size manual` is in the startup config, so the harness sets it per window after `new-session` (#1890) |
 | Node.js | The version in `.node-version`; the suite and its fixture are plain ES modules |

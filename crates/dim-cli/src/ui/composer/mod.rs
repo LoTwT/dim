@@ -209,6 +209,7 @@ impl Composer {
 
     pub(super) fn put_draft(&mut self, draft: SavedDraft) {
         self.area = draft.area;
+        self.area.set_cursor(self.area.text().len());
         self.state = draft.state;
         self.tokens = draft.tokens;
         self.shell = draft.shell;

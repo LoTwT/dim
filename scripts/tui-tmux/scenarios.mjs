@@ -883,6 +883,16 @@ const scenarios = [
         return {text: ANSWER};
       }});
       const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
+      if (!fs.existsSync(path.join(path.dirname(tui.binary), 'dim-sharing'))) {
+        const terminal = await tui.launch([], {env, waitForComposer: true});
+        terminal.send('/devices');
+        terminal.key('Enter');
+        await terminal.waitFor('This computer');
+        terminal.key('Home', 'Enter');
+        await terminal.waitFor('This computer · Active sessions');
+        await terminal.waitFor('New session…');
+        return;
+      }
       const remoteHome = path.join(tui.root, 'other');
       const project = path.join(tui.root, 'remote-project');
       fs.mkdirSync(project);
