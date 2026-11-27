@@ -676,6 +676,65 @@ fn event(wire: &mut Wire, branch: &str, event: Value) {
 }
 
 #[test]
+fn tui_resume_draws_complete_thinking_in_the_first_indexed_window() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.hello(&["session.history.display", "session.history.detail",
+                "session.history.display.transcript"]);
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["sequence"] = json!(41);
+            wire.reply(&attach, record);
+            let page = wire.read("session.history.display");
+            assert_eq!(page["params"]["transcript"], true);
+            assert_eq!(page["params"]["limit"], 32);
+            let mut items = vec![
+                fact("input", 10, 0, "input", "message", json!({"user":{"content":[{"type":"text","text":"question"}]}})),
+                fact("applied", 11, 0, "input", "applied", json!({"input_id":"input"})),
+                fact("consumed", 12, 0, "input", "consumed", json!({"input_id":"input"})),
+            ];
+            for seq in 13..40 {
+                let (kind, delta) = match seq {
+                    13 => ("thinking", "Check the "),
+                    14 => ("thinking", "first page."),
+                    15 => ("text", "visible answer"),
+                    _ => ("text", "."),
+                };
+                items.push(fact(&format!("step-{seq}"), seq, seq * 1000, "step", kind,
+                    json!({"turn_id":"turn","request_id":"request","delta":delta})));
+            }
+            items.push(fact("end", 40, 40000, "step", "model-output-end", json!({
+                "turn_id":"turn","request_id":"request","status":"completed","finish_reason":"end_turn"})));
+            items.push(fact("turn-end", 41, 41000, "turn", "end", json!({
+                "turn_id":"turn","status":"completed","reason":"end_turn"})));
+            wire.reply(&page, json!({"items":items,"through":41,"nextAfter":41,"nextBefore":10,"done":false}));
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            assert_eq!(wire.trailing_request(), None, "resume must not fetch an older page");
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("visible answer");
+        let screen = strip_ansi(&terminal.transcript[..terminal.consumed]);
+        assert_eq!(
+            screen
+                .matches("Thought for 2.0s · Check the first page.")
+                .count(),
+            1,
+            "fullscreen={fullscreen}: {screen}"
+        );
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
 fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft() {
     const WINDOW_HEAD: usize = 69 * 7 + 4;
     for (resume_on_launch, display) in [(true, true), (false, false)] {

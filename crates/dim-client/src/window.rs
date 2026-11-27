@@ -62,7 +62,9 @@ impl ThoughtBoundary {
                 EventContent::ToolUse(data) => Some(&data.request_id),
                 EventContent::ModelEnd(data) => Some(&data.request_id),
                 EventContent::ModelStart(data) => Some(&data.request_id),
-                EventContent::TurnEnd(_) | EventContent::TurnStart(_) => {
+                EventContent::InputConsumed(_)
+                | EventContent::TurnStart(_)
+                | EventContent::TurnEnd(_) => {
                     self.finish(&mut rows);
                     if matches!(event.content, EventContent::TurnEnd(_)) {
                         self.turn_end = Some(event.create_at);
