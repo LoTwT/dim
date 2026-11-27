@@ -14,6 +14,49 @@
 | 终端选机与会话 | `/devices` 先选电脑，再接入活跃会话或从远端根目录选项目开工，输入框标明目标 | [#2276](https://github.com/arcships/dim/issues/2276) |
 | 两端的文件与系统操作 | App Server 负责远端项目、执行和设置。手边的终端负责剪贴板、本机附件及导出位置 | [#2277](https://github.com/arcships/dim/issues/2277) |
 
+### 连接拓扑图
+
+MacBook A 可以照常通过自己的 `daemon.sock` 使用本机 App Server。下图是从 A 的 `/devices` 选择办公台式机 B 时的网络路径。
+
+```text
++-------------------+                          +----------------------------+
+| MacBook A         |    局域网 / Tailscale    | 办公台式机 B               |
++-------------------+                          +----------------------------+
+| /devices          |<.... 发现名称和地址 .....| 共享入口                   |
+| 选中 B            |-------- 加密连接 ------->| 验证 B 的共享 Token        |
+| dim-client        |<===== 双向 RPC 流 ======>| 共享进程 -> daemon.sock    |
+| TUI leaf          |<------- UI 回连 ---------| 私有监听地址 <- App Server |
++-------------------+                          +----------------------------+
+```
+
+点线表示发现候选设备。也可以手输地址，从加密连接那一步开始。A 核对 B 的身份，B 验证共享 Token，同一条 rutis 链路随后承载独立的 RPC 流和 UI 回连流。UI 行的箭头表示 B 的 daemon 发起回连，建立后双向通信。换成从 B 操作 A 时，在 A 上开启共享并使用 A 的 Token 即可对调两端。切换到第三台电脑会建立该目标自己的连接。
+
+### 模块架构图
+
+```text
+使用端 A / dima
+  |-- /devices 或 --target  -> 选择目标，读取该目标的本机凭据
+  |-- 会话选择器、输入框    -> 记录草稿及待回复项所属的目标和 Session
+  |-- dim-client            -> 本机 daemon.sock 或所选目标的 RPC 流
+  |-- TUI leaf              <- 接受目标 App Server 的 UI 回连
+  `-- 本机 I/O              -> 剪贴板、附件选择、导出位置
+
+共享端 B / 共享进程（由 B 的「设置 / 远程访问」控制）
+  |-- rutis-network         -> 发现与链路管理
+  |-- 共享 Token 验证       -> 允许已验证的链路打开流
+  `-- terminalTransport（拟议）
+        |-- RPC 流          -> B 的 daemon.sock -> App Server 分发
+        `-- UI 回连流       <- B 的一次性私有监听地址 <- UiLeaf
+
+共享端 B / App Server
+  |-- 会话目录、Session     -> 查询活跃会话、接入原对话、执行任务
+  |-- 工作区                -> 列出和校验远端目录（拟议）
+  |-- 管理方法              -> 操作目标机的模型、MCP 和运行时设置
+  `-- UiHost / UiLeaf       -> 注册终端，向本机私有监听地址发起回连
+```
+
+选中 B 后，终端通过 `dim-client` 查询 B 的会话和目录，并向选定的会话提交输入。B 的共享进程持有网络流与本机 socket，App Server 决定每个 RPC 的结果。连接中断后，A 保留目标和草稿，B 上已接受的任务继续执行。[原生客户端](../../../crates/dim-client/README.md) · [会话目录](../appserver/session-catalog.md#31-sessioncatalog) · [UI 注册与回连](../plugins/Tui.md#36-ui-registry-and-ui-leaves)
+
 ## 第一次从 MacBook 连接办公台式机
 
 1. 在办公台式机上运行 `dima`。首页显示「当前电脑：办公台式机（本机）」和「切换电脑 /devices」。打开 `/settings → 远程访问`，开启「允许其他电脑连接本机」。共享默认关闭，「电脑名称」默认取这台电脑的系统主机名（hostname），例如 `office-pc`。可以在这里把 Dim 的显示名设为「办公台式机」，系统主机名和连接地址仍由操作系统和网络管理。Dim 记住这个开关，在入口就绪后公布实际可用的连接地址。关闭 TUI 后，只要办公台式机保持唤醒、共享打开且后台 Dim 正在运行，仍可连接。
@@ -176,12 +219,6 @@ Alpha 安装包负责提供连接所需组件。rutis-network 的 mDNS 文档列
 从 `/devices` 选择远端时，客户端在候选连接上通过共享 Token 验证并完成 v4 `hello`。恢复会话时，在 attach 和首屏读取成功后交接输入。新建会话时，在远端确认路径并打开空输入框后交接输入。取消或失败保留原视图。交接时解除旧界面注册，迟到的通知和审批响应仍属于旧目标。提交后断线按原目标、Session 和提交标识核对结果，禁止自动重发。[Session 恢复](../clients.md#2-what-clients-share)
 
 ## POSIX 连接怎样跨机器
-
-```text
-terminal host                    rutis-network              target host
-existing TUI / CLI -> dim-client ===== link =====> owner process -> daemon.sock
-     UI leaf       <============= return stream <====== UiLeaf via private socket
-```
 
 TCP 原型采用 rutis-network 已有的拨号和监听插件，把通过 mTLS 的通道交给 rutis。Tailscale 单节点链路可复用同一项终端连接操作。发布端运行在能够访问目标 POSIX socket 的账户下。每个目标的链路单独装配，因此候选 B 可以在 A 工作时完成握手，两台服务器导出的同名服务各在自己的宿主上下文中解析。[TCP 控制接口](https://github.com/arcships/rutis-network/blob/558af1888dff7012a295283d5a4a05d6b9d4da10/docs/design/06-link-tcp-integration.md)
 
