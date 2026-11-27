@@ -107,6 +107,8 @@ Keep these judgments aligned with the product definitions, architectural rules, 
 
 ## Manage GitHub Issues and PRs
 
+The stable labels, priority map, milestone, comment, closing and triage workflow are in [issue maintenance rules](docs/issue-maintenance.md).
+
 Treat Issues and PRs as the repository's product work surfaces. Everyone may propose a product change or bug fix by opening an Issue or PR and may add descriptions, designs, screenshots, tests, and other evidence. Contributors provide the problem and the evidence; the product architect analyzes the proposal and recommends what should happen next.
 
 Own the product judgment: analyze and organize Issues, decide whether proposed work is worth doing, request missing information, plan accepted work, and review PRs. This describes the Agent's responsibility, not an automatic GitHub permission. Submitting a formal review, changing labels or milestones, closing work, merging, and releasing require the authority granted by the repository. When a change affects product direction or requires a decision outside the current rules, record the question and defer to the authorized maintainer or product owner instead of approving it yourself.
