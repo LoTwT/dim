@@ -8,6 +8,7 @@ pub struct Window {
     pub before: Option<u64>,
     pub through: Option<u64>,
     pages: VecDeque<(Option<u64>, Vec<Event>)>,
+    input_continuations: Vec<Event>,
     initial: bool,
     dropped: bool,
 }
@@ -18,6 +19,7 @@ impl Default for Window {
             before: None,
             through: None,
             pages: VecDeque::new(),
+            input_continuations: Vec::new(),
             initial: true,
             dropped: false,
         }
@@ -131,6 +133,28 @@ impl Window {
             .into_iter()
             .flat_map(|(_, events)| events)
             .collect()
+    }
+
+    /// Events for a separately projected page. Apply and consume facts whose
+    /// input was written before the page travel back with the cursor until
+    /// the page containing that input can draw it. No extra page is read.
+    pub fn take_transcript(&mut self) -> Vec<Event> {
+        let mut events = self.take();
+        events.append(&mut self.input_continuations);
+        if self.before.is_some() {
+            let written: HashSet<_> = events
+                .iter()
+                .filter(|event| matches!(event.content, EventContent::Input(_)))
+                .map(|event| event.id.clone())
+                .collect();
+            self.input_continuations
+                .extend(events.extract_if(.., |event| match &event.content {
+                    EventContent::InputApplied(data) => !written.contains(&data.input_id),
+                    EventContent::InputConsumed(data) => !written.contains(&data.input_id),
+                    _ => false,
+                }));
+        }
+        events
     }
 
     /// Whether the last [`Window::take`] dropped the oldest page under the

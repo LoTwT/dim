@@ -760,7 +760,8 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             let notice = |wire: &mut Wire, event: &Value| wire.notice("session.event",
                 json!({"sessionId":"paged","branchId":"main","event":event}));
             notice(wire, &configured_event(WINDOW_HEAD as u64 + 1, "before-page", json!({})));
-            for (lower, upper) in [(35 * 7, start), (10 * 7, 35 * 7), (0, 10 * 7)] {
+            let split = 10 * 7 + 1;
+            for (lower, upper) in [(45 * 7, start), (35 * 7, 45 * 7), (25 * 7, 35 * 7), (split, 25 * 7), (0, split)] {
                 let page = wire.read(method);
                 let mut params = json!({"sessionId":"paged","branchId":"main",
                     "before":upper + 1,"through":WINDOW_HEAD,"limit":256});
@@ -774,7 +775,7 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
                 }
                 wire.reply(&page, json!({(field):events[lower..upper],"through":WINDOW_HEAD,
                     "nextAfter":upper,"nextBefore":lower + 1,"done":lower == 0}));
-                if lower == 10 * 7 {
+                if lower == split {
                     wire.quiet(Duration::from_millis(150));
                     ready.send(()).unwrap();
                 }
@@ -815,22 +816,23 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.write(b"\r");
         terminal.until("test / before-page");
         let paging = terminal.consumed;
-        for (first, last) in [(11, 60), (1, 10)] {
-            terminal.write(b"/earlier\r");
-            if first == 11 {
-                terminal.until("test / during-page");
-                proceed.send(()).unwrap();
-            }
-            let count = 2 * (last - first + 1);
-            terminal.until(&format!("Earlier history · paged · {count} messages"));
-            for index in first..=last {
-                terminal.until(&format!("paged-message-{index:03}"));
-                terminal.until(&format!("paged-reply-{index:03}"));
-            }
-            if first == 11 {
-                readiness.recv_timeout(PATIENCE).unwrap();
-            }
+        terminal.write(b"/earlier\r");
+        terminal.until("test / during-page");
+        proceed.send(()).unwrap();
+        terminal.until("Earlier history · paged · 99 messages");
+        terminal.until("paged-reply-011");
+        for index in 12..=60 {
+            terminal.until(&format!("paged-message-{index:03}"));
+            terminal.until(&format!("paged-reply-{index:03}"));
         }
+        readiness.recv_timeout(PATIENCE).unwrap();
+        terminal.write(b"/earlier\r");
+        terminal.until("Earlier history · paged · 21 messages");
+        for index in 1..=10 {
+            terminal.until(&format!("paged-message-{index:03}"));
+            terminal.until(&format!("paged-reply-{index:03}"));
+        }
+        terminal.until("paged-message-011");
         terminal.write(b"/earlier\r");
         terminal.until("Beginning of conversation");
         let pages = strip_ansi(&terminal.transcript[paging..terminal.consumed]);

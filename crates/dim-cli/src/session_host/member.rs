@@ -588,15 +588,16 @@ impl Worker {
                     Err(error) => self.fail_member(&id, error),
                     Ok(done) => {
                         if done {
+                            let events = observation.window.take_transcript();
                             if observation.earlier == EarlierRead::Reading {
                                 let mut older = Projection::default();
-                                for event in observation.window.take() {
+                                for event in events {
                                     older.replay(DEFAULT_BRANCH_ID, &event);
                                 }
                                 observation.projection.prepend(older);
                                 observation.earlier = EarlierRead::None;
                             } else {
-                                for event in observation.window.take() {
+                                for event in events {
                                     observation.event(event, true);
                                 }
                                 observation.cursor =
