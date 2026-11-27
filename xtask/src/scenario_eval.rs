@@ -2868,12 +2868,11 @@ struct RunRecord {
     /// How many times the judge was asked again for an answer it could not
     /// use.
     judge_reasks: u32,
-    /// The view's estimate against the judge's budget the fit check compared;
-    /// `None` when no view reached the judge, and in records written before
-    /// the runner recorded them.
-    #[serde(default)]
+    /// The view's estimate against the judge's budget the fit check compared:
+    /// present when the check ran — judged, unreadable, a failed call, or
+    /// unfit — and `None` when no view was built, the judge was not resolved,
+    /// the run is incomplete, or the judge phase did not finish in time.
     judge_estimate: Option<f64>,
-    #[serde(default)]
     judge_budget: Option<f64>,
     /// One entry per judge call the run made, in order: what its stream
     /// reported.
@@ -5873,8 +5872,9 @@ struct Judging {
     /// Whether the judge had to drop its temperature.
     temperature_dropped: bool,
     /// The view's estimate and the judge's budget the fit check compared,
-    /// when a view reached the judge: `None` for a run that never produced
-    /// one (model-prompts §8.1).
+    /// once the check has run — including a run it left unfit, and a judge
+    /// phase that then timed out (model-prompts §8.1). `None` before the
+    /// check, or when there was no view to check.
     fit: Option<(f64, f64)>,
 }
 impl Judging {
@@ -9040,6 +9040,11 @@ async fn judge_window(
 /// probe without one, is asked again with what was wrong, at most [`REASKS`]
 /// times; a call that fails during a re-ask ends the asking. An answer that
 /// stays unusable leaves every probe `unparsed` (model-prompts §8.1).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per part of one run's judging, plus the slot a timeout \
+              reads so it can keep the fit the check took"
+)]
 async fn judge_export(
     host: &Arc<ModelHost>,
     resolver: &Arc<ProviderConnectionResolver>,
@@ -15530,6 +15535,18 @@ mod tests {
             "a re-judged run keeps the count its source recorded: {}",
             records[1]
         );
+        for record in &records[..2] {
+            assert!(
+                record["judgeEstimate"].is_f64() && record["judgeBudget"].is_f64(),
+                "a re-judged run states the fit its new judge took: {record}"
+            );
+        }
+        assert_eq!(
+            records[2]["judgeEstimate"],
+            Value::Null,
+            "a run whose judge was never asked records no fit: {}",
+            records[2]
+        );
         assert_eq!(
             previously_unjudged["arm"], "current",
             "{previously_unjudged}"
@@ -17256,6 +17273,10 @@ mod tests {
             assert_eq!(record["failed"], false, "{record}");
             let estimate = record["judgeEstimate"].as_f64().unwrap();
             let budget = record["judgeBudget"].as_f64().unwrap();
+            assert_eq!(
+                budget, 39_800.,
+                "the judge's budget is its declared window less its output cap"
+            );
             if record["scenario"] == "case" {
                 assert_eq!(record["judgeOutcome"], "judged", "{record}");
                 assert_eq!(record["probes"][0]["verdict"], "present", "{record}");
