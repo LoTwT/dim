@@ -7414,10 +7414,14 @@ impl App {
         frame: &mut Frame,
     ) {
         let rows = replay.rows;
+        let recorded_end = replay.window.iter().rposition(|row| {
+            !(row.kind == RowKind::Thinking && row.streaming && row.provisional_id.is_none())
+        });
+        let window = &replay.window[..recorded_end.map_or(0, |i| i + 1)];
         let mut common = rows
             .iter()
             .rev()
-            .zip(replay.window.iter().rev())
+            .zip(window.iter().rev())
             .take(HISTORY_WINDOW)
             .take_while(|(a, b)| a == b || a.row_id == b.row_id && (a.streaming || a.pending))
             .count();
@@ -7427,7 +7431,7 @@ impl App {
         {
             common -= 1;
         }
-        let skipped = replay.window.len() - common;
+        let skipped = window.len() - common;
         let floor = skipped
             .checked_sub(1)
             .and_then(|index| {
@@ -7435,7 +7439,7 @@ impl App {
                     .as_ref()?
                     .rows
                     .iter()
-                    .position(|r| r.row_id == replay.window[index].row_id)
+                    .position(|r| r.row_id == window[index].row_id)
             })
             .map_or(0, |index| index + 1);
         self.rebuild_window(floor);
@@ -8265,7 +8269,12 @@ impl App {
         let (Some(previous), Some(snapshot)) = (previous, &self.snapshot) else {
             return;
         };
-        let index_of = |id: &str| snapshot.rows.iter().position(|row| row.row_id == id);
+        let index_of = |id: &str| {
+            snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == id || row.provisional_id.as_deref() == Some(id))
+        };
         let moved = |floor: usize| -> usize {
             let Some(rows) = previous.rows.get(floor..).filter(|rows| !rows.is_empty()) else {
                 return floor.min(snapshot.rows.len());
@@ -8276,7 +8285,9 @@ impl App {
             let present: std::collections::HashSet<&str> = snapshot
                 .rows
                 .iter()
-                .map(|row| row.row_id.as_str())
+                .flat_map(|row| {
+                    std::iter::once(row.row_id.as_str()).chain(row.provisional_id.as_deref())
+                })
                 .collect();
             rows.iter()
                 .find(|row| present.contains(row.row_id.as_str()))
@@ -23650,6 +23661,69 @@ mod tests {
                 .commits
                 .join("\n")
                 .contains("ask ")
+        );
+    }
+
+    #[test]
+    fn scrollback_replay_keeps_a_live_thought_settled_on_either_side_of_its_frame() {
+        use crate::projection::Projection;
+        use serde_json::json;
+
+        let results = [true, false].map(|settle_first| {
+            let mut drawn = attached();
+            let mut projection = Projection::default();
+            let event = |id, seq, name, delta| {
+                serde_json::from_value(json!({
+                    "id":id, "sequence":seq, "create_at":1000 * seq,
+                    "type":"step", "name":name,
+                    "data":{"turn_id":"t1", "request_id":"r1", "delta":delta}
+                }))
+                .unwrap()
+            };
+            projection.progress(
+                &serde_json::from_value(json!({
+                    "sessionId":"s1", "branchId":"main", "requestId":"r1",
+                    "text":"", "textOffset":0, "thinking":"Preview.", "thinkingOffset":0
+                }))
+                .unwrap(),
+            );
+            let mut recorded = window_rows(2);
+            let mut answer = (*message(false)).clone();
+            answer.row_id = "previous-answer".into();
+            answer.kind = RowKind::AssistantMessage;
+            answer.text = "Recorded answer.".into();
+            recorded.push(std::sync::Arc::new(answer.clone()));
+            answer.text = "answer.".into();
+            let recent = [std::sync::Arc::new(answer)];
+            let live_rows = |p: &Projection| [recent.as_slice(), p.rows()].concat();
+            let window = live_rows(&projection);
+            show(&mut drawn, window.clone());
+            drawn.app.apply(Update::ReplayHistory(
+                crate::model::session::HistoryReplay {
+                    rows: recorded,
+                    window,
+                },
+            ));
+            if !settle_first {
+                drawn.draw();
+            }
+            projection.apply("main", &event("thought", 1, "thinking", "Settled thought."));
+            projection.apply("main", &event("answer", 2, "text", "New response."));
+            show(&mut drawn, live_rows(&projection));
+            let text = drawn.transcript();
+            let (_, replay) = text.split_once("Full conversation history").unwrap();
+            let labels = ["ask 0", "ask 1", "answer.", "Settled thought."];
+            (
+                labels.map(|label| replay.matches(label).count()),
+                replay
+                    .split_once("Recorded answer.")
+                    .is_some_and(|(_, tail)| tail.contains("Settled thought.")),
+            )
+        });
+        assert_eq!(
+            results,
+            [([1; 4], true); 2],
+            "settled before / after replay frame"
         );
     }
 
