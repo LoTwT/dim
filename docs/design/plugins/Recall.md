@@ -385,7 +385,7 @@ Without a turn of its own, every turn without a `turn/end` on the read line is `
 
 Every reader declares the query of §5.2 with the same schema properties, which the component
 owns (`narrative::query_properties`), so a reader's parameters cannot drift from what the
-projection answers.
+projection accepts.
 
 A handle belongs to the line it was shown on (§4). A reader whose line can change between calls,
 as a member's current line can, may hold a handle the new line does not have; that handle is
