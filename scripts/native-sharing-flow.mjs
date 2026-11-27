@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -151,8 +151,19 @@ test('a remembered shared link carries independent native streams, large frames 
     const { id: _remote, ...remote } = await first.call(method, params);
     assert.deepEqual(remote, local);
   }
+  const folder = path.join(temp, 'remote-only');
+  await mkdir(folder);
+  for (const dir of ['vendor', 'target', '.hidden']) await mkdir(path.join(folder, dir));
+  const file = path.join(folder, 'readme.txt');
+  await writeFile(file, 'file');
+  const directories = await first.call('workspace.files.directories', { path: folder });
+  assert.deepEqual(directories.result.directories.map(dir => dir.name), ['target', 'vendor']);
+  assert.ok((await first.call('workspace.files.directories', { path: file })).error);
+  assert.deepEqual((await first.call('session.active', {})).result, []);
   const { result: session } = await direct.call('session.create', { cwd: temp });
   assert.equal((await first.call('session.attach', { sessionId: session.sessionId })).result.sessionId, session.sessionId);
+  const active = (await second.call('session.active', {})).result;
+  assert.deepEqual(active.map(s => [s.sessionId, s.cwd, s.running]), [[session.sessionId, await realpath(temp), false]]);
   const notice = first.receive(message => message.method === 'session.event' && message.params.sessionId === session.sessionId);
   assert.ok((await direct.call('session.submit', { sessionId: session.sessionId, text: 'Hello' })).result);
   await notice;
@@ -175,6 +186,9 @@ test('a remembered shared link carries independent native streams, large frames 
   const reconnected = await run([...clientArgs, '--', 'mcp', 'list']);
   assert.equal(reconnected.code, 0, reconnected.err);
   assert.doesNotMatch(reconnected.err, /Sharing token: /);
+  const named = await run(['--home', a, '--target', current.name, '--cwd', folder, 'mcp', 'list']);
+  assert.equal(named.code, 0, named.err);
+  assert.equal(named.out, reconnected.out);
   const alternateAddress = address.replace('127.0.0.1', 'localhost');
   const alternate = await run(['--home', a, 'share', 'connect', alternateAddress, '--', 'mcp', 'list']);
   assert.equal(alternate.code, 0, alternate.err);

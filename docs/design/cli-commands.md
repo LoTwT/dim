@@ -167,11 +167,15 @@ order, not alphabetically or by recent use. The menu draws no category column:
 /new /resume /models /compact /usage
 /effort /fast /agent /permissions /settings
 /branch /fork /lines /timeline /queue /export /earlier /goal
-/tasks /rename /web /connect /login
+/tasks /rename /devices /web /connect /login
 /skills /reload-skills /mcp /plugins /runtime
 /hooks /scheduled /workflow /workflow:save
 /tools /tui /theme /language /keys /update /report /exit
 ```
+
+`/devices` opens the computer picker from Home or a conversation in either
+layout. Selecting a remote computer opens its active Sessions. The new Session
+entry browses that computer's filesystem. [Computer selection and keyboard flow](research/native-terminal-targets.md#选电脑再选会话)
 
 `/fast` is listed only when the model advertises service tiers.
 Search relevance takes priority; equally ranked matches keep this order.

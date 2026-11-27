@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"time"
 
@@ -131,6 +132,29 @@ type device struct {
 	Verified  bool     `json:"verified"`
 }
 
+func savedDevices(k known) []device {
+	devices := []device{}
+	for id, saved := range k.Tokens {
+		d := device{Name: saved.Name, Verified: true}
+		for address, owner := range k.Routes {
+			if owner == id {
+				d.Addresses = append(d.Addresses, address)
+			}
+		}
+		slices.Sort(d.Addresses)
+		if len(d.Addresses) > 0 {
+			devices = append(devices, d)
+		}
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		if devices[i].Name == devices[j].Name {
+			return devices[i].Addresses[0] < devices[j].Addresses[0]
+		}
+		return devices[i].Name < devices[j].Name
+	})
+	return devices
+}
+
 func browse(ctx context.Context, dir string) error {
 	k, err := readKnown(dir)
 	if err != nil {
@@ -149,19 +173,7 @@ func browse(ctx context.Context, dir string) error {
 			return err
 		}
 	}
-	devices := []device{}
-	for id, saved := range k.Tokens {
-		d := device{Name: saved.Name, Verified: true}
-		for address, owner := range k.Routes {
-			if owner == id {
-				d.Addresses = append(d.Addresses, address)
-			}
-		}
-		slices.Sort(d.Addresses)
-		if len(d.Addresses) > 0 {
-			devices = append(devices, d)
-		}
-	}
+	devices := savedDevices(k)
 	for _, c := range candidates {
 		d := device{Name: c.Instance}
 		if !validName(d.Name) {

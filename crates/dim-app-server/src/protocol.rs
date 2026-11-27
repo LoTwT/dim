@@ -101,6 +101,7 @@ pub enum Call {
     Create(Box<Create>),
     ModelPreview(ModelPreview),
     Summaries(Summaries),
+    ActiveSessions,
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
     Attach(Attach),
@@ -856,7 +857,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 42] = [
+const BUILTIN_METHODS: [&str; 43] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -874,6 +875,7 @@ const BUILTIN_METHODS: [&str; 42] = [
     "session.model.preview",
     "session.model.get",
     "session.summaries",
+    "session.active",
     "session.catalog",
     "session.catalog.cancel",
     "session.attach",
@@ -955,6 +957,10 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.model.get" => Call::ModelGet(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
+            "session.active" => {
+                let _: Empty = params(raw_params)?;
+                Call::ActiveSessions
+            }
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
             "session.attach" => Call::Attach(params(raw_params)?),
@@ -1360,6 +1366,15 @@ pub struct SessionSummary {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: Option<String>,
+    pub running: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCreated {
     pub agent_id: String,
 }
@@ -1404,6 +1419,7 @@ pub enum Reply {
     /// until #795.
     Attach(AttachResult),
     Summaries(Vec<SessionSummary>),
+    ActiveSessions(Vec<ActiveSession>),
     Catalog(CatalogResult),
     Submit(SubmitResult),
     InputLookup(InputLookupResult),

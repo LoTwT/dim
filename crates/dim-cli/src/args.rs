@@ -226,6 +226,7 @@ Options:
   --cwd PATH                      Workspace (default: current directory)
   --no-tui                        Line client instead of the terminal UI
   --fullscreen | --scrollback     Terminal UI mode; append 'default' to save it
+  --target NAME                   Use a saved computer name or sharing address
   --server PATH                   Run a standalone dim-app-server binary;
                                   the default runs this executable's
                                   app-server subcommand
@@ -579,6 +580,9 @@ pub struct Options {
     /// instead.
     cwd: PathBuf,
     remote_workspace: Option<String>,
+    pub(crate) endpoint: Option<PathBuf>,
+    pub(crate) named_target: Option<(String, usize)>,
+    pub(crate) cwd_explicit: bool,
     /// The workspace the command names in its requests, resolved once the
     /// options are complete; `None` for a command that names none.
     workspace: Option<Workspace>,
@@ -634,6 +638,9 @@ impl Options {
             remote_workspace: crate::sharing::proxy()
                 .and_then(|_| std::env::var("DIMCODE_TERMINAL_WORKSPACE").ok()),
             workspace: None,
+            endpoint: crate::sharing::proxy(),
+            named_target: None,
+            cwd_explicit: false,
             server: None,
             model_config: None,
             provider: None,
@@ -659,7 +666,8 @@ impl Options {
             client_secret: false,
             mcp_source: None,
         };
-        let mut args = args.peekable();
+        let mut args = args.collect::<Vec<_>>().into_iter().peekable();
+        let total = args.len();
         let mut export_format = false;
         let mut autocompact = None;
         let mut source = None;
@@ -914,10 +922,25 @@ impl Options {
                     options.home = PathBuf::from(value(&mut args)?);
                     options.home_explicit = true;
                 }
-                "--cwd" if options.remote_workspace.is_some() => {
-                    options.remote_workspace = Some(value(&mut args)?)
+                "--target" => {
+                    let index = total - args.len() - 1;
+                    if options
+                        .named_target
+                        .replace((value(&mut args)?, index))
+                        .is_some()
+                    {
+                        return Err("Supply --target only once".into());
+                    }
                 }
-                "--cwd" => options.cwd = PathBuf::from(value(&mut args)?),
+                "--cwd" => {
+                    options.cwd_explicit = true;
+                    let path = value(&mut args)?;
+                    if options.endpoint.is_some() {
+                        options.remote_workspace = Some(path);
+                    } else {
+                        options.cwd = PathBuf::from(path);
+                    }
+                }
                 "--server" => options.server = Some(PathBuf::from(value(&mut args)?)),
                 "--model-config" => options.model_config = Some(PathBuf::from(value(&mut args)?)),
                 "--provider" => options.provider = Some(value(&mut args)?),
@@ -2128,6 +2151,29 @@ impl Options {
             })
             .transpose()?;
         Ok(())
+    }
+
+    pub(crate) fn local_workspace(&self) -> String {
+        self.cwd.to_string_lossy().into_owned()
+    }
+    pub(crate) fn select_workspace(&mut self, path: String, endpoint: Option<PathBuf>) {
+        self.endpoint = endpoint;
+        self.set_workspace_path(path);
+        self.resume = None;
+        self.prompt = None;
+        self.images.clear();
+        self.worktree = false;
+        self.worktree_branch = None;
+        self.worktree_base = None;
+        self.startup = None;
+        self.model = None;
+        self.permission = None;
+        self.effort = None;
+    }
+
+    pub(crate) fn set_workspace_path(&mut self, path: String) {
+        self.remote_workspace = self.endpoint.as_ref().map(|_| path.clone());
+        self.workspace = Some(Workspace(path));
     }
 
     /// The workspace every request this command sends names, resolved once

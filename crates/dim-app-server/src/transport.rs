@@ -684,6 +684,7 @@ async fn run_connection(
                                         if trusted || !hub.config().protected_profile() {
                                             let mut methods = vec![
                                                 "session.summaries",
+                                                "session.active",
                                                 "daemon.shutdown.completed",
                                                 "daemon.shutdown.ifIdle",
                                             ];

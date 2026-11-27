@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,13 +42,81 @@ func tokenInput() (string, error) {
 	}
 	return token.String(), nil
 }
-func connect(ctx context.Context, dir, address string, saveToken, fresh bool, args []string) error {
-	if _, _, err := net.SplitHostPort(address); err != nil {
-		address = net.JoinHostPort(strings.Trim(address, "[]"), "7443")
+
+var errPairingRequired = errors.New("Enter the sharing token shown on the other computer")
+
+type tunnelRequest struct {
+	Token    string `json:"token"`
+	Remember bool   `json:"remember"`
+}
+type tunnelReady struct {
+	targetInfo
+	Endpoint string `json:"endpoint"`
+	Identity string `json:"identity"`
+	Address  string `json:"address"`
+}
+
+func tunnel(ctx context.Context, dir, address string) error {
+	input := bufio.NewReader(os.Stdin)
+	line, err := input.ReadString('\n')
+	if err != nil {
+		return err
 	}
+	var request tunnelRequest
+	if err := json.Unmarshal([]byte(line), &request); err != nil {
+		return err
+	}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() { _, _ = io.Copy(io.Discard, input); stop() }()
+	err = connect(ctx, dir, address, request.Remember, request.Token != "", nil, &request)
+	if errors.Is(err, errPairingRequired) || errors.Is(err, errCredential) {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Pairing string `json:"pairing"`
+		}{err.Error()})
+	}
+	return err
+}
+func connect(ctx context.Context, dir, address string, saveToken, fresh bool, args []string, request *tunnelRequest) error {
 	known, err := readKnown(dir)
 	if err != nil {
 		return err
+	}
+	var identity string
+	var routes []string
+	for id, computer := range known.Tokens {
+		if computer.Name == address && known.Routes[address] == "" {
+			if identity != "" {
+				return errors.New("multiple saved computers have this name; enter an address")
+			}
+			identity = id
+		}
+	}
+	if identity != "" {
+		for route, id := range known.Routes {
+			if id == identity {
+				routes = append(routes, route)
+			}
+		}
+		sort.Strings(routes)
+		if len(routes) == 0 {
+			return errors.New("no saved address for this computer")
+		}
+		address = routes[0]
+	}
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		address = net.JoinHostPort(strings.Trim(address, "[]"), "7443")
+	}
+	if len(routes) == 0 {
+		routes = []string{address}
+		if id := known.Routes[address]; id != "" {
+			for other, owner := range known.Routes {
+				if other != address && owner == id {
+					routes = append(routes, other)
+				}
+			}
+			sort.Strings(routes[1:])
+		}
 	}
 	var token string
 	var cred credential
@@ -71,6 +142,12 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 		cancel()
 		raw.Close()
 	}
+	if request != nil && fresh {
+		token = request.Token
+	}
+	if token == "" && request != nil {
+		return errPairingRequired
+	}
 	if token == "" {
 		token, err = tokenInput()
 		if err != nil {
@@ -84,7 +161,17 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 	if confirmed != "" && confirmed != encoding.EncodeToString(cred.pin) && !fresh {
 		return errors.New("the computer at this address changed; use --pair to confirm its new token")
 	}
-	raw, err := (&net.Dialer{Timeout: 8 * time.Second}).DialContext(ctx, "tcp", address)
+	var raw net.Conn
+	for _, route := range routes {
+		raw, err = (&net.Dialer{Timeout: 8 * time.Second}).DialContext(ctx, "tcp", route)
+		if err == nil {
+			address = route
+			break
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -144,8 +231,21 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 		case <-tick.C:
 		}
 	}
+	id := encoding.EncodeToString(cred.pin)
+	if request != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(tunnelReady{info, endpoint, id, address}); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-done:
+			done <- err
+			return err
+		}
+	}
 	cmd := exec.CommandContext(ctx, sibling("dimcode"), args...)
-	cmd.Env = append(os.Environ(), "DIMCODE_TERMINAL_PROXY="+endpoint, "DIMCODE_TERMINAL_WORKSPACE="+info.WorkingDirectory)
+	cmd.Env = append(os.Environ(), "DIMCODE_TERMINAL_PROXY="+endpoint, "DIMCODE_TERMINAL_WORKSPACE="+info.WorkingDirectory, "DIMCODE_TERMINAL_NAME="+info.Name, "DIMCODE_TERMINAL_ID="+id, "DIMCODE_TERMINAL_ADDRESS="+address)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }

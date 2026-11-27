@@ -870,6 +870,137 @@ const scenarios = [
     },
   },
   {
+    name: 'devices_open_remote_directory_and_return_to_local',
+    area: 'commands',
+    title: 'Switch targets from Home, pair once, browse the target and return in both layouts',
+    async run(tui) {
+      let complete;
+      await tui.setup({respond: async request => {
+        if (request.tools?.length && userText(request).includes('keep working after switch')) {
+          await new Promise(resolve => { complete = resolve; });
+          return {text: 'Remote work finished'};
+        }
+        return {text: ANSWER};
+      }});
+      const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
+      const remoteHome = path.join(tui.root, 'other');
+      const project = path.join(tui.root, 'remote-project');
+      fs.mkdirSync(project);
+      fs.mkdirSync(path.join(project, 'vendor'));
+      fs.mkdirSync(path.join(project, '.fixture-hidden'));
+      const remote = (...args) => execFileSync(tui.binary, ['--home', remoteHome, '--model-config', tui.modelFile, ...args],
+        {encoding: 'utf8', env, cwd: project, timeout: 20000});
+      const shared = JSON.parse(remote('share', 'enable'));
+      try {
+        remote('share', 'rename', 'OfficeFixture');
+        for (const [index, args] of [[], ['--fullscreen']].entries()) {
+          const terminal = await tui.launch([...args, '--cwd', project], {env, waitForComposer: true, cols: 120, rows: 36});
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('This computer');
+          terminal.key('Escape');
+          await terminal.waitForAbsent('Computers');
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('Add by address');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Computer address');
+          terminal.send(shared.addresses[0]);
+          terminal.key('Enter');
+          if (!index) {
+            await terminal.waitFor('Sharing token');
+            terminal.send(shared.token);
+            assert(!terminal.capture().includes(shared.token));
+            terminal.key('Enter');
+          }
+          await terminal.waitFor('OfficeFixture · Active sessions');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Enter a path');
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Directory path');
+          terminal.send(project);
+          terminal.key('Enter');
+          await terminal.waitFor('vendor');
+          assert(!terminal.capture().includes('.fixture-hidden'));
+          terminal.key('End', 'Up', 'Enter');
+          await terminal.waitFor('OfficeFixture:');
+          terminal.send('/devices');
+          terminal.key('Enter');
+          await terminal.waitFor('This computer');
+          terminal.key('Home', 'Enter');
+          await terminal.waitForAbsent('OfficeFixture:');
+          await terminal.waitFor('Ask anything');
+          const owner = await tui.launch(['--cwd', project], {
+            command: [tui.binary, '--home', remoteHome, '--model-config', tui.modelFile],
+            env, waitForComposer: true,
+          });
+          const topic = `Work on remote fixture ${index}`;
+          await owner.sendPrompt(topic);
+          await owner.waitFor(ANSWER);
+          const devicesOverDraft = async () => {
+            terminal.key('C-o');
+            await terminal.waitFor(/Commands|Command Palette/);
+            terminal.send('devices');
+            terminal.key('Enter');
+            await terminal.waitFor('Remembered');
+          };
+          terminal.send('local draft');
+          await devicesOverDraft();
+          terminal.key('Home', 'Down', 'Enter');
+          await terminal.waitFor('OfficeFixture · Active sessions');
+          terminal.key('Home', 'Enter');
+          await terminal.waitFor('OfficeFixture:');
+          await terminal.waitFor(topic);
+          assert(!terminal.capture().includes('local draft'));
+          terminal.send('remote draft');
+          await devicesOverDraft();
+          terminal.key('End', 'Enter');
+          await terminal.waitFor('Computer address');
+          terminal.send('127.0.0.1:1');
+          terminal.key('Enter');
+          await terminal.waitFor(/refused/i);
+          terminal.key('Escape');
+          await terminal.waitForAbsent('Computers');
+          await terminal.waitFor('remote draft');
+          const calls = turnRequests(tui.model).length;
+          const reset = JSON.parse(remote('share', 'reset'));
+          await terminal.waitFor('Reconnect OfficeFixture');
+          terminal.key('Home', 'Enter');
+          await terminal.waitFor('Sharing token');
+          terminal.send(reset.token);
+          terminal.key('Enter');
+          await terminal.waitForAbsent('Computers');
+          await terminal.waitFor(topic);
+          await terminal.waitFor('remote draft');
+          assert.equal(turnRequests(tui.model).length, calls, 'reconnecting preserves unsent input');
+          await owner.sendPrompt('keep working after switch');
+          await waitForRequest(tui.model, request => request.tools?.length && userText(request).includes('keep working after switch'));
+          await devicesOverDraft();
+          terminal.key('Home', 'Enter');
+          await terminal.waitForAbsent('OfficeFixture:');
+          await terminal.waitFor('local draft');
+          complete();
+          await owner.waitFor('Remote work finished');
+          complete = undefined;
+          terminal.key('C-c');
+          await terminal.waitForAbsent('local draft');
+          await exitWith(terminal);
+          await exitWith(owner);
+        }
+        const named = await tui.launch(['--target', 'OfficeFixture'], {env});
+        await named.waitFor('OfficeFixture · Active sessions');
+        named.key('Escape');
+        await named.waitFor('Computers');
+        named.key('Escape');
+        await named.waitForAbsent('Computers');
+        await exitWith(named);
+      } finally {
+        complete?.();
+        remote('daemon', 'stop');
+      }
+    },
+  },
+  {
     name: 'settings_manage_inbound_sharing',
     area: 'commands',
     title: 'Settings controls inbound access, displays the complete token and revokes it on reset',

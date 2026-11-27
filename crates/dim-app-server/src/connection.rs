@@ -743,6 +743,7 @@ impl Connection {
                 Call::Hello(_)
                     | Call::Ping
                     | Call::Shutdown(_)
+                    | Call::ActiveSessions
                     | Call::Summaries(_)
                     | Call::Catalog(_)
                     | Call::CatalogCancel(_)
@@ -762,6 +763,7 @@ impl Connection {
                     | Call::BranchGet(_)
                     | Call::ModelGet(_)
                     | Call::Keys(_)
+                    | Call::ActiveSessions
                     | Call::Summaries(_)
                     | Call::Catalog(_)
                     | Call::CatalogCancel(_)
@@ -1216,6 +1218,7 @@ impl Connection {
                     Err(error) => Err(RpcError::from(error)),
                 }
             }
+            Call::ActiveSessions => self.active_sessions(rpc).await,
             Call::Summaries(Summaries {
                 agent_id,
                 include_closed,
@@ -1543,6 +1546,56 @@ impl Connection {
             _ => unreachable!("contributed methods are dispatched before session operations"),
         })
     }
+    async fn active_sessions(&self, rpc: &RpcService) -> Result<Reply, RpcError> {
+        let mut active = Vec::new();
+        for host in rpc.index.hosts() {
+            if rpc.index.owner(&host.agent_id).flatten().is_some() {
+                continue;
+            }
+            for session in host.agent.sessions() {
+                if session.is_closing()
+                    || rpc.index.closed(session.id())
+                    || rpc
+                        .index
+                        .version_of(session.id())
+                        .is_some_and(|v| v > self.protocol_version())
+                {
+                    continue;
+                }
+                let running = session
+                    .branches()
+                    .iter()
+                    .any(|branch| session.state(&branch.id).is_ok_and(|state| state.running));
+                if !running && self.hub.attached_clients(session.id()) == 0 {
+                    continue;
+                }
+                let record = match rpc
+                    .index
+                    .session_record(&host, &session, self.protocol_version())
+                    .await
+                {
+                    Ok(value) => value.info,
+                    Err(AgentError::Closed(_)) => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                if matches!(
+                    record.origin,
+                    Some(SessionOrigin::Internal | SessionOrigin::Automation | SessionOrigin::Acp)
+                ) {
+                    continue;
+                }
+                active.push(ActiveSession {
+                    session_id: record.session_id,
+                    cwd: record.cwd,
+                    title: record.title.and_then(|row| row.title),
+                    running,
+                });
+            }
+        }
+        active.sort_by(|a, b| a.cwd.cmp(&b.cwd).then(a.session_id.cmp(&b.session_id)));
+        Ok(Reply::ActiveSessions(active))
+    }
+
     async fn execution_session(
         &self,
         rpc: &RpcService,

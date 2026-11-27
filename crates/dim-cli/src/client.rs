@@ -1060,8 +1060,8 @@ pub async fn connect_inner(
     start: bool,
     locale: crate::locale::Locale,
 ) -> Result<Option<Link>> {
-    if let Some(endpoint) = crate::sharing::proxy() {
-        let config = connection_config(options, endpoint, server(options)?, None);
+    if let Some(endpoint) = &options.endpoint {
+        let config = connection_config(options, endpoint.clone(), server(options)?, None);
         let client = tokio::time::timeout(DAEMON_START_TIMEOUT, Client::connect(&config)).await??;
         return Ok(Some(Link {
             client,
