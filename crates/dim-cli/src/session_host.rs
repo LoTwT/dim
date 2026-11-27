@@ -457,7 +457,7 @@ async fn run(
     if let Some(notice) = notice {
         let _ = updates.send(Update::Notice(notice));
     }
-    if update::enabled() {
+    if update::enabled() && crate::sharing::proxy().is_none() {
         let offers = updates.clone();
         let home = options.home.clone();
         let managed = options.server.is_none() && client.offers("daemon.shutdown.ifIdle");
@@ -2000,6 +2000,11 @@ impl Worker {
             Command::Earlier { line, .. } => self.earlier(&line),
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
+            Command::CheckUpdate if crate::sharing::proxy().is_some() => {
+                self.send(Update::UpgradeChecked(Err(crate::sharing::unavailable(
+                    "/update",
+                ))));
+            }
             Command::CheckUpdate => {
                 let updates = self.updates.clone();
                 let managed =
@@ -2011,6 +2016,9 @@ impl Worker {
                     }
                     let _ = updates.send(Update::UpgradeChecked(checked));
                 });
+            }
+            Command::ToggleWeb if crate::sharing::proxy().is_some() => {
+                self.report(crate::sharing::unavailable("/web"), true);
             }
             Command::ToggleWeb => {
                 let result: crate::Result<WebToggled> =

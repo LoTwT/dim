@@ -20,6 +20,7 @@ pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> Duplex for T {}
 type Socket = Box<dyn Duplex>;
 struct Stream {
+    close_on_input_eof: bool,
     read: AsyncMutex<tokio::io::ReadHalf<Socket>>,
     write: AsyncMutex<tokio::io::WriteHalf<Socket>>,
     closed: CancellationToken,
@@ -54,11 +55,12 @@ impl TerminalTransport {
             listeners: Default::default(),
         }
     }
-    fn insert(&self, id: String, socket: Socket) {
+    fn insert(&self, id: String, socket: Socket, close_on_input_eof: bool) {
         let (read, write) = tokio::io::split(socket);
         self.streams.lock().unwrap().insert(
             id,
             Arc::new(Stream {
+                close_on_input_eof,
                 read: AsyncMutex::new(read),
                 write: AsyncMutex::new(write),
                 closed: CancellationToken::new(),
@@ -107,7 +109,7 @@ impl TerminalTransport {
         .await
         .map_err(|(_, error)| error)?;
         let id = Uuid::new_v4().to_string();
-        self.insert(id.clone(), Box::new(socket));
+        self.insert(id.clone(), Box::new(socket), cfg!(windows));
         Ok(id)
     }
     pub async fn prepare_leaf(&self) -> io::Result<ReturnAddress> {
@@ -165,7 +167,7 @@ impl TerminalTransport {
         };
         let mut listeners = self.listeners.lock().unwrap();
         listeners.remove(&id).ok_or_else(gone)?.closed.cancel();
-        self.insert(id, Box::new(socket));
+        self.insert(id, Box::new(socket), false);
         Ok(())
     }
     pub async fn read(&self, id: String) -> io::Result<Option<String>> {
@@ -195,6 +197,10 @@ impl TerminalTransport {
     }
     pub async fn finish_write(&self, id: String) -> io::Result<()> {
         let stream = self.stream(&id)?;
+        if stream.close_on_input_eof {
+            self.close(id);
+            return Ok(());
+        }
         stream.write.lock().await.shutdown().await
     }
     pub fn close(&self, id: String) {

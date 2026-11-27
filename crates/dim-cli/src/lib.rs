@@ -696,6 +696,22 @@ pub(crate) fn limits_undeclared(
 
 fn prepare() -> Result<Option<Options>> {
     let mut options = Options::parse(std::env::args().skip(1))?;
+    if sharing::proxy().is_some() {
+        let local_command = match &options.action {
+            Action::DaemonVacuum { .. } => Some("daemon vacuum"),
+            Action::Timeline { .. } => Some("export (offline Timeline)"),
+            Action::Migration(_) => Some("migration"),
+            Action::Update => Some("update"),
+            Action::WebInstall => Some("web install"),
+            Action::Web { off: false, .. } => Some("web"),
+            Action::Share(_) => Some("share"),
+            Action::DefaultTerminalMode { .. } => Some("setting the default terminal mode"),
+            _ => None,
+        };
+        if let Some(command) = local_command {
+            return Err(sharing::unavailable(command).into());
+        }
+    }
     if matches!(options.action, Action::Help) {
         print!("{}", args::HELP);
         return Ok(None);
@@ -839,7 +855,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
     if let Action::Share(arguments) = &options.action {
         if matches!(
             arguments.first().map(String::as_str),
-            Some("enable" | "disable" | "reset" | "rename")
+            Some("enable" | "reset" | "rename")
         ) {
             let mut local = options.clone();
             local.action = Action::Chat;

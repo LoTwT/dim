@@ -49,3 +49,5 @@ Sharing token: _
 **Run one remote CLI command.** Put the command after `--`. For example, `dima share connect <address> -- mcp list` prints the target's MCP configuration and returns to the shell. A previous successful pairing lets you run this without another token prompt. For a specific target directory, use `dima share connect <address> -- --cwd /srv/project mcp list`. To reopen a known session in the TUI, use `dima share connect <address> -- --resume <session-id>`.
 
 Use `--no-remember` for a one-time pairing. After a token reset, enter the new one with `dima share connect <address> --pair`. Resetting the token or turning sharing off disconnects existing remote terminals. Remote access in Settings always controls the computer at the keyboard.
+
+Run offline database maintenance (including `daemon vacuum` and raw Timeline `export`), migration, client updates, Web installation and local sharing settings directly on the intended computer. For a remote session export, use `dima share connect <address> -- session export <session-id> --format json`.

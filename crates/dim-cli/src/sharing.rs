@@ -59,6 +59,13 @@ pub(crate) fn setting(home: &Path, args: &[String]) -> crate::Result<Status> {
     }
     Ok(serde_json::from_slice(&result.stdout)?)
 }
+pub(crate) fn unavailable(command: &str) -> String {
+    format!(
+        "{command} is unavailable through a shared connection. \
+         Run it directly on the intended computer."
+    )
+}
+
 pub(crate) fn proxy() -> Option<PathBuf> {
     std::env::var_os("DIMCODE_TERMINAL_PROXY").map(PathBuf::from)
 }

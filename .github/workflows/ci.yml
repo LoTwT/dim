@@ -104,7 +104,7 @@ jobs:
           cargo run --locked -p xtask-check
   windows-cli:
     needs: changes
-    if: needs.changes.outputs.windows == 'true' || needs.changes.outputs.windows_native == 'true'
+    if: needs.changes.outputs.windows == 'true' || needs.changes.outputs.windows_native == 'true' || needs.changes.outputs.sharing == 'true'
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -126,6 +126,9 @@ jobs:
         run: '& "$env:GITHUB_WORKSPACE\scripts\ci-windows-target.ps1"'
       - name: Verify native Windows CLI boundaries
         run: cargo test --locked -p dim-cli --lib
+      - name: Verify independent shared RPC streams on native Windows pipes
+        if: needs.changes.outputs.sharing == 'true'
+        run: cargo test --locked -p dim-terminal-transport --test windows_pipe_flow
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         if: needs.changes.outputs.windows_native == 'true'
         with:

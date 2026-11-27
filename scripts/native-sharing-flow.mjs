@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,12 +67,34 @@ test('a remembered shared link carries independent native streams, large frames 
   await chmod(path.dirname(target), 0o700);
   await mkdir(tmp, { mode: 0o700 });
   const model = path.resolve(import.meta.dirname, '../crates/dim-agent-aimux/examples/offline.json');
-  const server = start(['app-server', '--home', path.dirname(target), '--model-config', model, '--no-ws', '--unix', target]);
-  await once(server.stdout, 'data');
-  assert.equal((await share('status')).enabled, false);
-  const { token, addresses: [address] } = await share('enable');
+  const disabled = await run(['--home', a, 'share', 'disable']);
+  assert.equal(disabled.code, 0, disabled.err);
+  assert.equal(JSON.parse(disabled.out).enabled, false);
+  await assert.rejects(readFile(path.join(a, 'rust', 'daemon.sock')), { code: 'ENOENT' });
+  const helper = path.join(temp, 'sharing-helper');
+  await writeFile(helper, '', { mode: 0o600 });
+  env.DIM_TEST_SHARING_HELPER = path.join(path.dirname(cli), 'dim-sharing');
+  const server = start(['app-server', '--sharing-helper', helper, '--home', path.dirname(target), '--model-config', model, '--no-ws', '--unix', target]);
+  const diagnostics = createInterface({ input: server.stderr })[Symbol.asyncIterator]();
+  async function waitForDiagnostic(message) {
+    for (;;) {
+      const { value, done } = await diagnostics.next();
+      assert.ok(!done, 'the sharing supervisor stopped before ' + message);
+      if (value.includes(message)) return;
+    }
+  }
+  await Promise.all([once(server.stdout, 'data'), waitForDiagnostic('Remote sharing could not start')]);
   const direct = await rpc(target);
   t.after(() => direct.stream.destroy());
+  await writeFile(helper, [
+    '#!/bin/sh', 'if [ ! -e "$2/restart-check" ]; then',
+    '  touch "$2/restart-check"', '  exit 1', 'fi',
+    'echo "starting repaired helper" >&2', 'exec "$DIM_TEST_SHARING_HELPER" "$@"', '',
+  ].join('\n'));
+  await chmod(helper, 0o700);
+  await waitForDiagnostic('starting repaired helper');
+  assert.equal((await share('status')).enabled, false);
+  const { token, addresses: [address] } = await share('enable');
   const clientArgs = ['--home', a, 'share', 'connect', address];
   assert.notEqual((await run([...clientArgs, '--', 'mcp', 'list'], 'incorrect\n')).code, 0);
 
@@ -91,6 +113,21 @@ test('a remembered shared link carries independent native streams, large frames 
   assert.ok(proxy, 'the authenticated client must publish its private socket');
   const first = await rpc(proxy), second = await rpc(proxy);
   t.after(() => { first.stream.destroy(); second.stream.destroy(); });
+  const database = path.join(temp, 'keyboard.sqlite');
+  const localOutput = path.join(temp, 'timeline.json');
+  await writeFile(database, 'local fixture');
+  for (const args of [
+    ['daemon', 'vacuum', '--database', database], ['export', 'fixture-session', '--database', database, '--output', localOutput],
+    ['migration', 'list'], ['update'], ['web', 'install'], ['share', 'enable'], ['--fullscreen', 'default'],
+  ]) {
+    const refused = await run([...clientArgs, '--', ...args]);
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /unavailable through a shared connection/, args.join(' '));
+  }
+  assert.equal(await readFile(database, 'utf8'), 'local fixture');
+  for (const file of [localOutput, path.join(a, 'config.json'), path.join(a, 'rust', 'daemon.sock')]) {
+    await assert.rejects(readFile(file), { code: 'ENOENT' });
+  }
   assert.equal(first.hello.instanceId, direct.hello.instanceId);
   assert.deepEqual(first.hello.features, direct.hello.features);
   for (let attempt = 0; attempt < 50; attempt++) {

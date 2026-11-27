@@ -910,9 +910,18 @@ const scenarios = [
       await terminal.waitFor('Allow connections to this computer');
       for (let i = 0; i < 30 && status().token === token; i++) await sleep(100);
       assert(status().token !== token, 'confirming reset must rotate the token');
+      const previousToken = status().token;
       terminal.key('Home', 'Enter');
       await terminal.waitFor('off');
       assert.equal(status().enabled, false);
+      terminal.key('End', 'Enter');
+      await terminal.waitFor('Disconnect all shared terminals');
+      terminal.key('y');
+      await terminal.waitFor('Allow connections to this computer');
+      assert.equal(status().enabled, false);
+      terminal.key('Home', 'Enter');
+      await terminal.waitFor('DIM1-');
+      assert(status().token && status().token !== previousToken, 'rotation while off replaces the token on next enable');
     },
   },
   {

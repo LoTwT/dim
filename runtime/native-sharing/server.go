@@ -210,7 +210,8 @@ func localStatus(dir string, s settings, wait bool) (status, error) {
 	for {
 		var live status
 		err := load(filepath.Join(dir, "listener.json"), &live)
-		if err == nil && live.Revision == s.Revision {
+		applied := err == nil && live.Revision == s.Revision
+		if applied || wait && !s.Enabled {
 			lock := flock.New(filepath.Join(dir, "serving.lock"))
 			free, err := lock.TryLock()
 			if err != nil {
@@ -218,7 +219,10 @@ func localStatus(dir string, s settings, wait bool) (status, error) {
 			}
 			if free {
 				lock.Unlock()
-			} else {
+				if !s.Enabled {
+					break
+				}
+			} else if applied {
 				st = live
 				break
 			}

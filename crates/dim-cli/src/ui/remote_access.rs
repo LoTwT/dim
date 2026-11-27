@@ -88,8 +88,8 @@ impl RemoteAccess {
             if let Some(token) = &s.token {
                 items.push(Item::new("token", t("Sharing token"), "›"));
                 notes.push(token.clone());
-                items.push(Item::new("reset", t("Reset sharing token"), "›"));
             }
+            items.push(Item::new("reset", t("Reset sharing token"), "›"));
             notes.extend(s.addresses.iter().cloned());
         }
         if let Some(message) = &self.error {
@@ -153,6 +153,7 @@ impl RemoteAccess {
     }
     pub fn render(&self, width: usize, rows: usize, p: &Palette) -> Vec<String> {
         let (title, body, hint) = match &self.page {
+            Page::Settings if self.loading.is_some() => return Self::list().render(width, rows, p),
             Page::Settings => return self.list.render(width, rows, p),
             Page::Name(name) => (
                 t("Computer name"),

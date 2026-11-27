@@ -113,8 +113,15 @@ func discovery(ctx context.Context, publish *advertisement, bound net.IP, out io
 	return cmd.Run()
 }
 func advertise(ctx context.Context, name string, bound *net.TCPAddr) {
-	if err := discovery(ctx, &advertisement{serviceType, name, bound.Port}, bound.IP, io.Discard); err != nil && ctx.Err() == nil {
-		fmt.Fprintln(os.Stderr, "LAN announcement unavailable:", err)
+	for ctx.Err() == nil {
+		if err := discovery(ctx, &advertisement{serviceType, name, bound.Port}, bound.IP, io.Discard); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, "LAN announcement unavailable:", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(15 * time.Second):
+		}
 	}
 }
 

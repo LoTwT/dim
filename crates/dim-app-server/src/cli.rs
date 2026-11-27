@@ -649,35 +649,22 @@ pub fn run_with(
             .unix_path
             .clone()
             .or_else(|| server.pipe_name.as_ref().map(PathBuf::from));
-        let mut sharing = match sharing_home.zip(endpoint) {
-            Some((home, endpoint)) => {
-                let helper = sharing_helper.unwrap_or(
-                    std::env::current_exe()?
-                        .with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX)),
-                );
-                if helper.is_file() {
-                    Some(
-                        tokio::process::Command::new(helper)
-                            .arg("--home")
-                            .arg(home)
-                            .arg("serve")
-                            .arg(endpoint)
-                            .stdin(std::process::Stdio::piped())
-                            .stdout(std::process::Stdio::null())
-                            .kill_on_drop(true)
-                            .spawn()?,
-                    )
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
+        let shutdown = server.shutdown_signal();
+        let helper = sharing_helper.or_else(|| {
+            std::env::current_exe().ok().map(|exe| {
+                exe.with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX))
+            })
+        });
+        let sharing = helper
+            .filter(|path| path.is_file())
+            .zip(sharing_home.zip(endpoint))
+            .map(|(helper, (home, endpoint))| {
+                tokio::spawn(supervise_sharing(helper, home, endpoint, shutdown.clone()))
+            });
         println!(
             "{}",
             serde_json::json!({"unixPath": server.unix_path, "pipeName": server.pipe_name, "websocketAddress": server.websocket_address.map(|a| a.to_string())})
         );
-        let shutdown = server.shutdown_signal();
         let join = server.join();
         tokio::pin!(join);
         let result = tokio::select! {
@@ -685,9 +672,9 @@ pub fn run_with(
             signal = tokio::signal::ctrl_c() => { signal?; shutdown.cancel(); join.await },
             signal = terminate_signal() => { signal?; shutdown.cancel(); join.await }
         };
-        if let Some(child) = &mut sharing {
-            drop(child.stdin.take());
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(6), child.wait()).await;
+        shutdown.cancel();
+        if let Some(task) = sharing {
+            let _ = task.await;
         }
         result
     };
@@ -696,6 +683,49 @@ pub fn run_with(
         std::process::exit(0);
     }
     Ok(())
+}
+
+async fn supervise_sharing(
+    helper: PathBuf,
+    home: PathBuf,
+    endpoint: PathBuf,
+    stop: tokio_util::sync::CancellationToken,
+) {
+    use std::{process::Stdio, time::Duration};
+    let mut command = tokio::process::Command::new(helper);
+    command
+        .arg("--home")
+        .arg(home)
+        .arg("serve")
+        .arg(endpoint)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true);
+    let mut delay = Duration::from_secs(1);
+    while !stop.is_cancelled() {
+        match command.spawn() {
+            Ok(mut child) => {
+                let lifetime = child.stdin.take();
+                tokio::select! {
+                    status = child.wait() => eprintln!("Remote sharing stopped: {status:?}"),
+                    () = stop.cancelled() => {
+                        drop(lifetime);
+                        if tokio::time::timeout(Duration::from_secs(6), child.wait()).await.is_err()
+                        {
+                            let _ = child.kill().await;
+                        }
+                        return;
+                    }
+                }
+            }
+            Err(error) => eprintln!("Remote sharing could not start: {error}"),
+        }
+        tokio::select! {
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(delay) => {}
+        }
+        delay = (delay * 2).min(Duration::from_secs(60));
+    }
 }
 
 async fn terminate_signal() -> std::io::Result<()> {
