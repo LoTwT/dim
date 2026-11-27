@@ -2818,14 +2818,16 @@ impl App {
                     }
                 }
                 self.runs.observe(&snapshot);
+                let earlier = snapshot.earlier;
                 let previous = self.snapshot.replace(*snapshot);
                 self.follow_floors(previous.as_ref());
                 if self.reveal_pending {
                     self.reveal_pending = !self.reveal_earlier()
-                        && self
-                            .snapshot
-                            .as_ref()
-                            .is_some_and(|s| s.earlier == Earlier::Reading);
+                        && (earlier == Earlier::Reading
+                            || earlier == Earlier::Unread
+                                && previous
+                                    .as_ref()
+                                    .is_some_and(|s| s.earlier == Earlier::Unread));
                 }
                 self.refresh_compactions();
                 self.refresh_cards();
@@ -23674,6 +23676,8 @@ mod tests {
         assert!(matches!(sent.borrow()[0], Command::Earlier { .. }));
         drawn.draw();
         assert_eq!(drawn.transcript(), before, "the request draws nothing");
+        let queued = drawn.app.snapshot.as_ref().unwrap().clone();
+        drawn.app.apply(Update::Snapshot(Box::new(queued)));
         let mut rows = window_rows(HISTORY_WINDOW);
         let mut live = (*window_rows(1)[0]).clone();
         live.row_id = "live".into();
@@ -23716,6 +23720,8 @@ mod tests {
             "the page is drawn, nothing left hidden"
         );
         assert_eq!(drawn_top(&drawn.app), "older 0");
+        let join = drawn.app.block_of(&window_rows(1)[0]).unwrap();
+        assert_eq!(drawn.app.jump, Some(Jump::Before(join)));
         sent.borrow_mut().clear();
         drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
         drawn.app.show_earlier();

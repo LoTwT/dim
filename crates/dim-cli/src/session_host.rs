@@ -2038,6 +2038,9 @@ impl Worker {
                         self.earlier(&line);
                     }
                 }
+                if !all && self.earlier_view() == Earlier::Reading {
+                    self.publish();
+                }
             }
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
