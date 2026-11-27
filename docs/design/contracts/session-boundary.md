@@ -353,6 +353,8 @@ Delivery differs from progress:
 | RemoteGateway (`deviceId` set) | Session methods only | Proposed (P3, not implemented); [RemoteGateway](../plugins/RemoteGateway.md) |
 | Exported rutis link | Management methods | Proposed (P3, not implemented). Only when exported in host-local link configuration. Without a caller sink, progress is dropped and `notify` returns `unsupported` |
 
+The native terminal proposal would let a token-authenticated network client reach the protected POSIX entry under the server owner's account. That entry defines the available Session and management operations. [Native terminal target proposal](../research/native-terminal-targets.md)
+
 ### A.4 Migration and compatibility
 
 Sources before #14: `MANAGEMENT_METHODS`, `MCP_METHODS` and `Call::is_management` in [protocol.rs](../../../crates/dim-app-server/src/protocol.rs), which #14 removed; `LOCAL_EXECUTION_METHODS` there and `validate_call` in [connection.rs](../../../crates/dim-app-server/src/connection.rs) remain.
