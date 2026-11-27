@@ -3608,22 +3608,26 @@ async fn until_events(
     let mut published = session.publication(branch).ok().map(|line| line.watch());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for line {branch}"
-        );
-        match line_events(session, branch).await {
-            Ok(events) if done(&events) => return events,
-            Ok(_) => {}
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
+        let expired = Instant::now() >= deadline;
+        let read = line_events(session, branch).await;
+        if read.as_ref().is_ok_and(|events| done(events)) {
+            return read.unwrap();
         }
-        // An ended line has no publication; read once above, then fail instead
-        // of waiting for a commit that cannot come.
         if published.is_none() || session.ended_head(branch).is_some() {
+            // The line ended while this read was in flight. Read the final
+            // committed history once before failing; the target event may
+            // have committed between the read and the ended check.
+            if let Ok(events) = line_events(session, branch).await
+                && done(&events)
+            {
+                return events;
+            }
             panic!("timed out waiting for line {branch}");
+        }
+        assert!(!expired, "timed out waiting for line {branch}");
+        if read.is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            continue;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(remaining, published.as_mut().unwrap().changed()).await {
