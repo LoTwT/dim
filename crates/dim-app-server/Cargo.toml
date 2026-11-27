@@ -112,3 +112,7 @@ flate2 = "1.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "sharing-shutdown-fixture"
+path = "tests/fixtures/sharing_shutdown.rs"

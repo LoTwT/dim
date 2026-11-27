@@ -33,14 +33,14 @@ async function rpc(socket) {
   return { stream, call, hello, receive };
 }
 
-test('a remembered shared link carries independent native streams, large frames and revocation', { skip: process.platform === 'win32', timeout: 50_000 }, async (t) => {
+test('a remembered shared link carries independent native streams, large frames and revocation', { skip: process.platform === 'win32', timeout: 90_000 }, async (t) => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'dim-net-'));
   const a = path.join(temp, 'a'), b = path.join(temp, 'b'), tmp = path.join(temp, 'tmp');
   const target = path.join(b, 'rust', 'daemon.sock');
   const env = { ...process.env, HOME: temp, TMPDIR: tmp, DIMCODE_HOME: b, DIMCODE_UPDATE_CHECK: '0', DIMCODE_SHARING_LISTEN: '127.0.0.1:0' };
   const children = new Set();
-  function start(args) {
-    const child = spawn(cli, args, { env, cwd: temp, stdio: 'pipe' });
+  function start(args, program = cli) {
+    const child = spawn(program, args, { env, cwd: temp, stdio: 'pipe' });
     children.add(child);
     child.on('close', () => children.delete(child));
     return child;
@@ -169,4 +169,42 @@ test('a remembered shared link carries independent native streams, large frames 
   assert.equal(alternate.code, 0, alternate.err);
   assert.doesNotMatch(alternate.err, /Sharing token: /, 'a different route to the same authenticated instance can reconnect');
   assert.deepEqual((await share('disable')).addresses, []);
+  const fixture = path.resolve('target/debug/examples/sharing-shutdown-fixture');
+  const helperPath = path.join(path.dirname(cli), 'dim-sharing');
+  for (const fail of [false, true]) {
+    await t.test(fail ? 'remote stop preserves a delayed cleanup error' : 'remote stop waits for successful cleanup', async () => {
+      const results = [];
+      if (fail) env.DIM_TEST_FAIL_CLEANUP = '1';
+      for (const shared of [false, true]) {
+        const home = path.join(temp, 'stop-' + Number(fail) + Number(shared));
+        const native = path.join(home, 'rust');
+        const endpoint = path.join(native, 'daemon.sock');
+        await mkdir(native, { recursive: true, mode: 0o700 });
+        const owner = start(['--home', native, '--model-config', model, '--unix', endpoint, '--no-ws',
+          '--sharing-helper', helperPath], fixture);
+        const ended = once(owner, 'close');
+        await once(owner.stdout, 'data');
+        const posix = await rpc(endpoint);
+        assert.ok((await posix.call('session.create', { cwd: temp })).result);
+        posix.stream.destroy();
+        let args = ['--home', home], input = '';
+        if (shared) {
+          const enabled = await run([...args, 'share', 'enable']);
+          assert.equal(enabled.code, 0, enabled.err);
+          const { addresses, token } = JSON.parse(enabled.out);
+          args = ['--home', a, 'share', 'connect', addresses[0], '--pair', '--'];
+          input = token + '\n';
+        }
+        results.push(await run([...args, 'daemon', 'stop'], input));
+        const [code] = await ended;
+        assert.equal(code === 0, !fail);
+      }
+      const [posix, shared] = results;
+      assert.equal(posix.code === 0, !fail);
+      if (fail) assert.match(posix.err, /shutdown_failed/);
+      assert.equal(shared.code, posix.code);
+      assert.equal(shared.out, posix.out);
+      assert.equal(shared.err.replace('Sharing token: ', ''), posix.err);
+    });
+  }
 });

@@ -650,6 +650,7 @@ pub fn run_with(
             .clone()
             .or_else(|| server.pipe_name.as_ref().map(PathBuf::from));
         let shutdown = server.shutdown_signal();
+        let sharing_stop = tokio_util::sync::CancellationToken::new();
         let helper = sharing_helper.or_else(|| {
             std::env::current_exe().ok().map(|exe| {
                 exe.with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX))
@@ -659,7 +660,12 @@ pub fn run_with(
             .filter(|path| path.is_file())
             .zip(sharing_home.zip(endpoint))
             .map(|(helper, (home, endpoint))| {
-                tokio::spawn(supervise_sharing(helper, home, endpoint, shutdown.clone()))
+                tokio::spawn(supervise_sharing(
+                    helper,
+                    home,
+                    endpoint,
+                    sharing_stop.clone(),
+                ))
             });
         println!(
             "{}",
@@ -672,7 +678,7 @@ pub fn run_with(
             signal = tokio::signal::ctrl_c() => { signal?; shutdown.cancel(); join.await },
             signal = terminate_signal() => { signal?; shutdown.cancel(); join.await }
         };
-        shutdown.cancel();
+        sharing_stop.cancel();
         if let Some(task) = sharing {
             let _ = task.await;
         }
@@ -710,7 +716,7 @@ async fn supervise_sharing(
                     status = child.wait() => eprintln!("Remote sharing stopped: {status:?}"),
                     () = stop.cancelled() => {
                         drop(lifetime);
-                        if tokio::time::timeout(Duration::from_secs(6), child.wait()).await.is_err()
+                        if tokio::time::timeout(Duration::from_secs(15), child.wait()).await.is_err()
                         {
                             let _ = child.kill().await;
                         }

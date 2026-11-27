@@ -51,3 +51,5 @@ Sharing token: _
 Use `--no-remember` for a one-time pairing. After a token reset, enter the new one with `dima share connect <address> --pair`. Resetting the token or turning sharing off disconnects existing remote terminals. Remote access in Settings always controls the computer at the keyboard.
 
 Run offline database maintenance (including `daemon vacuum` and raw Timeline `export`), migration, client updates, Web installation and local sharing settings directly on the intended computer. For a remote session export, use `dima share connect <address> -- session export <session-id> --format json`.
+
+For clients using the shared byte stream directly, keep a Windows RPC open until its reply has arrived. Ending input closes that target named pipe in both directions. POSIX sockets and the TCP UI return stream can close their write side and continue reading.

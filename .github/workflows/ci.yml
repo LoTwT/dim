@@ -393,6 +393,7 @@ jobs:
           trap 'rm -rf "$bin"' EXIT
           cp target/debug/{dimcode,dim-terminal-transport} "$bin/"
           node scripts/build-sharing.mjs "$bin"
+          cargo build --locked -p dim-app-server --example sharing-shutdown-fixture
           DIM_SHARING_TEST_CLI="$bin/dimcode" node --test scripts/native-sharing-flow.mjs
   macos-native:
     needs: changes

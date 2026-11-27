@@ -69,7 +69,8 @@ func sharing(ctx context.Context, dir, endpoint string) error {
 		return err
 	}
 	var active, announce context.CancelFunc
-	var peers, announcements sync.WaitGroup
+	var peersDone <-chan struct{}
+	var announcements sync.WaitGroup
 	var listener net.Listener
 	stopAnnouncement := func() {
 		if announce != nil {
@@ -81,7 +82,7 @@ func sharing(ctx context.Context, dir, endpoint string) error {
 	stop := func() {
 		if active != nil {
 			active()
-			peers.Wait()
+			<-peersDone
 			active = nil
 			listener = nil
 		}
@@ -118,11 +119,14 @@ func sharing(ctx context.Context, dir, endpoint string) error {
 				st.Error = err.Error()
 			} else {
 				var generation context.Context
-				generation, active = context.WithCancel(ctx)
+				generation, active = context.WithCancel(context.WithoutCancel(ctx))
 				listener = l
-				peers.Go(func() {
+				done := make(chan struct{})
+				peersDone = done
+				go func() {
+					defer close(done)
 					acceptLinks(generation, l, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13, NextProtos: []string{protocol}}, s.Identity.Secret, endpoint, dir)
-				})
+				}()
 			}
 		}
 		if listener != nil {
@@ -146,6 +150,13 @@ func sharing(ctx context.Context, dir, endpoint string) error {
 		for {
 			select {
 			case <-ctx.Done():
+				if listener != nil {
+					listener.Close()
+					select {
+					case <-peersDone:
+					case <-time.After(10 * time.Second):
+					}
+				}
 				return nil
 			case err := <-watcher.Errors:
 				return err
