@@ -7980,6 +7980,11 @@ fn member_tool_approval_requires_trusted_details_in_both_terminal_modes() {
         assert!(terminal.transcript.contains("Leader branch: review"));
         assert!(!terminal.transcript.contains("Full access"));
         assert!(!terminal.transcript.contains("Allow always"));
+        terminal.write(b"\x0f");
+        terminal.write(b"devices\r");
+        terminal.until_visible("This computer");
+        terminal.write(b"\x1b");
+        terminal.until_visible("cargo test trusted action");
         terminal.write(b"y");
         terminal.until_visible("member approvals finished");
         home.kill(&terminal);

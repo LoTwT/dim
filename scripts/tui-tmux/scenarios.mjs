@@ -181,6 +181,71 @@ async function unverifiedBuildNotice(tui) {
   await exitWith(terminal);
 }
 
+async function checkDeviceDraftDestination(terminal, devicesOverDraft) {
+  const switchBack = async () => {
+    await devicesOverDraft();
+    terminal.key('Home', 'Down', 'Enter');
+    await terminal.waitFor('OfficeFixture · Active sessions');
+    terminal.key('Home', 'Enter');
+    await terminal.waitFor('OfficeFixture:');
+    await devicesOverDraft();
+    terminal.key('Home', 'Enter');
+    await terminal.waitForAbsent('OfficeFixture:');
+  };
+  terminal.send('request fixture approval');
+  terminal.key('Enter');
+  await terminal.waitFor('Permission required');
+  await switchBack();
+  await terminal.waitFor('Permission required');
+  await terminal.waitFor('echo decision-fixture');
+  terminal.key('y');
+  await terminal.waitFor('Ran 1 command');
+
+  terminal.send('/branch Side task');
+  terminal.key('Enter');
+  await terminal.waitFor('Side task');
+  terminal.send('/lines');
+  terminal.key('Enter');
+  await terminal.waitFor('Enter show');
+  await terminal.waitFor('Side task');
+  terminal.key('Home', 'Down', 'Enter');
+  await terminal.waitFor(/⑂.*Side task/);
+  terminal.send('Draft for the side task');
+  await switchBack();
+  await terminal.waitFor(/⑂.*Side task/);
+  await terminal.waitFor('Draft for the side task');
+  terminal.key('Enter');
+  await terminal.waitFor('Side draft delivered');
+
+  terminal.send('Typed before history');
+  terminal.key('Home', 'Up');
+  await terminal.waitFor('Draft for the side task');
+  await switchBack();
+  terminal.key('Down');
+  await terminal.waitFor('Typed before history');
+  terminal.key('C-c');
+  await terminal.waitForAbsent('Typed before history');
+
+  terminal.send('/timeline');
+  terminal.key('Enter');
+  await terminal.waitFor('Timeline');
+  terminal.key('b');
+  await terminal.waitFor(/new line from .*Side task/);
+  terminal.key('C-u');
+  terminal.send('Nested task draft');
+  await switchBack();
+  await terminal.waitFor(/new line from .*Side task/);
+  await terminal.waitFor('Nested task draft');
+  terminal.key('Enter');
+  await terminal.waitForAbsent('new line from');
+  terminal.send('/lines');
+  terminal.key('Enter');
+  await terminal.waitFor('Enter show');
+  await terminal.waitFor(/Nested task draft.*[0-9a-f]{8}/);
+  terminal.key('Escape');
+  await terminal.waitForAbsent('Enter show');
+}
+
 const scenarios = [
   {
     name: 'scrollback_streams_and_exits_cleanly',
@@ -880,6 +945,10 @@ const scenarios = [
           await new Promise(resolve => { complete = resolve; });
           return {text: 'Remote work finished'};
         }
+        if (request.tools?.length && userText(request).includes('request fixture approval') && lastMessage(request).role !== 'tool') {
+          return {toolCalls: [{name: 'exec', arguments: {command: 'echo decision-fixture'}}]};
+        }
+        if (userText(request).includes('Draft for the side task')) return {text: 'Side draft delivered'};
         return {text: ANSWER};
       }});
       const env = tui.environment({DIMCODE_SHARING_LISTEN: '127.0.0.1:0'});
@@ -999,6 +1068,7 @@ const scenarios = [
             && userText(request).includes('local draft') && userText(request).includes('[Pasted text:'));
           assert(!userText(local.body).includes('[... 5 lines]'), 'the draft retained its paste content');
           await terminal.waitFor(ANSWER);
+          await checkDeviceDraftDestination(terminal, devicesOverDraft);
           await exitWith(terminal);
           await exitWith(owner);
         }
@@ -1008,7 +1078,21 @@ const scenarios = [
         await named.waitFor('Computers');
         named.key('Escape');
         await named.waitForAbsent('Computers');
-        await exitWith(named);
+        named.send('/devices');
+        named.key('Enter');
+        await named.waitFor('This computer');
+        named.key('C-c');
+        await named.waitFor('Press Ctrl+C again to exit');
+        named.key('C-c');
+        assert.equal((await named.waitForExit()).status, 130);
+        const disconnected = await tui.launch(['--target', 'OfficeFixture'], {env});
+        await disconnected.waitFor('OfficeFixture · Active sessions');
+        disconnected.key('End', 'Enter');
+        await disconnected.waitFor('Start a session here');
+        remote('share', 'disable');
+        await disconnected.waitFor('Disconnected · draft kept');
+        disconnected.key('C-d');
+        assert.equal((await disconnected.waitForExit()).status, 0);
       } finally {
         complete?.();
         remote('daemon', 'stop');

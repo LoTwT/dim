@@ -325,7 +325,7 @@ fn run_terminal(
         active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
     app.devices = Some(devices);
-    let mut drafts = HashMap::new();
+    let mut drafts = HashMap::<_, DeviceDraft>::new();
     if std::env::var_os("DIMCODE_TERMINAL_PICK").is_some()
         && app.target.as_ref().is_some_and(|t| t.address.is_some())
     {
@@ -344,14 +344,6 @@ fn run_terminal(
             dirty |= panel.poll();
             if let Some(view) = panel.take_open() {
                 let old_target = app.target.as_ref().expect("selected target");
-                let local_return = if old_target.address.is_none() {
-                    Some((
-                        app.cwd_key.clone(),
-                        (!app.session_id.is_empty()).then(|| app.session_id.clone()),
-                    ))
-                } else {
-                    app.local_return.take()
-                };
                 let previous = (
                     old_target.id.clone(),
                     app.session_id.clone(),
@@ -370,6 +362,25 @@ fn run_terminal(
                         String::new()
                     },
                 );
+                let wanted_line = if previous == key {
+                    app.snapshot.as_ref().map(|s| s.focus.as_str())
+                } else {
+                    drafts.get(&key).and_then(|draft| draft.line.as_deref())
+                };
+                if let Some(line) = wanted_line
+                    && view.snapshot().is_some_and(|shown| shown.focus != line)
+                {
+                    panel.focus(view, line.to_owned());
+                    continue;
+                }
+                let local_return = if old_target.address.is_none() {
+                    Some((
+                        app.cwd_key.clone(),
+                        (!app.session_id.is_empty()).then(|| app.session_id.clone()),
+                    ))
+                } else {
+                    app.local_return.take()
+                };
                 let mut next = App::at_target(
                     Some(view.target),
                     Box::new(view.host),
@@ -393,16 +404,27 @@ fn run_terminal(
                     next.apply(update);
                 }
                 let mut old = std::mem::replace(&mut app, next);
-                let draft = old.composer.take_draft();
-                if draft.is_some() || old.question_stash.is_some() {
-                    drafts.insert(previous, (draft, old.question_stash));
+                let saved = DeviceDraft {
+                    line: old.snapshot.as_ref().map(|s| s.focus.clone()),
+                    opening: old.line_draft.take(),
+                    composer: old.composer.take_draft(),
+                    question: old.question_stash.take(),
+                };
+                if saved.composer.is_some() || saved.opening.is_some() || saved.question.is_some() {
+                    drafts.insert(previous, saved);
                 }
-                if let Some((draft, question)) = drafts.remove(&key) {
-                    if let Some(draft) = draft {
+                if let Some(saved) = drafts.remove(&key) {
+                    if let Some(mut opening) = saved.opening
+                        && let Some(snapshot) = &app.snapshot
+                    {
+                        opening.projection_id = snapshot.projection_id;
+                        app.line_draft = Some(opening);
+                    }
+                    if let Some(draft) = saved.composer {
                         app.composer.put_draft(draft);
                     }
                     if let Some(Prompt::Ask(current)) = &mut app.prompt
-                        && let Some(saved) = question
+                        && let Some(saved) = saved.question
                         && current.call == saved.call
                     {
                         *current = saved;
@@ -1645,6 +1667,13 @@ impl ForkAsk {
     }
 }
 
+struct DeviceDraft {
+    line: Option<String>,
+    opening: Option<LineDraft>,
+    composer: Option<SavedDraft>,
+    question: Option<AskUserPrompt>,
+}
+
 struct LineDraft {
     session_id: String,
     projection_id: u64,
@@ -1982,7 +2011,12 @@ impl App {
     fn command_entry_open(&self) -> bool {
         (self.composer.skill_draft
             || (self.composer.shell().is_none() && self.composer.text().starts_with('/')))
-            && matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
+            && self.decision_allows_commands()
+    }
+
+    fn decision_allows_commands(&self) -> bool {
+        matches!(self.prompt, Some(Prompt::Permission(_)))
+            || matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
     }
 
     /// Opens the command palette on the draft it replaces; the draft comes
@@ -3662,6 +3696,12 @@ impl App {
             return Outcome::Continue;
         }
         if let Some(Prompt::Devices(panel)) = &mut self.prompt {
+            if ctrl && self.failure.is_some() && matches!(key.code, KeyCode::Char('c' | 'd')) {
+                return Outcome::Exit(0);
+            }
+            if ctrl && key.code == KeyCode::Char('c') {
+                return self.ctrl_c();
+            }
             if matches!(panel.key(key), Effect::Close) {
                 self.prompt = None;
                 self.sync_prompt();
@@ -3695,7 +3735,7 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return self.ctrl_c();
         }
-        if matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing) {
+        if self.decision_allows_commands() {
             if self.command_entry_open() {
                 if key.code == KeyCode::Esc
                     && !self.composer.palette_open()
@@ -4364,7 +4404,7 @@ impl App {
             .target
             .as_ref()
             .filter(|target| target.address.is_some())
-            .map(|target| format!("{}:", crate::sanitize::safe_line(&target.name)))
+            .map(|target| format!("{}:", target.name))
             .unwrap_or_default();
         let width = cells.saturating_sub(width_of(&prefix));
         let place = self.workspace_place(width);
@@ -6980,7 +7020,7 @@ impl App {
             Some(Prompt::Models(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Providers(prompt)) => Some(prompt.cursor(width, height)),
             Some(Prompt::Login(prompt)) => Some(prompt.cursor(width, height)),
-            Some(Prompt::Ask(_)) if command_entry => None,
+            _ if command_entry => None,
             Some(Prompt::Ask(prompt)) => Some(prompt.cursor(width, panel_rows)),
             Some(_) => Some(None),
             None => None,
@@ -7065,9 +7105,7 @@ impl App {
         let panel = match &self.prompt {
             _ if self.shows_member() => None,
             _ if frame.overlay.is_some() => None,
-            Some(Prompt::Ask(_)) if command_entry => {
-                self.composer.palette_panel(outer, panel_rows, p)
-            }
+            _ if command_entry => self.composer.palette_panel(outer, panel_rows, p),
             Some(Prompt::Devices(panel)) => Some(panel.render(outer, panel_rows, p)),
             Some(Prompt::Sessions(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Tasks(prompt)) => {

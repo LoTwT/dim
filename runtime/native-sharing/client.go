@@ -120,7 +120,10 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 	}
 	var token string
 	var cred credential
-	confirmed := known.Routes[address]
+	confirmed := identity
+	if confirmed == "" {
+		confirmed = known.Routes[address]
+	}
 	if !fresh {
 		token = known.Tokens[confirmed].Token
 	}
@@ -161,36 +164,11 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 	if confirmed != "" && confirmed != encoding.EncodeToString(cred.pin) && !fresh {
 		return errors.New("the computer at this address changed; use --pair to confirm its new token")
 	}
-	var raw net.Conn
-	for _, route := range routes {
-		raw, err = (&net.Dialer{Timeout: 8 * time.Second}).DialContext(ctx, "tcp", route)
-		if err == nil {
-			address = route
-			break
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-	}
+	tlsConn, info, address, err := dialTarget(ctx, routes, cred)
 	if err != nil {
 		return err
 	}
-	defer raw.Close()
-	cfg := &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{protocol}, InsecureSkipVerify: true, VerifyConnection: cred.verify}
-	tlsConn, err := authenticate(ctx, raw, cfg, false, cred.secret)
-	if err != nil {
-		return fmt.Errorf("sharing authentication failed (use --pair after a token reset): %w", err)
-	}
-	if err = tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		return err
-	}
-	info, err := readTarget(tlsConn)
-	if err != nil {
-		return err
-	}
-	if err = tlsConn.SetReadDeadline(time.Time{}); err != nil {
-		return err
-	}
+	defer tlsConn.Close()
 	if saveToken {
 		if err = remember(dir, address, token, info.Name, cred); err != nil {
 			return err
@@ -248,4 +226,44 @@ func connect(ctx context.Context, dir, address string, saveToken, fresh bool, ar
 	cmd.Env = append(os.Environ(), "DIMCODE_TERMINAL_PROXY="+endpoint, "DIMCODE_TERMINAL_WORKSPACE="+info.WorkingDirectory, "DIMCODE_TERMINAL_NAME="+info.Name, "DIMCODE_TERMINAL_ID="+id, "DIMCODE_TERMINAL_ADDRESS="+address)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+func dialTarget(ctx context.Context, routes []string, cred credential) (net.Conn, targetInfo, string, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{protocol}, InsecureSkipVerify: true, VerifyConnection: cred.verify}
+	var failures []error
+	for _, route := range routes {
+		if ctx.Err() != nil {
+			return nil, targetInfo{}, "", ctx.Err()
+		}
+		conn, info, err := dialRoute(ctx, route, cfg, cred)
+		if err == nil {
+			return conn, info, route, nil
+		}
+		failures = append(failures, err)
+	}
+	return nil, targetInfo{}, "", errors.Join(failures...)
+}
+
+func dialRoute(ctx context.Context, route string, cfg *tls.Config, cred credential) (net.Conn, targetInfo, error) {
+	raw, err := (&net.Dialer{Timeout: 8 * time.Second}).DialContext(ctx, "tcp", route)
+	if err != nil {
+		return nil, targetInfo{}, err
+	}
+	conn, err := authenticate(ctx, raw, cfg, false, cred.secret)
+	if err != nil {
+		raw.Close()
+		return nil, targetInfo{}, fmt.Errorf("sharing authentication failed (use --pair after a token reset): %w", err)
+	}
+	var info targetInfo
+	if err = conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err == nil {
+		info, err = readTarget(conn)
+	}
+	if err == nil {
+		err = conn.SetReadDeadline(time.Time{})
+	}
+	if err != nil {
+		raw.Close()
+		return nil, targetInfo{}, err
+	}
+	return conn, info, nil
 }

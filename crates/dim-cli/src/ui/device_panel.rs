@@ -216,6 +216,10 @@ impl DevicePanel {
             Ok(Reply::Opened(Box::new(target.open(cwd, session).await?)))
         });
     }
+    pub fn focus(&mut self, view: Prepared, line: String) {
+        self.request(async move { Ok(Reply::Opened(Box::new(view.focus(line).await?))) });
+    }
+
     pub fn poll(&mut self) -> bool {
         let Some(pending) = &mut self.pending else {
             return false;

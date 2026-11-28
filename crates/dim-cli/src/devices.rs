@@ -2,7 +2,10 @@ use crate::{
     Result,
     args::Options,
     client,
-    model::session::{SessionPort, Update},
+    model::{
+        session::{Command as SessionCommand, SessionPort, Update},
+        view::ViewSnapshot,
+    },
     session_host::SessionHost,
     sharing,
 };
@@ -176,7 +179,7 @@ impl Devices {
             .await?
             .ok_or("Computer is unavailable")?;
         Ok(Arc::new(Target {
-            name,
+            name: crate::sanitize::safe_line(&name),
             id,
             address: route,
             options,
@@ -190,7 +193,9 @@ impl Devices {
         let read = |key| std::env::var(key).ok();
         Arc::new(Target {
             name: if remote {
-                read("DIMCODE_TERMINAL_NAME").unwrap_or_else(|| "Remote computer".into())
+                read("DIMCODE_TERMINAL_NAME")
+                    .map(|name| crate::sanitize::safe_line(&name))
+                    .unwrap_or_else(|| "Remote computer".into())
             } else {
                 "This computer".into()
             },
@@ -233,44 +238,17 @@ impl Target {
         let client = Client::connect(&self.config).await?;
         let locale = crate::ui::i18n::interface_locale(&options.home);
         let host = SessionHost::start(options, client, locale.code(), None);
-        let mut updates = Vec::new();
-        if let Some(id) = &session {
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            loop {
-                if std::time::Instant::now() >= deadline {
-                    return Err("Timed out opening session history".into());
-                }
-                let batch = host.drain();
-                let mut ready = false;
-                for u in &batch {
-                    match u {
-                        Update::Failed(e) | Update::StartupFailed { message: e, .. } => {
-                            return Err(e.clone().into());
-                        }
-                        Update::Shutdown { reason } => return Err(reason.clone().into()),
-                        Update::Snapshot(s) if s.session_id == *id => {
-                            if let Some(e) = &s.window_error {
-                                return Err(e.clone().into());
-                            }
-                            ready |= s.history_complete;
-                        }
-                        _ => {}
-                    }
-                }
-                updates.extend(batch);
-                if ready {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
-        Ok(Prepared {
+        let mut view = Prepared {
             target: self,
             cwd,
             session,
             host,
-            updates,
-        })
+            updates: Vec::new(),
+        };
+        if view.session.is_some() {
+            view.wait_for_history(None).await?;
+        }
+        Ok(view)
     }
 }
 
@@ -280,6 +258,58 @@ pub(crate) struct Prepared {
     pub session: Option<String>,
     pub host: SessionHost,
     pub updates: Vec<Update>,
+}
+
+impl Prepared {
+    pub fn snapshot(&self) -> Option<&ViewSnapshot> {
+        self.updates.iter().rev().find_map(|update| match update {
+            Update::Snapshot(snapshot) => Some(snapshot.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub async fn focus(mut self, line: String) -> Result<Self> {
+        let available = self
+            .snapshot()
+            .is_some_and(|s| s.lines.iter().any(|l| l.id == line));
+        if !available {
+            return Err(format!("The draft's line is unavailable: {line}").into());
+        }
+        self.host.send(SessionCommand::FocusLine(line.clone()));
+        self.wait_for_history(Some(&line)).await?;
+        Ok(self)
+    }
+
+    async fn wait_for_history(&mut self, line: Option<&str>) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let batch = self.host.drain();
+                for update in &batch {
+                    match update {
+                        Update::Failed(error)
+                        | Update::StartupFailed { message: error, .. }
+                        | Update::Shutdown { reason: error } => return Err(error.clone().into()),
+                        _ => {}
+                    }
+                }
+                self.updates.extend(batch);
+                if let Some(s) = self.snapshot()
+                    && self.session.as_deref() == Some(s.session_id.as_str())
+                    && line.is_none_or(|line| line == s.focus)
+                {
+                    if let Some(error) = &s.window_error {
+                        return Err(error.clone().into());
+                    }
+                    if s.history_complete {
+                        return Ok(());
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .map_err(|_| "Timed out opening session history")?
+    }
 }
 
 impl Directories {

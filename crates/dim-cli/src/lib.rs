@@ -693,6 +693,14 @@ pub(crate) fn limits_undeclared(
 
 fn prepare() -> Result<Option<Options>> {
     let mut options = Options::parse(std::env::args().skip(1))?;
+    if matches!(options.action, Action::Help) {
+        print!("{}", args::HELP);
+        return Ok(None);
+    }
+    if matches!(options.action, Action::Version) {
+        println!("dimcode {}", dim_agent_capabilities::build::current());
+        return Ok(None);
+    }
     if let Some((name, index)) = options.named_target.take() {
         let mut native: Vec<_> = std::env::args().skip(1).collect();
         native.drain(index..index + 2);
@@ -724,14 +732,6 @@ fn prepare() -> Result<Option<Options>> {
         if let Some(command) = local_command {
             return Err(sharing::unavailable(command).into());
         }
-    }
-    if matches!(options.action, Action::Help) {
-        print!("{}", args::HELP);
-        return Ok(None);
-    }
-    if matches!(options.action, Action::Version) {
-        println!("dimcode {}", dim_agent_capabilities::build::current());
-        return Ok(None);
     }
     if matches!(options.action, Action::McpLogin(_)) && !std::io::stdin().is_terminal() {
         return Err(

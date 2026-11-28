@@ -70,6 +70,11 @@ async function environment(t) {
 
 test('a remembered shared link carries independent native streams, large frames and revocation', { skip: windows, timeout: 50_000 }, async (t) => {
   const { temp, a, b, tmp, env, start, run } = await environment(t);
+  for (const flag of ['--help', '--version']) {
+    const local = await run([flag]);
+    const targeted = await run(['--target', '127.0.0.1:1', flag]);
+    assert.deepEqual(targeted, local);
+  }
   const target = path.join(b, 'rust', 'daemon.sock');
   async function share(...args) {
     const result = await run(['--home', b, '--model-config', model, 'share', ...args]);

@@ -175,7 +175,11 @@ order, not alphabetically or by recent use. The menu draws no category column:
 
 `/devices` opens the computer picker from Home or a conversation in either
 layout. Selecting a remote computer opens its active Sessions. The new Session
-entry browses that computer's filesystem. [Computer selection and keyboard flow](research/native-terminal-targets.md#选电脑再选会话)
+entry browses that computer's filesystem. The command palette also opens while
+a permission request awaits a decision. Leaving the computer keeps that request
+pending. Returning to a Session restores the draft on its original line. A
+draft opened from the Timeline retains its parent line and cut point.
+[Computer selection and keyboard flow](research/native-terminal-targets.md#选电脑再选会话)
 
 `/fast` is listed only when the model advertises service tiers.
 Search relevance takes priority; equally ranked matches keep this order.
