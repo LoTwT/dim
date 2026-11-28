@@ -21,7 +21,7 @@ pub(crate) fn installed() -> bool {
     })
 }
 
-fn command(home: &Path) -> crate::Result<Command> {
+pub(crate) fn command(home: &Path) -> crate::Result<Command> {
     let path = std::env::current_exe()?
         .with_file_name(format!("dim-sharing{}", std::env::consts::EXE_SUFFIX));
     let mut cmd = Command::new(path);
@@ -69,8 +69,8 @@ pub(crate) fn unavailable(command: &str) -> String {
 pub(crate) fn proxy() -> Option<PathBuf> {
     std::env::var_os("DIMCODE_TERMINAL_PROXY").map(PathBuf::from)
 }
-pub(crate) async fn leaf_address(local: &str) -> crate::Result<String> {
-    let Some(proxy) = proxy() else {
+pub(crate) async fn leaf_address(proxy: Option<&Path>, local: &str) -> crate::Result<String> {
+    let Some(proxy) = proxy else {
         return Ok(local.to_owned());
     };
     let path = proxy.with_extension("leaf");

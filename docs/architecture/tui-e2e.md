@@ -35,6 +35,7 @@ Prerequisites:
 | Requirement | Notes |
 | --- | --- |
 | `target/debug/dimcode` | Built from the checkout; `--binary` names another build |
+| Native sharing helpers | Build `dim-terminal-transport` and run `node scripts/build-sharing.mjs target/debug` for the two-server device scenario. A CLI built on its own exercises the local computer picker. |
 | `target/debug/dim-app-server` | The provider scenario's `--server` profile; `--binary` looks for it beside the CLI, and the case names the build command when it is missing |
 | tmux | 3.2 or newer, on macOS or Linux. `pane_dead_signal` arrived in 3.3: on 3.2 the field is unknown, so a signal death reports an empty status and fails the case instead of naming the signal. tmux 3.6a exits at `new-session -x -y` when `window-size manual` is in the startup config, so the harness sets it per window after `new-session` (#1890) |
 | Node.js | The version in `.node-version`; the suite and its fixture are plain ES modules |
@@ -112,6 +113,7 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 | composer | `file_mention_inserts_a_workspace_link` | The `@` picker lists the `--cwd` workspace, inserts the chosen file, and completes a directory prefix to the file under it; the prompt carries both as absolute links |
 | no-session | `home_commands_without_a_session_answer_and_send_nothing` | `/export`, `/queue` and `/mcp list` run from the palette over a draft answer at home in both layouts, the draft returns to the composer after each, no command sends it, and the fixture model receives no request; `/agent` and a valued `/effort` stay with `tui_home_commands_without_a_session_answer_and_send_nothing` in CI |
 | hooks | `hook_context_and_stop_follow_up_stay_status_rows` | A prompt hook's context draws one closed row, named in the singular for its one line, and reaches the model after the operator's words; a stop hook's follow-up draws its own closed row and starts a turn; neither body nor the `<dim-hooks>` marker reaches the transcript; three `/tools` toggles open and close both |
+| commands | `devices_open_remote_directory_and_return_to_local` | Pair from either layout, browse a remote directory, attach and reconnect. Switch with a pending approval, a recalled prompt, a non-default line draft or a Timeline cut and resume each at its original destination. |
 | commands | `settings_manage_inbound_sharing` | With the Alpha sharing helpers alongside the CLI, enable access, read the token, rename, rotate and disable from Settings. Source-only builds omit the entry. |
 | commands | `slash_palette_lists_curated_commands_and_settings` | The palette's curated order and filter, the Settings panel, and `/keys` output |
 | commands | `palette_tab_completes_and_enter_runs_the_command` | `Tab` completes the command without running it, three `Tab`s keep completing and never exit the palette, and `Enter` still runs it, in both layouts |

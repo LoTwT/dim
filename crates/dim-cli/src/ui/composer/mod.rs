@@ -112,6 +112,17 @@ pub enum Outcome {
     Pass,
 }
 
+pub(super) struct SavedDraft {
+    area: TextArea,
+    state: TextAreaState,
+    tokens: Vec<Token>,
+    shell: Option<Shell>,
+    skill_draft: bool,
+    recalled: Option<String>,
+    saved_draft: String,
+    saved_shell: Option<Shell>,
+}
+
 pub struct Composer {
     area: TextArea,
     state: TextAreaState,
@@ -184,6 +195,48 @@ impl Composer {
     /// What the palette weighs availability against.
     pub fn set_context(&mut self, context: crate::ui::commands::Context) {
         self.context = context;
+    }
+
+    pub(super) fn take_draft(&mut self) -> Option<SavedDraft> {
+        if self.is_empty()
+            && self.shell.is_none()
+            && !self.skill_draft
+            && self.history_index.is_none()
+        {
+            return None;
+        }
+        Some(SavedDraft {
+            recalled: self.history_index.take().map(|i| {
+                self.history.get(i).cloned().unwrap_or_else(|| {
+                    format!("{}{}", self.shell.map_or("", Shell::prefix), self.text())
+                })
+            }),
+            area: std::mem::replace(&mut self.area, TextArea::new()),
+            saved_draft: std::mem::take(&mut self.saved_draft),
+            saved_shell: self.saved_shell.take(),
+            state: std::mem::take(&mut self.state),
+            tokens: std::mem::take(&mut self.tokens),
+            shell: self.shell.take(),
+            skill_draft: std::mem::take(&mut self.skill_draft),
+        })
+    }
+
+    pub(super) fn put_draft(&mut self, draft: SavedDraft) {
+        self.history_index = draft.recalled.map(|entry| {
+            self.history
+                .iter()
+                .position(|h| h == &entry)
+                .unwrap_or(self.history.len())
+        });
+        self.saved_draft = draft.saved_draft;
+        self.saved_shell = draft.saved_shell;
+        self.area = draft.area;
+        self.area.set_cursor(self.area.text().len());
+        self.state = draft.state;
+        self.tokens = draft.tokens;
+        self.shell = draft.shell;
+        self.skill_draft = draft.skill_draft;
+        self.renumber();
     }
 
     /// Replaces the draft (for example with a message taken back from the
@@ -1053,13 +1106,13 @@ impl Composer {
     /// at the end (or at the start of a single line) walks back toward the
     /// saved draft.
     fn browse_history(&mut self, up: bool) -> bool {
-        if self.history.is_empty() {
+        if self.history.is_empty() && (up || self.history_index.is_none()) {
             return false;
         }
         let cursor = self.area.cursor();
         let len = self.area.text().len();
         let single_line = !self.area.text().contains('\n');
-        let browsing = self.history_index.is_some_and(|i| i < self.history.len());
+        let browsing = self.history_index.is_some();
         if up {
             if cursor != 0 {
                 return false;

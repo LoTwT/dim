@@ -63,6 +63,7 @@ mod atomic;
 pub mod commands;
 pub mod composer;
 pub mod config;
+mod device_panel;
 pub mod i18n;
 pub mod isolation_panel;
 pub mod keys;

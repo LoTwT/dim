@@ -65,8 +65,19 @@ func run(ctx context.Context, args []string) error {
 		defer stop()
 		go func() { _, _ = io.Copy(io.Discard, os.Stdin); stop() }()
 		return sharing(ctx, dir, rest[0])
+	case "known":
+		k, err := readKnown(dir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(savedDevices(k))
 	case "discover":
 		return browse(ctx, dir)
+	case "tunnel":
+		if len(rest) != 1 {
+			return errors.New("tunnel needs an address")
+		}
+		return tunnel(ctx, dir, rest[0])
 	case "connect":
 		if len(rest) == 0 {
 			return errors.New("connect needs an address")
@@ -74,9 +85,12 @@ func run(ctx context.Context, args []string) error {
 		address := rest[0]
 		args := rest[1:]
 		remember, fresh := true, false
+		pick := false
 	flags:
 		for len(args) > 0 {
 			switch args[0] {
+			case "--pick-sessions":
+				pick = true
 			case "--pair":
 				fresh = true
 			case "--no-remember":
@@ -89,7 +103,10 @@ func run(ctx context.Context, args []string) error {
 			}
 			args = args[1:]
 		}
-		return connect(ctx, dir, address, remember, fresh, append([]string{"--home", filepath.Dir(filepath.Dir(dir))}, args...))
+		if pick {
+			os.Setenv("DIMCODE_TERMINAL_PICK", "1")
+		}
+		return connect(ctx, dir, address, remember, fresh, append([]string{"--home", filepath.Dir(filepath.Dir(dir))}, args...), nil)
 	case "status", "enable", "disable", "rename", "reset":
 		var s settings
 		var err error

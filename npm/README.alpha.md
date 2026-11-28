@@ -35,6 +35,22 @@ Dim's original source uses MIT. See `NOTICE` for distribution attribution. Nativ
 
 On the computer you want to control, open `/settings → Remote access` and turn on **Allow connections to this computer**, or run `dima share enable` in a shell. Both show the reachable addresses and the complete token. The token is readable on a narrow screen by selecting it in Settings. Sharing starts off and stays available when you exit the TUI while the App Server is running.
 
+On the computer at the keyboard, start `dima` and open `/devices` from Home or a conversation. Select a computer or choose **Add by address**. On first use, enter the token displayed on the other computer. Leave **Remember on this computer** selected to reconnect using the saved credential.
+
+```text
+/devices
+  +-- This computer
+  +-- Office PC
+        +-- Active session   /srv/project  -> open conversation
+        +-- New session...                 -> browse from root
+                                              or enter an absolute path
+                                              -> Start a session here
+```
+
+The lower composer border shows the selected computer beside the project path, for example `Office PC:/srv/project`. A new workspace stays empty until the first message or shell command. Open `/devices` again to switch computers. An interrupted connection offers to reopen the same session with its unsent draft.
+
+For a remembered computer, `dima --target "Office PC"` opens its active sessions directly. Add `--resume SESSION_ID` or `--cwd /srv/project` to open a specific conversation or directory. Use the same target option for scripts, for example `dima --target "Office PC" --cwd /srv/project exec -p "Run the tests"`.
+
 On the computer at the keyboard, run `dima share discover` to see LAN candidates, or use an address from the other computer directly. A Tailscale IP or DNS name works too. The default port is 7443.
 
 **Open the remote TUI from a shell.** Run the following in your terminal. At the first prompt, type the token from the computer you want to control and press Enter. Input is hidden. Successful pairing opens an interactive TUI on that computer.

@@ -10,6 +10,7 @@
 //! management, usage, approval preferences) answer with an explicit "not
 //! available" update instead of failing silently.
 
+use rutis::host::CtxHost;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -151,6 +152,10 @@ const USAGE_MISSING: &str = "This account plugin does not report usage";
 const QUEUE_LEFT: &str = "That message has already left the queue.";
 
 pub struct SessionHost {
+    leaf_closed: std::cell::RefCell<tokio::sync::oneshot::Receiver<()>>,
+    root: rutis::Ctx,
+    runtime: tokio::runtime::Handle,
+    remote: bool,
     commands: UnboundedSender<Command>,
     updates: mpsc::Receiver<Update>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -161,7 +166,17 @@ impl SessionPort for SessionHost {
         let _ = self.commands.send(command);
     }
     fn drain(&self) -> Vec<Update> {
-        self.updates.try_iter().collect()
+        let mut updates: Vec<_> = self.updates.try_iter().collect();
+        if self.leaf_closed.borrow_mut().try_recv().is_ok() {
+            if self.remote {
+                updates.push(Update::Failed("Remote interface disconnected".into()));
+            } else {
+                updates.push(Update::Shutdown {
+                    reason: "Interface closed".into(),
+                });
+            }
+        }
+        updates
     }
     fn shutdown(self: Box<Self>) {
         SessionHost::shutdown(*self);
@@ -184,9 +199,12 @@ impl SessionHost {
         client: Client,
         language: &'static str,
         notice: Option<String>,
-        ctx: rutis::Ctx,
-        leaf_end: tokio::sync::oneshot::Sender<()>,
     ) -> Self {
+        let runtime = tokio::runtime::Handle::current();
+        let root = rutis::Ctx::root_with_sink(runtime.clone(), std::sync::Arc::new(|_| {}));
+        let ctx = root.clone();
+        let (leaf_end, leaf_closed) = tokio::sync::oneshot::channel();
+        let remote = options.endpoint.is_some();
         let (commands, command_rx) = unbounded_channel();
         let (update_tx, updates) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -209,6 +227,10 @@ impl SessionHost {
             })
             .expect("spawn session thread");
         Self {
+            root,
+            runtime,
+            remote,
+            leaf_closed: std::cell::RefCell::new(leaf_closed),
             commands,
             updates,
             thread: Some(thread),
@@ -229,6 +251,15 @@ impl SessionHost {
                 let _ = thread.join();
             }
         }
+    }
+}
+
+impl Drop for SessionHost {
+    fn drop(&mut self) {
+        let root = self.root.clone();
+        self.runtime.spawn(async move {
+            let _ = root.shutdown().await;
+        });
     }
 }
 
@@ -457,7 +488,7 @@ async fn run(
     if let Some(notice) = notice {
         let _ = updates.send(Update::Notice(notice));
     }
-    if update::enabled() && crate::sharing::proxy().is_none() {
+    if update::enabled() && options.endpoint.is_none() {
         let offers = updates.clone();
         let home = options.home.clone();
         let managed = options.server.is_none() && client.offers("daemon.shutdown.ifIdle");
@@ -2000,7 +2031,7 @@ impl Worker {
             Command::Earlier { line, .. } => self.earlier(&line),
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
-            Command::CheckUpdate if crate::sharing::proxy().is_some() => {
+            Command::CheckUpdate if self.options.endpoint.is_some() => {
                 self.send(Update::UpgradeChecked(Err(crate::sharing::unavailable(
                     "/update",
                 ))));
@@ -2017,7 +2048,7 @@ impl Worker {
                     let _ = updates.send(Update::UpgradeChecked(checked));
                 });
             }
-            Command::ToggleWeb if crate::sharing::proxy().is_some() => {
+            Command::ToggleWeb if self.options.endpoint.is_some() => {
                 self.report(crate::sharing::unavailable("/web"), true);
             }
             Command::ToggleWeb => {
@@ -3070,7 +3101,11 @@ impl Worker {
                 session_id: &self.session_id,
                 kind: "tui",
                 peer: &leaf.peer,
-                address: crate::sharing::leaf_address(&leaf.address).await?,
+                address: crate::sharing::leaf_address(
+                    self.options.endpoint.as_deref(),
+                    &leaf.address,
+                )
+                .await?,
             })?;
             let end = self
                 .leaf_end

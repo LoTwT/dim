@@ -5,6 +5,7 @@ mod client;
 mod clipboard;
 mod composer;
 mod configure;
+mod devices;
 mod display;
 mod export;
 mod goal;
@@ -156,15 +157,12 @@ async fn open_tui(
         resume: options.resume.clone(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
-    let (leaf_end, mut leaf_ended) = tokio::sync::oneshot::channel();
     let (update, mut updated) = tokio::sync::oneshot::channel();
     let tui = root.plugin(plugins::Tui {
-        root: root.clone(),
         env,
         options: options.clone(),
         leave: std::sync::Mutex::new(Some(leave)),
         update: std::sync::Mutex::new(Some(update)),
-        leaf_end: std::sync::Mutex::new(Some(leaf_end)),
     });
     (&tui).await.map_err(plugin_error)?;
     // `Err` is `Update now`. It arrives before the interface closes its
@@ -174,7 +172,6 @@ async fn open_tui(
         biased;
         Ok(request) = &mut updated => Err(request),
         code = &mut left => Ok(code.map_err(|_| "the terminal interface ended without a result")?),
-        Ok(()) = &mut leaf_ended => Ok(0),
     }
     .and_then(|code| updated.try_recv().map_or(Ok(code), Err));
     tui.dispose().await?;
@@ -696,6 +693,30 @@ pub(crate) fn limits_undeclared(
 
 fn prepare() -> Result<Option<Options>> {
     let mut options = Options::parse(std::env::args().skip(1))?;
+    if matches!(options.action, Action::Help) {
+        print!("{}", args::HELP);
+        return Ok(None);
+    }
+    if matches!(options.action, Action::Version) {
+        println!("dimcode {}", dim_agent_capabilities::build::current());
+        return Ok(None);
+    }
+    if let Some((name, index)) = options.named_target.take() {
+        let mut native: Vec<_> = std::env::args().skip(1).collect();
+        native.drain(index..index + 2);
+        let mut args = vec!["connect".into(), name];
+        if matches!(options.action, Action::Chat | Action::Tui)
+            && !options.cwd_explicit
+            && options.resume.is_none()
+            && options.prompt.is_none()
+            && std::io::stdin().is_terminal()
+        {
+            args.push("--pick-sessions".into());
+        }
+        args.push("--".into());
+        args.extend(native);
+        options.action = Action::Share(args);
+    }
     if sharing::proxy().is_some() {
         let local_command = match &options.action {
             Action::DaemonVacuum { .. } => Some("daemon vacuum"),
@@ -711,14 +732,6 @@ fn prepare() -> Result<Option<Options>> {
         if let Some(command) = local_command {
             return Err(sharing::unavailable(command).into());
         }
-    }
-    if matches!(options.action, Action::Help) {
-        print!("{}", args::HELP);
-        return Ok(None);
-    }
-    if matches!(options.action, Action::Version) {
-        println!("dimcode {}", dim_agent_capabilities::build::current());
-        return Ok(None);
     }
     if matches!(options.action, Action::McpLogin(_)) && !std::io::stdin().is_terminal() {
         return Err(

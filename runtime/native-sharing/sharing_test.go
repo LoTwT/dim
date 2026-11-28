@@ -86,6 +86,54 @@ func TestPairingSurvivesRouteAndNameChangesButNotTokenReset(t *testing.T) {
 	}
 }
 
+func TestSavedRoutesAuthenticateTheComputerBeforeSelectingAnAddress(t *testing.T) {
+	drive := func(id identity) string {
+		t.Helper()
+		cert, err := id.certificate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		go func() {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer raw.Close()
+			conn, err := authenticate(t.Context(), raw, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13, NextProtos: []string{protocol}}, true, id.Secret)
+			if err == nil {
+				_ = (targetInfo{Name: "Fixture", WorkingDirectory: "/project"}).write(conn)
+			}
+		}()
+		return listener.Addr().String()
+	}
+	stranger, err := newIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := newIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := parseCredential(saved.token())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := drive(stranger), drive(saved)
+	conn, info, route, err := dialTarget(t.Context(), []string{first, second}, cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if route != second || info.Name != "Fixture" {
+		t.Fatal("the second route must serve the saved identity")
+	}
+}
+
 func TestSupervisorRevokesALiveLinkAndWithdrawsTheListener(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DIMCODE_SHARING_LISTEN", "127.0.0.1:0")

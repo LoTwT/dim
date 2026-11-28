@@ -3,10 +3,13 @@
 //! unclosed tail and the composer box live at the bottom and repaint by row
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
+use super::device_panel::DevicePanel;
+use crate::devices::{Devices, Target};
 use dim_agent_types::ROOT_BRANCH_ID;
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::management::{self, editor};
@@ -27,7 +30,7 @@ use crate::ui::Env;
 use crate::ui::Initial;
 use crate::ui::approvals_panel::{ApprovalsPanel, preset_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
-use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
+use crate::ui::composer::{Composer, Outcome as ComposerOutcome, SavedDraft, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
 use crate::ui::lines_panel::{LinesPanel, short_id};
@@ -189,8 +192,10 @@ pub fn run(
     host: Box<dyn SessionPort>,
     surroundings: Env,
     update: tokio::sync::oneshot::Sender<UpdateRequest>,
+    devices: Devices,
+    target: Arc<Target>,
 ) -> i32 {
-    let code = run_terminal(host, surroundings, update);
+    let code = run_terminal(host, surroundings, update, devices, target);
     history::flush();
     code
 }
@@ -245,6 +250,8 @@ fn run_terminal(
     host: Box<dyn SessionPort>,
     surroundings: Env,
     update: tokio::sync::oneshot::Sender<UpdateRequest>,
+    devices: Devices,
+    target: Arc<Target>,
 ) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
@@ -293,7 +300,8 @@ fn run_terminal(
         None => detected.clone(),
     };
     let cwd_key = surroundings.workspace.clone();
-    let mut app = App::new(
+    let mut app = App::at_target(
+        Some(target),
         host,
         MarkdownRenderer::new(&theme),
         theme.palette.clone(),
@@ -316,6 +324,13 @@ fn run_terminal(
         background,
         active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
+    app.devices = Some(devices);
+    let mut drafts = HashMap::<_, DeviceDraft>::new();
+    if std::env::var_os("DIMCODE_TERMINAL_PICK").is_some()
+        && app.target.as_ref().is_some_and(|t| t.address.is_some())
+    {
+        app.open_devices(true);
+    }
     let mut dirty = true;
     let mut click_scroll = None;
     let mut last_frame: Option<Instant> = None;
@@ -324,6 +339,109 @@ fn run_terminal(
         for update in app.host.drain() {
             app.apply(update);
             dirty = true;
+        }
+        if let Some(Prompt::Devices(panel)) = &mut app.prompt {
+            dirty |= panel.poll();
+            if let Some(view) = panel.take_open() {
+                let old_target = app.target.as_ref().expect("selected target");
+                let previous = (
+                    old_target.id.clone(),
+                    app.session_id.clone(),
+                    if app.session_id.is_empty() {
+                        app.cwd_key.clone()
+                    } else {
+                        String::new()
+                    },
+                );
+                let key = (
+                    view.target.id.clone(),
+                    view.session.clone().unwrap_or_default(),
+                    if view.session.is_none() {
+                        view.cwd.clone()
+                    } else {
+                        String::new()
+                    },
+                );
+                let wanted_line = if previous == key {
+                    app.snapshot.as_ref().map(|s| s.focus.as_str())
+                } else {
+                    drafts.get(&key).and_then(|draft| draft.line.as_deref())
+                };
+                if let Some(line) = wanted_line
+                    && view.snapshot().is_some_and(|shown| shown.focus != line)
+                {
+                    panel.focus(view, line.to_owned());
+                    continue;
+                }
+                let local_return = if old_target.address.is_none() {
+                    Some((
+                        app.cwd_key.clone(),
+                        (!app.session_id.is_empty()).then(|| app.session_id.clone()),
+                    ))
+                } else {
+                    app.local_return.take()
+                };
+                let mut next = App::at_target(
+                    Some(view.target),
+                    Box::new(view.host),
+                    MarkdownRenderer::new(&theme),
+                    app.palette.clone(),
+                    app.home.clone(),
+                    view.cwd,
+                );
+                next.devices = app.devices.take();
+                next.local_return = local_return;
+                next.fullscreen = app.fullscreen;
+                next.terminal_clipboard = app.terminal_clipboard;
+                next.theme_context = app.theme_context.take();
+                std::mem::swap(&mut next.markdown, &mut app.markdown);
+                next.awaiting_window = view.session.is_some();
+                if view.session.is_some() {
+                    next.switches.begin(SwitchKind::Resumed);
+                }
+                next.startup_session = view.session;
+                for update in view.updates {
+                    next.apply(update);
+                }
+                let mut old = std::mem::replace(&mut app, next);
+                let saved = DeviceDraft {
+                    line: old.snapshot.as_ref().map(|s| s.focus.clone()),
+                    opening: old.line_draft.take(),
+                    composer: old.composer.take_draft(),
+                    question: old.question_stash.take(),
+                };
+                if saved.composer.is_some() || saved.opening.is_some() || saved.question.is_some() {
+                    drafts.insert(previous, saved);
+                }
+                if let Some(saved) = drafts.remove(&key) {
+                    if let Some(mut opening) = saved.opening
+                        && let Some(snapshot) = &app.snapshot
+                    {
+                        opening.projection_id = snapshot.projection_id;
+                        app.line_draft = Some(opening);
+                    }
+                    if let Some(draft) = saved.composer {
+                        app.composer.put_draft(draft);
+                    }
+                    if let Some(Prompt::Ask(current)) = &mut app.prompt
+                        && let Some(saved) = saved.question
+                        && current.call == saved.call
+                    {
+                        *current = saved;
+                    }
+                }
+                old.host.shutdown();
+                app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
+                app.reflow_requested = true;
+                leader_full = None;
+                if full.is_some() {
+                    full = Some(FullScreen::new(terminal.size(), synchronized));
+                }
+                status.forget();
+                progress.forget();
+                title.forget();
+                dirty = true;
+            }
         }
         if full.is_some() && app.shows_member() != leader_full.is_some() {
             if app.shows_member() {
@@ -1168,9 +1286,13 @@ impl PendingSwitches {
 }
 
 struct App {
+    devices: Option<Devices>,
+    target: Option<Arc<Target>>,
+    local_return: Option<(String, Option<String>)>,
     host: Box<dyn SessionPort>,
     composer: Composer,
     cwd_key: String,
+    history_key: String,
     /// The workspace shown in the composer's label, with the home written
     /// `~`: the workspace the attached Session reports, or [`Self::cwd_key`]
     /// at Home. Never read from the process's directory, which a frame would
@@ -1355,7 +1477,7 @@ struct App {
     runs: Runs,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when command entry ends.
-    palette_stash: Option<(String, bool)>,
+    palette_stash: Option<SavedDraft>,
     /// The workspace's git branch for the banner and composer.
     branch: Option<String>,
     git_head: Option<PathBuf>,
@@ -1545,6 +1667,13 @@ impl ForkAsk {
     }
 }
 
+struct DeviceDraft {
+    line: Option<String>,
+    opening: Option<LineDraft>,
+    composer: Option<SavedDraft>,
+    question: Option<AskUserPrompt>,
+}
+
 struct LineDraft {
     session_id: String,
     projection_id: u64,
@@ -1616,6 +1745,7 @@ struct ImageRead {
 }
 
 enum Prompt {
+    Devices(Box<DevicePanel>),
     Sessions(SessionsPanel),
     Tasks(TasksPanel),
     Lines(Box<LinesPanel>),
@@ -1644,6 +1774,7 @@ enum Prompt {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(
         host: Box<dyn SessionPort>,
         markdown: MarkdownRenderer,
@@ -1651,7 +1782,23 @@ impl App {
         home: PathBuf,
         cwd_key: String,
     ) -> Self {
-        let past = history::load(&home, &cwd_key);
+        Self::at_target(None, host, markdown, palette, home, cwd_key)
+    }
+
+    fn at_target(
+        target: Option<Arc<Target>>,
+        host: Box<dyn SessionPort>,
+        markdown: MarkdownRenderer,
+        palette: Palette,
+        home: PathBuf,
+        cwd_key: String,
+    ) -> Self {
+        let remote = target.as_ref().filter(|target| target.address.is_some());
+        let history_key = remote.map_or_else(
+            || cwd_key.clone(),
+            |target| format!("{}:{cwd_key}", target.id),
+        );
+        let past = history::load(&home, &history_key);
         let mouse = crate::ui::config::read(&home, MOUSE_KEY).is_none_or(|v| v != "off");
         let notify = crate::ui::config::read(&home, crate::ui::notify::NOTIFY_KEY)
             .is_none_or(|v| v != false);
@@ -1659,8 +1806,15 @@ impl App {
         // the local `--cwd` (cli-attachment-input), which an attach does not
         // change; the border's workspace label is the Session's and does.
         let mut composer = Composer::new(past);
-        composer.set_root(PathBuf::from(&cwd_key));
+        composer.set_root(remote.map_or_else(
+            || PathBuf::from(&cwd_key),
+            |target| target.keyboard_dir().to_owned(),
+        ));
         let mut app = Self {
+            devices: None,
+            target,
+            history_key,
+            local_return: None,
             host,
             composer,
             workspace: String::new(),
@@ -1857,20 +2011,41 @@ impl App {
     fn command_entry_open(&self) -> bool {
         (self.composer.skill_draft
             || (self.composer.shell().is_none() && self.composer.text().starts_with('/')))
-            && matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
+            && self.decision_allows_commands()
+    }
+
+    fn decision_allows_commands(&self) -> bool {
+        matches!(self.prompt, Some(Prompt::Permission(_)))
+            || matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing)
     }
 
     /// Opens the command palette on the draft it replaces; the draft comes
     /// back when command entry ends ([`Self::handle`]).
     fn open_palette(&mut self) {
-        if !self.composer.is_empty() || self.composer.skill_draft {
-            self.palette_stash = Some((self.composer.text().to_owned(), self.composer.skill_draft));
+        if let Some(draft) = self.composer.take_draft() {
+            self.palette_stash = Some(draft);
         }
         self.set_draft("/");
     }
 
-    /// Shows `prompt` in the prompt slot, keeping a pending question aside
-    /// so the panel gives the question back with its answers when it closes.
+    /// Opens the target picker, optionally starting at the current computer's sessions.
+    fn open_devices(&mut self, current_sessions: bool) {
+        let (Some(runtime), Some(target)) = (self.devices.clone(), self.target.clone()) else {
+            return;
+        };
+        let reconnect = self.failure.is_some().then(|| {
+            (
+                self.cwd_key.clone(),
+                (!self.session_id.is_empty()).then(|| self.session_id.clone()),
+            )
+        });
+        let mut panel = DevicePanel::new(runtime, target, self.local_return.clone(), reconnect);
+        if current_sessions {
+            panel.current_sessions();
+        }
+        self.open_prompt(Prompt::Devices(Box::new(panel)));
+    }
+
     fn open_prompt(&mut self, prompt: Prompt) {
         if matches!(self.prompt, Some(Prompt::Sessions(_))) {
             self.host.send(Command::CloseSessions);
@@ -2278,6 +2453,7 @@ impl App {
             | Some(Prompt::Theme(_))
             | Some(Prompt::Language(_))
             | Some(Prompt::RemoteAccess(_))
+            | Some(Prompt::Devices(_))
             | Some(Prompt::Settings(_))
             | Some(Prompt::Isolation(_))
             | Some(Prompt::Lines(_))
@@ -3389,6 +3565,11 @@ impl App {
                 self.restore_unsent();
                 self.failure = Some(message);
                 self.run_started = None;
+                if self.target.as_ref().is_some_and(|t| t.address.is_some())
+                    && !matches!(self.prompt, Some(Prompt::Devices(_)))
+                {
+                    self.open_devices(false);
+                }
             }
             Update::DraftNotSent { parts, message } => {
                 self.notices.push(message);
@@ -3429,10 +3610,9 @@ impl App {
         let outcome = self.handle_input(event);
         self.restore_question();
         if self.composer.is_empty()
-            && let Some((draft, skill_draft)) = self.palette_stash.take()
+            && let Some(draft) = self.palette_stash.take()
         {
-            self.set_draft(&draft);
-            self.composer.skill_draft = skill_draft;
+            self.composer.put_draft(draft);
         }
         outcome
     }
@@ -3449,6 +3629,7 @@ impl App {
                     None => self.paste(text),
                     Some(Prompt::Providers(panel)) => panel.paste(&text),
                     Some(Prompt::Login(view)) => view.paste(&text),
+                    Some(Prompt::Devices(panel)) => panel.paste(&text),
                     Some(Prompt::Sessions(panel)) => panel.paste(&text),
                     Some(Prompt::Tasks(panel)) => panel.paste(&text),
                     Some(Prompt::Lines(panel)) => panel.paste(&text),
@@ -3514,7 +3695,25 @@ impl App {
             }
             return Outcome::Continue;
         }
+        if let Some(Prompt::Devices(panel)) = &mut self.prompt {
+            if ctrl && self.failure.is_some() && matches!(key.code, KeyCode::Char('c' | 'd')) {
+                return Outcome::Exit(0);
+            }
+            if ctrl && key.code == KeyCode::Char('c') {
+                return self.ctrl_c();
+            }
+            if matches!(panel.key(key), Effect::Close) {
+                self.prompt = None;
+                self.sync_prompt();
+            }
+            return Outcome::Continue;
+        }
         if self.failure.is_some() {
+            if key.code == KeyCode::Enter && self.composer.text().trim() == "/devices" {
+                self.composer.clear();
+                self.open_devices(false);
+                return Outcome::Continue;
+            }
             if (ctrl && matches!(key.code, KeyCode::Char('c' | 'd')))
                 || (key.code == KeyCode::Enter && self.composer.text().trim() == "/exit")
             {
@@ -3536,7 +3735,7 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return self.ctrl_c();
         }
-        if matches!(&self.prompt, Some(Prompt::Ask(prompt)) if !prompt.typing) {
+        if self.decision_allows_commands() {
             if self.command_entry_open() {
                 if key.code == KeyCode::Esc
                     && !self.composer.palette_open()
@@ -3556,6 +3755,7 @@ impl App {
         }
         if let Some(prompt) = &mut self.prompt {
             let effect = match prompt {
+                Prompt::Devices(p) => p.key(key),
                 Prompt::Sessions(p) => p.handle_key(key),
                 Prompt::Tasks(p) => p.handle_key(key),
                 Prompt::Lines(p) => p.handle_key(key),
@@ -3855,7 +4055,7 @@ impl App {
             }
             ComposerOutcome::Submit(text) => {
                 let text = text.trim().to_owned();
-                history::append(&self.home, &self.cwd_key, &text);
+                history::append(&self.home, &self.history_key, &text);
                 self.composer.push_history(&text);
                 self.jump = Some(Jump::Bottom);
                 if mode == SubmitMode::Queue && self.running() {
@@ -3865,7 +4065,7 @@ impl App {
             }
             ComposerOutcome::SubmitDraft { text, parts } => {
                 let text = text.trim().to_owned();
-                history::append(&self.home, &self.cwd_key, &text);
+                history::append(&self.home, &self.history_key, &text);
                 self.composer.push_history(&text);
                 self.jump = Some(Jump::Bottom);
                 if mode == SubmitMode::Queue && self.running() {
@@ -3880,7 +4080,7 @@ impl App {
             }
             ComposerOutcome::Shell { command, shell } => {
                 let entry = format!("{}{command}", shell.prefix());
-                history::append(&self.home, &self.cwd_key, &entry);
+                history::append(&self.home, &self.history_key, &entry);
                 self.composer.push_history(&entry);
                 self.jump = Some(Jump::Bottom);
                 let running = crate::ui::shell::Running::new(command, shell == Shell::Private);
@@ -4200,6 +4400,18 @@ impl App {
     /// `cells`, so a shown line is never displaced by a shortened path;
     /// [`workspace_label`] never returns one, so the form only appears here.
     fn place_label(&self, cells: usize) -> String {
+        let prefix = self
+            .target
+            .as_ref()
+            .filter(|target| target.address.is_some())
+            .map(|target| format!("{}:", target.name))
+            .unwrap_or_default();
+        let width = cells.saturating_sub(width_of(&prefix));
+        let place = self.workspace_place(width);
+        format!("{}{place}", truncate_cells(&prefix, cells))
+    }
+
+    fn workspace_place(&self, cells: usize) -> String {
         if let Some(draft) = &self.line_draft {
             let lines = self.snapshot.as_ref().map_or(&[][..], |s| &s.lines[..]);
             return tf(
@@ -4235,7 +4447,7 @@ impl App {
             return;
         };
         let text = text.trim().to_owned();
-        history::append(&self.home, &self.cwd_key, &text);
+        history::append(&self.home, &self.history_key, &text);
         self.composer.push_history(&text);
         self.host.send(Command::OpenLine {
             session_id: draft.session_id,
@@ -5939,6 +6151,10 @@ impl App {
                 self.host.send(Command::NewSession);
                 Outcome::Continue
             }
+            "devices" => {
+                self.open_devices(false);
+                Outcome::Continue
+            }
             "web" => Outcome::Web,
             "resume" => {
                 self.open_prompt(Prompt::Sessions(SessionsPanel::new(
@@ -6804,7 +7020,7 @@ impl App {
             Some(Prompt::Models(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Providers(prompt)) => Some(prompt.cursor(width, height)),
             Some(Prompt::Login(prompt)) => Some(prompt.cursor(width, height)),
-            Some(Prompt::Ask(_)) if command_entry => None,
+            _ if command_entry => None,
             Some(Prompt::Ask(prompt)) => Some(prompt.cursor(width, panel_rows)),
             Some(_) => Some(None),
             None => None,
@@ -6832,6 +7048,7 @@ impl App {
                 }
                 prompt => {
                     let rows = match prompt {
+                        Some(Prompt::Devices(panel)) => Some(panel.render(list_width, budget, p)),
                         Some(Prompt::Sessions(prompt)) => {
                             Some(prompt.render(list_width, budget, p))
                         }
@@ -6888,9 +7105,8 @@ impl App {
         let panel = match &self.prompt {
             _ if self.shows_member() => None,
             _ if frame.overlay.is_some() => None,
-            Some(Prompt::Ask(_)) if command_entry => {
-                self.composer.palette_panel(outer, panel_rows, p)
-            }
+            _ if command_entry => self.composer.palette_panel(outer, panel_rows, p),
+            Some(Prompt::Devices(panel)) => Some(panel.render(outer, panel_rows, p)),
             Some(Prompt::Sessions(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Tasks(prompt)) => {
                 Some(prompt.render(outer, panel_rows, p, &self.markdown))
@@ -7715,6 +7931,12 @@ impl App {
     /// screen still says which files a mention reads.
     fn show_workspace(&mut self, cwd: Option<&str>) {
         let cwd = cwd.unwrap_or(&self.cwd_key);
+        if self.target.as_ref().is_some_and(|t| t.address.is_some()) {
+            self.workspace = crate::sanitize::safe_line(cwd);
+            self.git_head = None;
+            self.branch = None;
+            return;
+        }
         self.workspace = crate::ui::tilde(cwd);
         // Paths compare by component, so `A/` is `A`; not canonicalized: I/O
         // per switch, and a resolved symlink is a display question.
