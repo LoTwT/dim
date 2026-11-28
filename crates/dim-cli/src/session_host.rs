@@ -2028,7 +2028,12 @@ impl Worker {
                 }
             }
             Command::Rename(title) => self.rename(title).await,
-            Command::Earlier { line, .. } => self.earlier(&line),
+            Command::Earlier { line, .. } => {
+                self.earlier(&line);
+                if self.earlier_view() == Earlier::Reading {
+                    self.publish();
+                }
+            }
             Command::Goal { request, .. } => self.goal(request).await,
             Command::Loop { request, .. } => self.loop_command(request).await,
             Command::CheckUpdate if self.options.endpoint.is_some() => {
@@ -5612,14 +5617,7 @@ impl Worker {
                     .values()
                     .any(|line| line.projection.held_input(id).is_some())
         });
-        let mut snapshot = match self
-            .lines
-            .get(&self.focus)
-            .filter(|_| self.focus != ROOT_BRANCH_ID)
-        {
-            Some(line) => line.projection.snapshot(),
-            None => self.projection.snapshot(),
-        };
+        let mut snapshot = self.shown().snapshot();
         snapshot.lines = self.line_views();
         snapshot.unread_lines = snapshot
             .lines
